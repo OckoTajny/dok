@@ -96,6 +96,7 @@ impl Db {
             "ALTER TABLE apps ADD COLUMN image TEXT",
             "ALTER TABLE apps ADD COLUMN memory_mb INTEGER",
             "ALTER TABLE apps ADD COLUMN cpus REAL",
+            "ALTER TABLE deploys ADD COLUMN dir TEXT",
         ] {
             let _ = conn.execute(sql, []);
         }
