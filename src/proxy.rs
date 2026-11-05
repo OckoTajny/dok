@@ -56,7 +56,12 @@ pub fn app_for(st: &AppState, req: &Request<Body>) -> Option<Route> {
     find_route(st, &host)
 }
 
-pub async fn serve_app(st: AppState, req: Request<Body>, route: Route) -> Response<Body> {
+pub async fn serve_app(
+    st: AppState,
+    req: Request<Body>,
+    route: Route,
+    request_id: &str,
+) -> Response<Body> {
     let started = Instant::now();
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
@@ -71,7 +76,7 @@ pub async fn serve_app(st: AppState, req: Request<Body>, route: Route) -> Respon
 
     if let Some(r) = redirect_for(&st, &req, &host, &settings, ip.as_deref()) {
         log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
-        return apply_headers(r, &settings);
+        return with_request_id(apply_headers(r, &settings), request_id);
     }
     if let Some(r) = basic_auth_challenge(&req, &settings) {
         // Only failed attempts count towards the limiter.
@@ -82,10 +87,10 @@ pub async fn serve_app(st: AppState, req: Request<Body>, route: Route) -> Respon
                 .body(Body::from("dok: too many authentication attempts\n"))
                 .unwrap();
             log_request(&st, &app.name, &method, &path, &limited, started, ip.as_deref());
-            return apply_headers(limited, &settings);
+            return with_request_id(apply_headers(limited, &settings), request_id);
         }
         log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
-        return apply_headers(r, &settings);
+        return with_request_id(apply_headers(r, &settings), request_id);
     }
     if let Some(max) = settings.max_body_mb {
         let too_big = req
@@ -102,7 +107,7 @@ pub async fn serve_app(st: AppState, req: Request<Body>, route: Route) -> Respon
                 .body(Body::from("dok: request body too large\n"))
                 .unwrap();
             log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
-            return apply_headers(r, &settings);
+            return with_request_id(apply_headers(r, &settings), request_id);
         }
     }
 
@@ -139,16 +144,48 @@ pub async fn serve_app(st: AppState, req: Request<Body>, route: Route) -> Respon
             .await
             {
                 Some(r) => r,
-                None => landing(&st),
+                None => crate::ui::branded_error(
+                    StatusCode::NOT_FOUND,
+                    "Not found",
+                    Some(&app.name),
+                    "This file does not exist in the current deploy.",
+                    last_good_at(&st, &app.name),
+                    request_id,
+                ),
             }
         }
         _ => match port_override.or(app.host_port) {
-            Some(port) => forward(&st, req, port).await,
-            None => bad_gateway("app has no running container"),
+            Some(port) => forward(&st, req, port, &app.name, request_id).await,
+            None => crate::ui::branded_error(
+                StatusCode::BAD_GATEWAY,
+                "Bad gateway",
+                Some(&app.name),
+                "The project has no running container. Check the deploy log or redeploy.",
+                last_good_at(&st, &app.name),
+                request_id,
+            ),
         },
     };
     log_request(&st, &app.name, &method, &path, &resp, started, ip.as_deref());
-    apply_headers(resp, &settings)
+    with_request_id(apply_headers(resp, &settings), request_id)
+}
+
+fn with_request_id(mut resp: Response<Body>, request_id: &str) -> Response<Body> {
+    if let Ok(v) = HeaderValue::from_str(request_id) {
+        resp.headers_mut()
+            .entry("x-request-id")
+            .or_insert(v);
+    }
+    resp
+}
+
+fn last_good_at(st: &AppState, app: &str) -> Option<i64> {
+    st.db
+        .deploys(app, 20)
+        .ok()?
+        .into_iter()
+        .find(|d| d.status == "ok" && d.env == "production")
+        .map(|d| d.created_at)
 }
 
 fn log_request(
@@ -288,7 +325,7 @@ fn find_app(st: &AppState, host: &str) -> Option<crate::db::App> {
 fn find_route(st: &AppState, host: &str) -> Option<Route> {
     // The dashboard host, the base apex and every `<anything>.<base>` name is
     // reserved for the control plane and must never resolve to user code.
-    if st.reserved_host(host) {
+    if st.reserved_host(host) || st.is_control_host(host) {
         return None;
     }
     if let Ok(Some(app)) = st.db.app_by_domain(host) {
@@ -334,7 +371,13 @@ fn is_upgrade(req: &Request<Body>) -> bool {
         && req.headers().contains_key(header::UPGRADE)
 }
 
-async fn forward(st: &AppState, mut req: Request<Body>, port: u16) -> Response<Body> {
+async fn forward(
+    st: &AppState,
+    mut req: Request<Body>,
+    port: u16,
+    app: &str,
+    request_id: &str,
+) -> Response<Body> {
     let upgrade = is_upgrade(&req);
     let client_upgrade = if upgrade {
         Some(hyper::upgrade::on(&mut req))
@@ -350,7 +393,16 @@ async fn forward(st: &AppState, mut req: Request<Body>, port: u16) -> Response<B
         .unwrap_or("/");
     let uri: axum::http::Uri = match format!("http://127.0.0.1:{port}{pq}").parse() {
         Ok(u) => u,
-        Err(_) => return bad_gateway("bad upstream uri"),
+        Err(_) => {
+            return crate::ui::branded_error(
+                StatusCode::BAD_GATEWAY,
+                "Bad gateway",
+                Some(app),
+                "The upstream request could not be built.",
+                last_good_at(st, app),
+                request_id,
+            )
+        }
     };
 
     let mut out = Request::builder().method(parts.method.clone()).uri(uri);
@@ -401,8 +453,27 @@ async fn forward(st: &AppState, mut req: Request<Body>, port: u16) -> Response<B
     .await
     {
         Ok(Ok(r)) => r,
-        Ok(Err(e)) => return bad_gateway(&format!("upstream error: {e}")),
-        Err(_) => return gateway_timeout(),
+        Ok(Err(e)) => {
+            tracing::warn!("upstream error for {app}: {e}");
+            return crate::ui::branded_error(
+                StatusCode::BAD_GATEWAY,
+                "Bad gateway",
+                Some(app),
+                "The project did not accept the connection. It may be restarting.",
+                last_good_at(st, app),
+                request_id,
+            );
+        }
+        Err(_) => {
+            return crate::ui::branded_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "Gateway timeout",
+                Some(app),
+                "The project took too long to answer.",
+                last_good_at(st, app),
+                request_id,
+            )
+        }
     };
 
     let mut resp = resp;
@@ -432,7 +503,16 @@ async fn forward(st: &AppState, mut req: Request<Body>, port: u16) -> Response<B
         }
     }
     b.body(Body::new(body))
-        .unwrap_or_else(|_| bad_gateway("bad upstream response"))
+        .unwrap_or_else(|_| {
+            crate::ui::branded_error(
+                StatusCode::BAD_GATEWAY,
+                "Bad gateway",
+                Some(app),
+                "The upstream response was invalid.",
+                last_good_at(st, app),
+                request_id,
+            )
+        })
 }
 
 fn hidden_path(url_path: &str) -> bool {
@@ -576,46 +656,18 @@ async fn serve_static(
     builder.body(Body::from_stream(stream)).ok()
 }
 
-fn bad_gateway(msg: &str) -> Response<Body> {
-    Response::builder()
-        .status(StatusCode::BAD_GATEWAY)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Body::from(format!("dok: {msg}\n")))
-        .unwrap()
-}
-
-fn gateway_timeout() -> Response<Body> {
-    Response::builder()
-        .status(StatusCode::GATEWAY_TIMEOUT)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Body::from("dok: upstream timeout\n"))
-        .unwrap()
-}
-
-pub fn landing(st: &AppState) -> Response<Body> {
-    let mut names = Vec::new();
-    if let Ok(apps) = st.db.list_apps() {
-        for a in apps {
-            names.push(a.name);
-        }
-    }
-    let list = names
-        .iter()
-        .map(|n| format!("<li>{n}</li>"))
-        .collect::<String>();
-    let html = format!(
-        "<!doctype html><meta charset=utf-8><title>dok</title>\
-         <style>body{{font:15px system-ui;margin:3rem auto;max-width:38rem;color:#111}}\
-         code{{background:#f4f4f4;padding:.1rem .3rem;border-radius:4px}}</style>\
-         <h1>dok</h1><p>No app is routed to this host.</p>\
-         <p>Apps: <ul>{list}</ul></p>\
-         <p>CLI: <code>dok push</code></p>"
-    );
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(Body::from(html))
-        .unwrap()
+pub fn generic_not_found(st: &AppState, request_id: &str) -> Response<Body> {
+    crate::ui::branded_error(
+        StatusCode::NOT_FOUND,
+        "Not found",
+        None,
+        &format!(
+            "No project is routed to this host. Apps are served on their own domains; the dashboard lives on {}.",
+            st.public_url
+        ),
+        None,
+        request_id,
+    )
 }
 
 #[cfg(test)]

@@ -18,7 +18,6 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .with_context(|| format!("create data dir {}", data.display()))?;
 
     let db = Db::open(&data.join("dok.db"))?;
-    init_token(&db, &data, args.token.as_deref())?;
 
     // Behind Traefik/Caddy TLS termination, --dashboard-origin tells us the
     // scheme clients actually use.
@@ -32,8 +31,28 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     } else {
         "http"
     };
+    // Passkey RP IDs must be domain names, not bare IPs, so a default
+    // `dok serve` uses localhost for the dashboard origin. An explicit
+    // --dashboard-origin may be given as `host:port` or as a full URL; the
+    // port is never appended twice.
+    let origin = match normalize_origin(
+        args.dashboard_origin.as_deref(),
+        &args.public_host,
+        args.http_port,
+        args.tls_port,
+        scheme,
+    ) {
+        Ok(o) => o,
+        Err(e) => {
+            anyhow::bail!(
+                "{e}\nset a valid --dashboard-origin, e.g. --dashboard-origin http://localhost:{}",
+                args.http_port
+            );
+        }
+    };
     let public_url = match &args.dashboard_origin {
-        Some(o) => o.trim_end_matches('/').to_string(),
+        // The origin is the URL clients use for the dashboard and API.
+        Some(_) => origin.clone(),
         None => match scheme {
             "https" => format!(
                 "https://{}",
@@ -43,30 +62,32 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     .unwrap_or_else(|| "localhost".into())
             ),
             _ => {
-                let host = if args.public_host == "0.0.0.0" {
+                let host = if args.public_host == "0.0.0.0" || args.public_host == "::" {
                     "localhost".to_string()
                 } else {
                     args.public_host.clone()
                 };
-                format!("http://{host}:{}", args.http_port)
+                format!("http://{host}")
             }
         },
     };
+    // Append the listening port for plain HTTP output when the host has none.
+    let public_url = ensure_port(&public_url, args.http_port, "http");
 
-    let origin = args
-        .dashboard_origin
-        .clone()
-        .unwrap_or_else(|| public_url.clone());
+    init_token(&db, &data, args.token.as_deref(), &public_url)?;
+
     let auth = match url::Url::parse(&origin) {
         Ok(u) => match crate::auth::AuthState::new(u) {
             Ok(a) => Some(std::sync::Arc::new(a)),
             Err(e) => {
-                tracing::warn!("dashboard disabled: {e}");
+                tracing::error!(
+                    "dashboard disabled: {e}; pass --dashboard-origin with a real hostname (e.g. https://dok.example.com)"
+                );
                 None
             }
         },
         Err(e) => {
-            tracing::warn!("dashboard disabled: bad origin {origin}: {e}");
+            tracing::error!("dashboard disabled: bad origin {origin}: {e}");
             None
         }
     };
@@ -85,6 +106,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         public_url.clone(),
     )
     .with_auth(auth)
+    .with_dashboard_origin(Some(origin.clone()))
     .with_traefik_dir(args.traefik_dir.clone())
     .with_trusted_proxies(trusted);
 
@@ -521,7 +543,12 @@ fn backup_db(st: &AppState, keep: usize) {
     }
 }
 
-fn init_token(db: &Db, data: &std::path::Path, given: Option<&str>) -> Result<()> {
+fn init_token(
+    db: &Db,
+    data: &std::path::Path,
+    given: Option<&str>,
+    public_url: &str,
+) -> Result<()> {
     if let Some(t) = given {
         match db.single_user()? {
             Some(u) => {
@@ -554,7 +581,7 @@ fn init_token(db: &Db, data: &std::path::Path, given: Option<&str>) -> Result<()
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     eprintln!(
-        "\n  dok initial token: {token}\n  saved to {}\n  use: dok login http://<host>:8080 {token}\n",
+        "\n  dok initial token: {token}\n  saved to {}\n  use: dok login {public_url} {token}\n  dashboard: {public_url}\n",
         path.display()
     );
     Ok(())
@@ -569,6 +596,154 @@ fn expand(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+fn default_port(scheme: &str) -> u16 {
+    if scheme == "https" {
+        443
+    } else {
+        80
+    }
+}
+
+fn split_authority(a: &str) -> (String, Option<u16>) {
+    let a = a.trim();
+    if let Some(rest) = a.strip_prefix('[') {
+        if let Some((host, tail)) = rest.split_once(']') {
+            let port = tail.strip_prefix(':').and_then(|p| p.parse().ok());
+            return (format!("[{host}]"), port);
+        }
+    }
+    if a.matches(':').count() > 1 {
+        // Unbracketed IPv6: no port.
+        return (a.to_string(), None);
+    }
+    match a.rsplit_once(':') {
+        Some((host, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
+            (host.to_string(), p.parse().ok())
+        }
+        _ => (a.to_string(), None),
+    }
+}
+
+fn build_origin(scheme: &str, host: &str, port: u16) -> String {
+    if port == default_port(scheme) {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}:{port}")
+    }
+}
+
+/// Normalise `--dashboard-origin`: accept `https://host`, `host`, or
+/// `host:port`. Bare IPs become `localhost` because WebAuthn RP IDs must be
+/// domain names. The listening port is added once, never twice.
+fn normalize_origin(
+    raw: Option<&str>,
+    public_host: &str,
+    http_port: u16,
+    tls_port: u16,
+    scheme: &str,
+) -> std::result::Result<String, String> {
+    let is_ip = |h: &str| {
+        h.trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok()
+    };
+    let (scheme, authority, explicit_port) = match raw {
+        Some(r) => {
+            let r = r.trim().trim_end_matches('/');
+            if r.contains("://") {
+                let u = url::Url::parse(r).map_err(|e| format!("invalid --dashboard-origin {r}: {e}"))?;
+                let host = u
+                    .host_str()
+                    .ok_or_else(|| format!("invalid --dashboard-origin {r}: missing host"))?;
+                let host = if is_ip(host) { "localhost".to_string() } else { host.to_string() };
+                let port = u.port().or_else(|| {
+                    // Local origins without a port use the port dok listens on.
+                    if (host == "localhost" || host == "[::1]") && u.scheme() == scheme {
+                        Some(if scheme == "https" { tls_port } else { http_port })
+                    } else {
+                        None
+                    }
+                });
+                (u.scheme().to_string(), host, port)
+            } else {
+                let (host, port) = split_authority(r);
+                let host = if is_ip(&host) { "localhost".to_string() } else { host };
+                (scheme.to_string(), host, port)
+            }
+        }
+        None => {
+            let mut host = public_host.trim().to_string();
+            if host.is_empty() || host == "0.0.0.0" || host == "::" {
+                host = "localhost".into();
+            }
+            let (host, port) = split_authority(&host);
+            let host = if is_ip(&host) { "localhost".to_string() } else { host };
+            (scheme.to_string(), host, port)
+        }
+    };
+    if authority.is_empty() {
+        return Err("invalid --dashboard-origin: missing host".into());
+    }
+    let port = explicit_port.unwrap_or(if scheme == "https" { tls_port } else { http_port });
+    Ok(build_origin(&scheme, &authority, port))
+}
+
+/// Add the listening port to a plain-HTTP public URL when it has none.
+fn ensure_port(url: &str, port: u16, scheme: &str) -> String {
+    let Ok(mut u) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    if u.port().is_none() && u.scheme() == scheme && port != default_port(scheme) {
+        let _ = u.set_port(Some(port));
+    }
+    u.to_string().trim_end_matches('/').to_string()
+}
+
 fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_port, normalize_origin};
+
+    fn origin(raw: Option<&str>, host: &str) -> String {
+        normalize_origin(raw, host, 8080, 443, "http").unwrap()
+    }
+
+    #[test]
+    fn dashboard_origin_accepts_hosts_and_ports() {
+        // A bare dok serve must work: IPs become a valid WebAuthn RP ID.
+        assert_eq!(origin(None, "127.0.0.1"), "http://localhost:8080");
+        assert_eq!(origin(None, "0.0.0.0"), "http://localhost:8080");
+        assert_eq!(origin(None, "localhost"), "http://localhost:8080");
+        assert_eq!(origin(None, "[::1]"), "http://localhost:8080");
+        // Ports are never appended twice.
+        assert_eq!(origin(None, "localhost:9000"), "http://localhost:9000");
+        assert_eq!(origin(Some("localhost:9000"), "127.0.0.1"), "http://localhost:9000");
+        assert_eq!(
+            origin(Some("http://127.0.0.1:7000"), "127.0.0.1"),
+            "http://localhost:7000"
+        );
+        assert_eq!(
+            origin(Some("http://localhost"), "127.0.0.1"),
+            "http://localhost:8080"
+        );
+        assert_eq!(
+            origin(Some("https://dok.example.com"), "127.0.0.1"),
+            "https://dok.example.com"
+        );
+        assert_eq!(
+            origin(Some("dok.example.com:8443"), "127.0.0.1"),
+            "http://dok.example.com:8443"
+        );
+    }
+
+    #[test]
+    fn public_url_gets_one_port() {
+        assert_eq!(ensure_port("http://127.0.0.1", 8080, "http"), "http://127.0.0.1:8080");
+        assert_eq!(ensure_port("http://127.0.0.1:9000", 8080, "http"), "http://127.0.0.1:9000");
+        assert_eq!(ensure_port("https://dok.example.com", 8080, "http"), "https://dok.example.com");
+    }
 }

@@ -133,7 +133,12 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
         ("GET", "/login") => Some(crate::ui::page_login()),
         ("GET", p) if p.starts_with("/join/") => {
             let token = p.trim_start_matches("/join/").to_string();
-            Some(crate::ui::page_join(&token))
+            match st.db.invite_details(&token) {
+                Ok(Some((team, role, inviter))) => {
+                    Some(crate::ui::page_join(&token, &team, &role, inviter.as_deref()))
+                }
+                _ => Some(crate::ui::page_join_invalid()),
+            }
         }
         ("POST", "/auth/setup/start") => Some(setup_start(st, auth, req).await),
         ("POST", "/auth/setup/finish") => Some(register_finish(st, auth, req).await),

@@ -225,7 +225,8 @@ CREATE TABLE IF NOT EXISTS invites (
   role TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  used_at INTEGER
+  used_at INTEGER,
+  invited_by TEXT
 );
 CREATE TABLE IF NOT EXISTS env_vars (
   app TEXT NOT NULL,
@@ -253,7 +254,7 @@ CREATE TABLE IF NOT EXISTS access_log (
 CREATE INDEX IF NOT EXISTS access_log_app ON access_log (app, id);
 "#;
 
-const DB_VERSION: i64 = 3;
+const DB_VERSION: i64 = 4;
 
 /// One transactional step per schema version. New databases start at 0 and
 /// run the same steps as old ones so migrations are exercised everywhere.
@@ -320,6 +321,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
                 ] {
                     let _ = tx.execute(sql, []);
                 }
+            }
+            3 => {
+                let _ = tx.execute("ALTER TABLE invites ADD COLUMN invited_by TEXT", []);
             }
             _ => break,
         }
@@ -647,16 +651,44 @@ impl Db {
         )?)
     }
 
-    pub fn invites_for(&self, team_id: &str) -> Result<Vec<(String, String, i64, i64, Option<i64>)>> {
+    pub fn invites_for(
+        &self,
+        team_id: &str,
+    ) -> Result<Vec<(String, String, i64, i64, Option<i64>, Option<String>)>> {
         let c = self.conn();
         let mut st = c.prepare(
-            "SELECT token, role, created_at, expires_at, used_at FROM invites
+            "SELECT token, role, created_at, expires_at, used_at, invited_by FROM invites
              WHERE team_id = ?1 ORDER BY created_at DESC, rowid DESC",
         )?;
         let rows = st.query_map(params![team_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Team name, role and inviter for the join page. Expired/used invites
+    /// return `None` so the page can fail immediately instead of after the
+    /// passkey ceremony.
+    pub fn invite_details(&self, token: &str) -> Result<Option<(String, String, Option<String>)>> {
+        let c = self.conn();
+        Ok(c.query_row(
+            "SELECT t.name, i.role,
+                    COALESCE(u.name, u.email)
+             FROM invites i
+             JOIN teams t ON t.id = i.team_id
+             LEFT JOIN users u ON u.id = i.invited_by
+             WHERE i.token = ?1 AND i.used_at IS NULL AND i.expires_at > ?2",
+            params![token, now()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?)
     }
 
     pub fn revoke_invite(&self, team_id: &str, token: &str) -> Result<usize> {
@@ -666,11 +698,18 @@ impl Db {
         )?)
     }
 
-    pub fn create_invite(&self, team_id: &str, role: &str, ttl: i64) -> Result<String> {
+    pub fn create_invite(
+        &self,
+        team_id: &str,
+        role: &str,
+        ttl: i64,
+        invited_by: Option<&str>,
+    ) -> Result<String> {
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.conn().execute(
-            "INSERT INTO invites (token, team_id, role, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![token, team_id, role, now(), now() + ttl],
+            "INSERT INTO invites (token, team_id, role, created_at, expires_at, invited_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![token, team_id, role, now(), now() + ttl, invited_by],
         )?;
         Ok(token)
     }
@@ -1416,10 +1455,10 @@ mod tests {
         let (db, path) = tmp_db();
         let u = db.create_user("i@example.com", "Invitee").unwrap();
         let t = db.create_team("Team", "team", &u.id).unwrap();
-        let token = db.create_invite(&t.id, "member", 60).unwrap();
+        let token = db.create_invite(&t.id, "member", 60, None).unwrap();
         assert!(db.use_invite(&token, &u.id).unwrap().is_some());
         assert!(db.use_invite(&token, &u.id).unwrap().is_none());
-        let expired = db.create_invite(&t.id, "member", -1).unwrap();
+        let expired = db.create_invite(&t.id, "member", -1, None).unwrap();
         assert!(db.use_invite(&expired, &u.id).unwrap().is_none());
         drop(db);
         let _ = std::fs::remove_file(path);
@@ -1494,7 +1533,7 @@ mod tests {
             .conn()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let dupes: i64 = db
             .conn()
             .query_row(

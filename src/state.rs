@@ -43,6 +43,9 @@ pub struct AppState {
     pub upstream_timeout: u64,
     /// Passkey dashboard, when configured.
     pub auth: Option<Arc<crate::auth::AuthState>>,
+    /// Host of the canonical dashboard origin (may differ from `public_url`
+    /// when `public_url` is an IP address and the passkey origin is localhost).
+    pub dashboard_origin_host: Option<String>,
     /// Optional Traefik file-provider directory for per-app routers.
     pub traefik_dir: Option<PathBuf>,
     pub rate: RateLimiter,
@@ -70,6 +73,7 @@ impl AppState {
             scheme,
             upstream_timeout: 60,
             auth: None,
+            dashboard_origin_host: None,
             traefik_dir: None,
             rate: RateLimiter::default(),
             trusted_proxies: Vec::new(),
@@ -78,6 +82,16 @@ impl AppState {
 
     pub fn with_auth(mut self, auth: Option<Arc<crate::auth::AuthState>>) -> Self {
         self.auth = auth;
+        self
+    }
+
+    pub fn with_dashboard_origin(mut self, origin: Option<String>) -> Self {
+        self.dashboard_origin_host = origin.map(|o| {
+            url::Url::parse(&o)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_ascii_lowercase()))
+                .unwrap_or_default()
+        });
         self
     }
 
@@ -188,6 +202,24 @@ impl AppState {
             }
         }
         false
+    }
+
+    /// The dashboard, passkey auth and token API are only served on the
+    /// dashboard host(s), never on project or unknown hosts.
+    pub fn is_control_host(&self, host: &str) -> bool {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        if host.is_empty() {
+            // HTTP/1.0 and local `tower` tests have no Host header.
+            return true;
+        }
+        let dash = self.dashboard_host();
+        let origin = self.dashboard_origin_host.clone();
+        if dash.as_deref() == Some(host.as_str()) || origin.as_deref() == Some(host.as_str()) {
+            return true;
+        }
+        let loopback = |h: &str| h == "localhost" || h == "127.0.0.1" || h == "[::1]" || h == "::1";
+        (loopback(&host) && dash.as_deref().map(loopback).unwrap_or(false))
+            || (loopback(&host) && origin.as_deref().map(loopback).unwrap_or(false))
     }
 
     pub fn is_base_subdomain(&self, host: &str) -> bool {

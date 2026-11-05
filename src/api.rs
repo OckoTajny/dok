@@ -28,27 +28,41 @@ pub fn router(st: AppState) -> Router {
 }
 
 async fn dispatch(State(st): State<AppState>, req: Request) -> Response {
-    // The dashboard/control-plane host never proxies to user code.
+    let request_id = new_request_id();
     let host = proxy::host_of(&req);
-    if !st.reserved_host(&host) {
+    let mut resp = if st.is_control_host(&host) {
+        // The dashboard, auth and token API are only served on the control
+        // host. Unknown project hosts get a generic 404 without a project list.
+        let path = req.uri().path().to_string();
+        if path == "/api" || path.starts_with("/api/") {
+            match api_routes(st.clone()).oneshot(req).await {
+                Ok(r) => r,
+                Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal\n").into_response(),
+            }
+        } else if let Some(r) = crate::auth::handle(&st, req).await {
+            r
+        } else if st.auth.is_none() {
+            crate::ui::page_not_configured(&st)
+        } else {
+            proxy::generic_not_found(&st, &request_id)
+        }
+    } else {
         // A routed app always wins: its own /api/... paths must reach the app.
         if let Some(app) = proxy::app_for(&st, &req) {
-            return proxy::serve_app(st, req, app).await;
+            proxy::serve_app(st, req, app, &request_id).await
+        } else {
+            proxy::generic_not_found(&st, &request_id)
         }
+    };
+    if let Ok(v) = axum::http::HeaderValue::from_str(&request_id) {
+        resp.headers_mut().entry("x-request-id").or_insert(v);
     }
+    resp
+}
 
-    let path = req.uri().path().to_string();
-    if path == "/api" || path.starts_with("/api/") {
-        return match api_routes(st).oneshot(req).await {
-            Ok(r) => r,
-            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal\n").into_response(),
-        };
-    }
-
-    if let Some(r) = crate::auth::handle(&st, req).await {
-        return r;
-    }
-    proxy::landing(&st)
+fn new_request_id() -> String {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    id[..12].to_string()
 }
 
 fn api_routes(st: AppState) -> Router {
@@ -1504,7 +1518,7 @@ async fn list_invites(
         .invites_for(&t.id)
         .unwrap_or_default()
         .into_iter()
-        .map(|(token, role, created_at, expires_at, used_at)| {
+        .map(|(token, role, created_at, expires_at, used_at, invited_by)| {
             json!({
                 "token": token,
                 "role": role,
@@ -1512,6 +1526,7 @@ async fn list_invites(
                 "expires_at": expires_at,
                 "used": used_at.is_some(),
                 "expired": expires_at <= now,
+                "invited_by": invited_by,
                 "link": format!("{}/join/{token}", st.public_url.trim_end_matches('/')),
             })
         })
@@ -1575,7 +1590,7 @@ async fn create_invite(
     if !crate::db::can_grant(actor_role.as_deref(), &role) {
         return (StatusCode::FORBIDDEN, "you cannot grant that role\n").into_response();
     }
-    match st.db.create_invite(&team.id, &role, 7 * 86400) {
+    match st.db.create_invite(&team.id, &role, 7 * 86400, Some(&caller.user)) {
         Ok(token) => Json(json!({
             "token": token,
             "link": format!("{}/join/{token}", st.public_url.trim_end_matches('/')),
