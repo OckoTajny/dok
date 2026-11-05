@@ -1,0 +1,39 @@
+# dok: dashboard on dok.<domain>, apps on <app>.apps.<domain>.
+# Traefik reaches the host through the coolify network gateway (172.18.0.1).
+http:
+  routers:
+    dok-https:
+      entryPoints: [https]
+      rule: Host(`dok.solta.tech`)
+      service: dok
+      tls:
+        certResolver: letsencrypt
+    dok-http:
+      entryPoints: [http]
+      rule: Host(`dok.solta.tech`)
+      middlewares: [dok-redirect-https]
+      service: dok
+
+    dok-apps-https:
+      entryPoints: [https]
+      rule: HostRegexp(`^.+[.]apps[.]solta[.]tech$`)
+      service: dok
+      tls:
+        certResolver: letsencrypt
+    dok-apps-http:
+      entryPoints: [http]
+      rule: HostRegexp(`^.+[.]apps[.]solta[.]tech$`)
+      middlewares: [dok-redirect-https]
+      service: dok
+
+  middlewares:
+    dok-redirect-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+  services:
+    dok:
+      loadBalancer:
+        servers:
+          - url: http://172.18.0.1:8080

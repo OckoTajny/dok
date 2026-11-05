@@ -1,8 +1,11 @@
 use crate::state::AppState;
 use axum::body::Body;
-use axum::http::{header, HeaderValue, Request, Response, StatusCode};
+use axum::http::{header, HeaderValue, Method, Request, Response, StatusCode};
 use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioIo;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
+use tokio_util::io::ReaderStream;
 
 const HOP_BY_HOP: &[&str] = &[
     "connection",
@@ -15,16 +18,34 @@ const HOP_BY_HOP: &[&str] = &[
     "upgrade",
 ];
 
-pub fn app_for(st: &AppState, req: &Request<Body>) -> Option<crate::db::App> {
-    let host = req
+/// Parse `Host`/authority: IPv6 brackets, optional port, trailing dot, case.
+pub fn host_of(req: &Request<Body>) -> String {
+    let raw = req
         .headers()
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+        .unwrap_or("");
+    parse_authority(raw)
+}
+
+fn parse_authority(s: &str) -> String {
+    let s = s.trim();
+    let host = if s.starts_with('[') {
+        match s.find(']') {
+            Some(i) => &s[..=i],
+            None => s,
+        }
+    } else {
+        s.split(':').next().unwrap_or(s)
+    };
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+pub fn app_for(st: &AppState, req: &Request<Body>) -> Option<crate::db::App> {
+    let host = host_of(req);
+    if host.is_empty() {
+        return None;
+    }
     find_app(st, &host)
 }
 
@@ -32,8 +53,14 @@ pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) ->
     match app.kind.as_str() {
         "static" => {
             let dir = app.dir.clone().unwrap_or_default();
+            let method = req.method().clone();
             let path = req.uri().path().to_string();
-            match serve_static(Path::new(&dir), &path).await {
+            let inm = req
+                .headers()
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            match serve_static(Path::new(&dir), &method, &path, inm.as_deref()).await {
                 Some(r) => r,
                 None => landing(&st),
             }
@@ -46,9 +73,6 @@ pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) ->
 }
 
 fn find_app(st: &AppState, host: &str) -> Option<crate::db::App> {
-    if host.is_empty() {
-        return None;
-    }
     if let Ok(Some(app)) = st.db.app_by_domain(host) {
         return Some(app);
     }
@@ -65,7 +89,23 @@ fn find_app(st: &AppState, host: &str) -> Option<crate::db::App> {
     None
 }
 
-async fn forward(st: &AppState, req: Request<Body>, port: u16) -> Response<Body> {
+fn is_upgrade(req: &Request<Body>) -> bool {
+    req.headers()
+        .get(header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("upgrade"))
+        .unwrap_or(false)
+        && req.headers().contains_key(header::UPGRADE)
+}
+
+async fn forward(st: &AppState, mut req: Request<Body>, port: u16) -> Response<Body> {
+    let upgrade = is_upgrade(&req);
+    let client_upgrade = if upgrade {
+        Some(hyper::upgrade::on(&mut req))
+    } else {
+        None
+    };
+
     let (parts, body) = req.into_parts();
     let pq = parts
         .uri
@@ -82,43 +122,80 @@ async fn forward(st: &AppState, req: Request<Body>, port: u16) -> Response<Body>
         let h = out.headers_mut().unwrap();
         for (k, v) in parts.headers.iter() {
             let name = k.as_str();
-            if name == "host" || HOP_BY_HOP.contains(&name) {
+            if name == "host" {
                 continue;
             }
-            h.insert(k.clone(), v.clone());
+            if !upgrade && HOP_BY_HOP.contains(&name) {
+                continue;
+            }
+            h.append(k.clone(), v.clone());
         }
-        if let Some(host) = parts.headers.get(header::HOST).cloned() {
-            h.insert("x-forwarded-host", host);
+        if let Some(hv) = parts.headers.get(header::HOST) {
+            h.entry("x-forwarded-host").or_insert_with(|| hv.clone());
         }
-        if let Some(ip) = parts
+        let peer = parts
             .extensions
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|c| c.0.ip().to_string())
-        {
-            h.insert("x-forwarded-for", HeaderValue::from_str(&ip).unwrap());
+            .map(|c| c.0.ip().to_string());
+        match (parts.headers.get("x-forwarded-for"), peer) {
+            (Some(prev), Some(ip)) => {
+                if let Ok(v) = HeaderValue::from_str(&format!(
+                    "{}, {ip}",
+                    prev.to_str().unwrap_or("")
+                )) {
+                    h.insert("x-forwarded-for", v);
+                }
+            }
+            (None, Some(ip)) => {
+                if let Ok(v) = HeaderValue::from_str(&ip) {
+                    h.insert("x-forwarded-for", v);
+                }
+            }
+            _ => {}
         }
-        h.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+        h.insert("x-forwarded-proto", HeaderValue::from_str(&st.scheme).unwrap());
     }
 
     let client: &Client<_, Body> = &st.client;
-    match client.request(out.body(body).unwrap()).await {
-        Ok(resp) => {
-            let (parts, body) = resp.into_parts();
-            let mut b = Response::builder().status(parts.status);
-            {
-                let h = b.headers_mut().unwrap();
-                for (k, v) in parts.headers.iter() {
-                    if HOP_BY_HOP.contains(&k.as_str()) {
-                        continue;
-                    }
-                    h.insert(k.clone(), v.clone());
+    let resp = match tokio::time::timeout(
+        Duration::from_secs(st.upstream_timeout),
+        client.request(out.body(body).unwrap()),
+    )
+    .await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return bad_gateway(&format!("upstream error: {e}")),
+        Err(_) => return gateway_timeout(),
+    };
+
+    let mut resp = resp;
+    if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
+        let upstream = hyper::upgrade::on(&mut resp);
+        if let Some(downstream) = client_upgrade {
+            tokio::spawn(async move {
+                if let (Ok(down), Ok(up)) = (downstream.await, upstream.await) {
+                    let mut down = TokioIo::new(down);
+                    let mut up = TokioIo::new(up);
+                    let _ = tokio::io::copy_bidirectional(&mut down, &mut up).await;
                 }
-            }
-            b.body(Body::new(body))
-                .unwrap_or_else(|_| bad_gateway("bad upstream response"))
+            });
         }
-        Err(e) => bad_gateway(&format!("upstream error: {e}")),
     }
+
+    let (parts, body) = resp.into_parts();
+    let mut b = Response::builder().status(parts.status);
+    {
+        let h = b.headers_mut().unwrap();
+        let keep_hop = parts.status == StatusCode::SWITCHING_PROTOCOLS;
+        for (k, v) in parts.headers.iter() {
+            if !keep_hop && HOP_BY_HOP.contains(&k.as_str()) {
+                continue;
+            }
+            h.append(k.clone(), v.clone());
+        }
+    }
+    b.body(Body::new(body))
+        .unwrap_or_else(|_| bad_gateway("bad upstream response"))
 }
 
 fn safe_join(root: &Path, url_path: &str) -> Option<PathBuf> {
@@ -133,36 +210,95 @@ fn safe_join(root: &Path, url_path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
-async fn serve_static(root: &Path, url_path: &str) -> Option<Response<Body>> {
+async fn serve_static(
+    root: &Path,
+    method: &Method,
+    url_path: &str,
+    if_none_match: Option<&str>,
+) -> Option<Response<Body>> {
+    if method != Method::GET && method != Method::HEAD {
+        return Some(
+            Response::builder()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .header(header::ALLOW, "GET, HEAD")
+                .body(Body::empty())
+                .unwrap(),
+        );
+    }
     let root = root.canonicalize().ok()?;
     let mut path = match safe_join(&root, url_path) {
         Some(p) => p,
-        None => return Some(Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap()),
+        None => {
+            return Some(
+                Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        }
     };
-    if path.is_dir() {
+    let mut meta = tokio::fs::metadata(&path).await.ok();
+    if meta.as_ref().map(|m| m.is_dir()).unwrap_or(false) {
         path.push("index.html");
+        meta = tokio::fs::metadata(&path).await.ok();
     }
-    if !path.exists() {
-        // SPA fallback.
+    if meta.is_none() {
         let index = root.join("index.html");
-        if url_path != "/" && index.exists() && !url_path.contains('.') {
+        if url_path != "/" && !url_path.contains('.') && tokio::fs::metadata(&index).await.is_ok() {
             path = index;
-        } else {
-            return None;
+            meta = tokio::fs::metadata(&path).await.ok();
         }
     }
+    let meta = meta?;
     let canonical = path.canonicalize().ok()?;
-    if !canonical.starts_with(&root) {
-        return Some(Response::builder().status(StatusCode::FORBIDDEN).body(Body::empty()).unwrap());
+    if !canonical.starts_with(&root) || !meta.is_file() {
+        return Some(
+            Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body(Body::empty())
+                .unwrap(),
+        );
     }
-    let bytes = tokio::fs::read(&canonical).await.ok()?;
+
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let etag = format!("\"{:x}-{:x}\"", meta.len(), mtime);
+    if if_none_match
+        .map(|v| v.split(',').any(|t| t.trim() == etag))
+        .unwrap_or(false)
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, etag)
+            .body(Body::empty())
+            .ok();
+    }
+
     let mime = mime_guess::from_path(&canonical).first_or_octet_stream();
-    Response::builder()
+    let is_html = mime.type_() == mime_guess::mime::TEXT
+        && mime.subtype() == mime_guess::mime::HTML;
+    let cache = if is_html {
+        "no-cache"
+    } else {
+        "public, max-age=300"
+    };
+    let builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime.as_ref())
-        .header(header::CACHE_CONTROL, "public, max-age=60")
-        .body(Body::from(bytes))
-        .ok()
+        .header(header::CACHE_CONTROL, cache)
+        .header(header::ETAG, etag)
+        .header(header::CONTENT_LENGTH, meta.len());
+
+    if method == Method::HEAD {
+        return builder.body(Body::empty()).ok();
+    }
+    let file = tokio::fs::File::open(&canonical).await.ok()?;
+    let stream = ReaderStream::new(file);
+    builder.body(Body::from_stream(stream)).ok()
 }
 
 fn bad_gateway(msg: &str) -> Response<Body> {
@@ -170,6 +306,14 @@ fn bad_gateway(msg: &str) -> Response<Body> {
         .status(StatusCode::BAD_GATEWAY)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Body::from(format!("dok: {msg}\n")))
+        .unwrap()
+}
+
+fn gateway_timeout() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::GATEWAY_TIMEOUT)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from("dok: upstream timeout\n"))
         .unwrap()
 }
 
@@ -201,7 +345,7 @@ pub fn landing(st: &AppState) -> Response<Body> {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_join;
+    use super::{parse_authority, safe_join};
     use std::path::Path;
 
     #[test]
@@ -220,5 +364,14 @@ mod tests {
     fn ignores_dot_segments() {
         let p = safe_join(Path::new("/srv/app"), "/./a/./b").unwrap();
         assert_eq!(p, Path::new("/srv/app/a/b"));
+    }
+
+    #[test]
+    fn parses_hosts() {
+        assert_eq!(parse_authority("Example.COM:8080"), "example.com");
+        assert_eq!(parse_authority("example.com."), "example.com");
+        assert_eq!(parse_authority("[::1]:8080"), "[::1]");
+        assert_eq!(parse_authority("[::1]"), "[::1]");
+        assert_eq!(parse_authority(""), "");
     }
 }

@@ -13,38 +13,58 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
+use tower::ServiceExt;
+
+const MAX_UPLOAD: usize = 512 * 1024 * 1024;
 
 pub fn router(st: AppState) -> Router {
-    let public = Router::new().route("/health", get(health));
-
-    let protected = Router::new()
-        .route("/apps", get(list_apps))
-        .route("/apps/{app}", get(get_app).delete(delete_app))
-        .route("/apps/{app}/deploy", post(deploy_upload))
-        .route("/apps/{app}/logs", get(logs))
-        .route("/apps/{app}/env", put(put_env).get(get_env))
-        .route("/apps/{app}/domain", post(set_domain))
-        .route("/apps/{app}/repo", post(set_repo))
-        .route("/apps/{app}/git-init", post(git_init))
-        .route("/apps/{app}/redeploy", post(redeploy))
-        .route_layer(middleware::from_fn_with_state(st.clone(), require_token));
-
-    Router::new()
-        .nest("/api/v1", public.merge(protected))
-        .route("/api/v1/hooks/github/{app}", post(github_hook))
-        .fallback(proxy_fallback)
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
-        .with_state(st)
+    Router::new().fallback(dispatch).with_state(st)
 }
 
-async fn proxy_fallback(State(st): State<AppState>, req: Request) -> Response {
+async fn dispatch(State(st): State<AppState>, req: Request) -> Response {
+    // A routed app always wins: its own /api/... paths must reach the app.
     if let Some(app) = proxy::app_for(&st, &req) {
         return proxy::serve_app(st, req, app).await;
     }
+
+    let path = req.uri().path().to_string();
+    if path == "/api" || path.starts_with("/api/") {
+        let host = proxy::host_of(&req);
+        if !st.api_hosts.iter().any(|h| h == &host) {
+            return (StatusCode::NOT_FOUND, "not found\n").into_response();
+        }
+        return match api_routes(st).oneshot(req).await {
+            Ok(r) => r,
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal\n").into_response(),
+        };
+    }
+
     if let Some(r) = crate::auth::handle(&st, req).await {
         return r;
     }
     proxy::landing(&st)
+}
+
+fn api_routes(st: AppState) -> Router {
+    let public = Router::new().route("/api/v1/health", get(health));
+
+    let protected = Router::new()
+        .route("/api/v1/apps", get(list_apps))
+        .route("/api/v1/apps/{app}", get(get_app).delete(delete_app))
+        .route("/api/v1/apps/{app}/deploy", post(deploy_upload))
+        .route("/api/v1/apps/{app}/logs", get(logs))
+        .route("/api/v1/apps/{app}/env", put(put_env).get(get_env))
+        .route("/api/v1/apps/{app}/domain", post(set_domain))
+        .route("/api/v1/apps/{app}/repo", post(set_repo))
+        .route("/api/v1/apps/{app}/git-init", post(git_init))
+        .route("/api/v1/apps/{app}/redeploy", post(redeploy))
+        .route_layer(middleware::from_fn_with_state(st.clone(), require_token));
+
+    public
+        .merge(protected)
+        .route("/api/v1/hooks/github/{app}", post(github_hook))
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD))
+        .with_state(st)
 }
 
 async fn health() -> impl IntoResponse {
@@ -123,10 +143,8 @@ async fn deploy_upload(
         Err(e) => return internal(e),
     };
     let (archive2, dir2) = (archive.clone(), dir.clone());
-    let extracted = tokio::task::spawn_blocking(move || {
-        deploy::extract_tarball(&archive2, &dir2)
-    })
-    .await;
+    let extracted =
+        tokio::task::spawn_blocking(move || deploy::extract_tarball(&archive2, &dir2)).await;
 
     let _ = tokio::fs::remove_file(&archive).await;
     match extracted {
@@ -199,8 +217,9 @@ async fn set_domain(
     if !valid_host(&b.domain) {
         return (StatusCode::BAD_REQUEST, "invalid domain\n").into_response();
     }
-    match st.db.set_domain(&app, &b.domain) {
-        Ok(_) => Json(json!({"ok": true, "domain": b.domain})).into_response(),
+    let domain = b.domain.trim_end_matches('.').to_ascii_lowercase();
+    match st.db.set_domain(&app, &domain) {
+        Ok(_) => Json(json!({"ok": true, "domain": domain})).into_response(),
         Err(e) => internal(e),
     }
 }
@@ -274,7 +293,10 @@ fn init_bare_repo(st: &AppState, app: &str) -> anyhow::Result<(String, String)> 
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))?;
     }
-    Ok((dir.to_string_lossy().to_string(), hook_path.to_string_lossy().to_string()))
+    Ok((
+        dir.to_string_lossy().to_string(),
+        hook_path.to_string_lossy().to_string(),
+    ))
 }
 
 async fn redeploy(State(st): State<AppState>, Path(app): Path<String>) -> Response {
@@ -310,7 +332,7 @@ async fn github_hook(
         })
         .unwrap_or_default();
     match expected {
-        Some(exp) if !exp.is_empty() && exp == given => {}
+        Some(exp) if !exp.is_empty() && constant_eq(&exp, &given) => {}
         _ => return (StatusCode::UNAUTHORIZED, "bad hook secret\n").into_response(),
     }
     match deploy_from_repo(&st, &app).await {
@@ -321,6 +343,14 @@ async fn github_hook(
         )
             .into_response(),
     }
+}
+
+fn constant_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 pub async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<DeployOutcome> {
@@ -375,7 +405,7 @@ pub fn hash(t: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_host, valid_name};
+    use super::{constant_eq, valid_host, valid_name};
 
     #[test]
     fn app_names() {
@@ -394,5 +424,12 @@ mod tests {
         assert!(!valid_host("localhost"));
         assert!(!valid_host("bad host"));
         assert!(!valid_host(""));
+    }
+
+    #[test]
+    fn secrets_compare() {
+        assert!(constant_eq("abc", "abc"));
+        assert!(!constant_eq("abc", "abd"));
+        assert!(!constant_eq("abc", "ab"));
     }
 }

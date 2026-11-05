@@ -1,0 +1,19 @@
+[Unit]
+Description=dok deploy platform
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/bin/dok serve \
+  --http-port 8080 \
+  --public-host dok.solta.tech \
+  --dashboard-origin https://dok.solta.tech \
+  --base-domain apps.solta.tech \
+  --data %h/.local/share/dok
+EnvironmentFile=-%h/.config/dok/env
+Environment=RUST_LOG=dok=info
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

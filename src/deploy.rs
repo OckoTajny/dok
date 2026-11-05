@@ -114,13 +114,14 @@ pub async fn deploy_dir(
     let deploy_id = uuid::Uuid::new_v4().simple().to_string();
     st.db.add_deploy(&deploy_id, app, "running")?;
 
+    let prev = st.db.get_app(app)?;
     let conf = read_dok_toml(dir);
     let chosen_domain = domain_hint.clone().or_else(|| conf.domain.clone());
     let dockerfile = conf.dockerfile.clone().unwrap_or_else(|| "Dockerfile".into());
     let has_dockerfile = dir.join(&dockerfile).is_file();
     let mut log = String::new();
 
-    let outcome = if has_dockerfile {
+    let (kind, host_port, container_port) = if has_dockerfile {
         if !docker_available().await {
             let msg = "docker is not available on this host".to_string();
             st.db.finish_deploy(&deploy_id, "failed", &msg)?;
@@ -144,18 +145,19 @@ pub async fn deploy_dir(
         if !out.status.success() {
             st.db.finish_deploy(&deploy_id, "failed", &log)?;
             st.db.set_status(app, "failed")?;
-            bail!("docker build failed");
+            bail!("docker build failed (see `dok logs {app}`)");
         }
 
-        stop_container(app).await;
+        // Start the replacement first; the old container keeps serving until the
+        // new one is running and the DB points at it.
         let host_port = pick_port()?;
-        let name = container_name(app);
+        let temp_name = format!("dok-{app}-{}", &deploy_id[..8]);
         let mut cmd = Command::new("docker");
         cmd.args([
             "run",
             "-d",
             "--name",
-            &name,
+            &temp_name,
             "--restart",
             "unless-stopped",
             "-l",
@@ -171,54 +173,29 @@ pub async fn deploy_dir(
         log.push_str(&String::from_utf8_lossy(&out.stdout));
         log.push_str(&String::from_utf8_lossy(&out.stderr));
         if !out.status.success() {
+            let _ = Command::new("docker")
+                .args(["rm", "-f", &temp_name])
+                .output()
+                .await;
             st.db.finish_deploy(&deploy_id, "failed", &log)?;
             st.db.set_status(app, "failed")?;
-            bail!("docker run failed");
+            bail!("docker run failed (see `dok logs {app}`)");
         }
-
-        let url = st
-            .db
-            .get_app(app)?
-            .and_then(|a| a.domain)
-            .map(|d| format!("https://{d}"))
-            .unwrap_or_else(|| st.public_url.clone());
-
-        DeployOutcome {
-            app: app.to_string(),
-            deploy_id: deploy_id.clone(),
-            kind: "docker".into(),
-            url,
-            host_port: Some(host_port),
-        }
+        ("docker", Some(host_port), Some(container_port))
     } else {
-        let url = chosen_domain
-            .clone()
-            .map(|d| format!("https://{d}"))
-            .unwrap_or_else(|| st.public_url.clone());
-        DeployOutcome {
-            app: app.to_string(),
-            deploy_id: deploy_id.clone(),
-            kind: "static".into(),
-            url,
-            host_port: None,
-        }
+        ("static", None, None)
     };
 
-    // Persist the app row.
+    let url = chosen_domain
+        .clone()
+        .map(|d| format!("https://{d}"))
+        .unwrap_or_else(|| st.public_url.clone());
+
     let row = crate::db::App {
         name: app.to_string(),
-        kind: outcome.kind.clone(),
-        host_port: outcome.host_port,
-        container_port: if outcome.kind == "docker" {
-            Some(
-                port_hint
-                    .or(conf.port)
-                    .or_else(|| exposed_port(dir, &dockerfile))
-                    .unwrap_or(3000),
-            )
-        } else {
-            None
-        },
+        kind: kind.to_string(),
+        host_port,
+        container_port,
         domain: chosen_domain,
         status: "running".into(),
         dir: Some(dir.to_string_lossy().to_string()),
@@ -226,9 +203,37 @@ pub async fn deploy_dir(
         updated_at: crate::db::now(),
     };
     st.db.upsert_app(&row)?;
+
+    // Point traffic at the new container, then retire the old one.
+    if kind == "docker" {
+        let temp_name = format!("dok-{app}-{}", &deploy_id[..8]);
+        stop_container(app).await;
+        let _ = Command::new("docker")
+            .args(["rename", &temp_name, &container_name(app)])
+            .output()
+            .await;
+    } else {
+        // Switched to static serving: no container should keep running.
+        stop_container(app).await;
+    }
+
+    // Drop the previous build tree.
+    if let Some(old) = prev.and_then(|p| p.dir) {
+        let old = PathBuf::from(old);
+        if old != dir && old.starts_with(st.builds_dir()) {
+            let _ = tokio::fs::remove_dir_all(&old).await;
+        }
+    }
+
     st.db.finish_deploy(&deploy_id, "ok", &log)?;
 
-    Ok(outcome)
+    Ok(DeployOutcome {
+        app: app.to_string(),
+        deploy_id,
+        kind: kind.to_string(),
+        url,
+        host_port,
+    })
 }
 
 /// Copy a directory into `<data>/builds/<app>/<deploy_id>` and return it.

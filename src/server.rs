@@ -83,15 +83,18 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     }
 
     // Plain HTTP (API + proxy) and HTTPS with automatic Let's Encrypt certificates.
+    let http_listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("cannot bind HTTP port {addr}"))?;
     let http_st = st.clone();
     let http = tokio::spawn(async move {
-        if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
-            axum::serve(
-                listener,
-                crate::api::router(http_st).into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .ok();
+        if let Err(e) = axum::serve(
+            http_listener,
+            crate::api::router(http_st).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
+            tracing::error!("http server stopped: {e}");
         }
     });
 
@@ -103,6 +106,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             }
         }
     }
+    let domain_count = domains.len();
     let mut acme = rustls_acme::AcmeConfig::new(domains)
         .contact(args.acme_email.iter().map(|e| format!("mailto:{e}")))
         .cache(rustls_acme::caches::DirCache::new(data.join("acme")))
@@ -120,17 +124,27 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         }
     });
 
+    let tls_std = std::net::TcpListener::bind(("0.0.0.0", args.tls_port))
+        .with_context(|| format!("cannot bind TLS port {}", args.tls_port))?;
+    tls_std.set_nonblocking(true)?;
+    tracing::info!(
+        "ACME: {} ({} domain(s))",
+        if args.acme_prod { "production" } else { "staging" },
+        domain_count
+    );
     let https_st = st.clone();
     let https = tokio::spawn(async move {
-        let tls_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.tls_port));
-        axum_server::bind(tls_addr)
+        if let Err(e) = axum_server::from_tcp(tls_std)
+            .expect("tls listener")
             .acceptor(acceptor)
             .serve(
                 crate::api::router(https_st)
                     .into_make_service_with_connect_info::<SocketAddr>(),
             )
             .await
-            .ok();
+        {
+            tracing::error!("https server stopped: {e}");
+        }
     });
 
     let _ = tokio::join!(http, https);
