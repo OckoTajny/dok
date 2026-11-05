@@ -295,7 +295,7 @@ pub fn page_join_invalid() -> Response<Body> {
         StatusCode::GONE,
         page(
             "Invite not valid",
-            "<main class=errpage><div class=brand>dok</div><div class=code>Gone</div>\
+            "<main class=errpage><div class=brand>dok</div><div class=code>Invite link</div>\
 <h1>This invite link is not valid</h1><p class=muted>It may have expired, already been used, or been revoked. Ask a team owner or admin for a new link.</p>\
 <p><a class=btn href=/>Back to sign in</a></p></main>",
         ),
@@ -305,7 +305,16 @@ pub fn page_join_invalid() -> Response<Body> {
 pub fn page_not_configured(st: &AppState) -> Response<Body> {
     let origin = url::Url::parse(&st.public_url)
         .ok()
-        .map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or("localhost")))
+        .map(|u| {
+            let host = st
+                .dashboard_origin_host
+                .clone()
+                .unwrap_or_else(|| u.host_str().unwrap_or("localhost").to_string());
+            match u.port() {
+                Some(p) => format!("{}://{host}:{p}", u.scheme()),
+                None => format!("{}://{host}", u.scheme()),
+            }
+        })
         .unwrap_or_else(|| "http://localhost:8080".into());
     let msg = format!(
         "The dashboard is not configured. Start dok with a hostname WebAuthn can use, for example:<br>\
@@ -660,13 +669,23 @@ fn env_badge(env: &str) -> String {
     format!("<span class=\"badge {cls}\">{}</span>", esc(env))
 }
 
-fn domain_of(st: &AppState, app: &App) -> String {
+fn public_url_for(st: &AppState, app: &App) -> Option<String> {
     app.domain
-        .clone()
+        .as_ref()
+        .map(|d| format!("{}://{}", st.scheme, d))
         .or_else(|| {
             st.base_domain
                 .as_ref()
-                .map(|b| format!("{}.{}", app.name, b))
+                .map(|b| format!("{}://{}.{}", st.scheme, app.name, b))
+        })
+}
+
+fn domain_of(st: &AppState, app: &App) -> String {
+    public_url_for(st, app)
+        .map(|u| {
+            u.trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .to_string()
         })
         .unwrap_or_else(|| "no public host configured".into())
 }
@@ -832,6 +851,16 @@ fn render_dashboard(
             .as_deref()
             .map(|u| u.trim_start_matches("https://").trim_start_matches("http://"))
             .unwrap_or("not routed yet");
+        let host_html = url
+            .as_deref()
+            .map(|u| {
+                format!(
+                    "<a href=\"{}\" target=_blank rel=noreferrer>{}</a>",
+                    esc(u),
+                    esc(host)
+                )
+            })
+            .unwrap_or_else(|| esc(host));
         let (badge, meta) = match latest {
             Some(d) => {
                 let short: String = d.id.chars().take(8).collect();
@@ -887,7 +916,7 @@ fn render_dashboard(
             badge = badge,
             prod = prod,
             alarm = alarm,
-            host = esc(host),
+            host = host_html,
             meta = meta
         ));
     }
@@ -1475,12 +1504,29 @@ liveCtl=null;b.textContent='Live stream';}}\
         }
     }
 
+    let open_btn = public_url_for(st, app)
+        .map(|u| {
+            format!(
+                "<a class=btn href=\"{}\" target=_blank rel=noreferrer>Open app</a>",
+                esc(&u)
+            )
+        })
+        .unwrap_or_default();
+    let domain_html = match public_url_for(st, app) {
+        Some(url) => format!(
+            "<a href=\"{}\" target=_blank rel=noreferrer>{}</a>",
+            esc(&url),
+            esc(&domain_of(st, app))
+        ),
+        None => esc(&domain_of(st, app)),
+    };
     let main = format!(
-        "<div class=head><div class=\"row between\"><div><h1>{n}</h1><div class=muted>{domain}</div></div><div class=row>{badge}{prod}</div></div></div>\
+        "<div class=head><div class=\"row between\"><div><h1>{n}</h1><div class=muted>{domain}</div></div><div class=row>{open_btn}{badge}{prod}</div></div></div>\
 {tabs}{content}",
         n = esc(&app.name),
-        domain = esc(&domain_of(st, app)),
+        domain = domain_html,
         badge = status_badge(&app.status),
+        open_btn = open_btn,
         prod = app
             .production_deploy
             .as_ref()
