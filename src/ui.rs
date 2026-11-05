@@ -331,11 +331,6 @@ fn sidebar(
         ));
         s.push_str("<div class=side-title>Projects</div>");
         let mut apps = db.apps_for_team(&team.id).unwrap_or_default();
-        for a in db.list_apps().unwrap_or_default() {
-            if a.team_id.is_none() && !apps.iter().any(|x| x.name == a.name) {
-                apps.push(a);
-            }
-        }
         apps.sort_by(|a, b| a.name.cmp(&b.name));
         if apps.is_empty() {
             s.push_str("<span class=muted style=\"padding-left:8px\">No projects yet</span>");
@@ -392,38 +387,27 @@ fn team_and_apps(
         Some(t) => db.apps_for_team(&t.id).unwrap_or_default(),
         None => Vec::new(),
     };
-    for a in db.list_apps().unwrap_or_default() {
-        if a.team_id.is_none() && !apps.iter().any(|x| x.name == a.name) {
-            apps.push(a);
-        }
-    }
     apps.sort_by(|a, b| a.name.cmp(&b.name));
     (teams, selected, apps)
 }
 
 fn project_for(db: &Db, user: &User, name: &str) -> Option<App> {
     let app = db.get_app(name).ok().flatten()?;
-    match &app.team_id {
-        None => Some(app),
-        Some(tid) => {
-            let role = db.role(tid, &user.id).ok().flatten();
-            if crate::db::can_read(role.as_deref()) {
-                Some(app)
-            } else {
-                None
-            }
-        }
+    let tid = app.team_id.as_deref()?;
+    let role = db.role(tid, &user.id).ok().flatten();
+    if crate::db::can_read(role.as_deref()) {
+        Some(app)
+    } else {
+        None
     }
 }
 
 fn can_write(db: &Db, user: &User, app: &App) -> bool {
-    match &app.team_id {
-        None => true,
-        Some(tid) => {
-            let role = db.role(tid, &user.id).ok().flatten();
-            crate::db::can_write(role.as_deref())
-        }
-    }
+    let Some(tid) = app.team_id.as_deref() else {
+        return false;
+    };
+    let role = db.role(tid, &user.id).ok().flatten();
+    crate::db::can_write(role.as_deref())
 }
 
 fn render_dashboard(st: &AppState, user: &User, session: &Session, q: &HashMap<String, String>) -> Response<Body> {
@@ -560,18 +544,95 @@ async fn render_project(
 
     match tab {
         "logs" => {
-            let env = q.get("env").cloned().unwrap_or_else(|| "production".into());
-            let build = st.db.last_deploy_log(&app.name).ok().flatten().unwrap_or_default();
-            let runtime = crate::deploy::container_logs(&app.name, &env, 200).await;
+            let deploys = st.db.deploys(&app.name, 20).unwrap_or_default();
+            let selected = q
+                .get("deploy")
+                .and_then(|id| deploys.iter().find(|d| &d.id == id));
+            let env = selected
+                .map(|d| d.env.clone())
+                .or_else(|| q.get("env").cloned())
+                .unwrap_or_else(|| "production".into());
+            let build = match selected {
+                Some(d) => st
+                    .db
+                    .deploy_log(&app.name, &d.id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+                None => st
+                    .db
+                    .last_deploy_log(&app.name)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+            };
+            let kind = selected
+                .map(|d| if d.image.is_some() { "docker" } else { "static" })
+                .unwrap_or(app.kind.as_str());
+            let container = selected.and_then(|d| d.container.clone());
+            let runtime = if kind == "docker" {
+                crate::deploy::container_logs(
+                    &app.name,
+                    &env,
+                    container.as_deref(),
+                    200,
+                )
+                .await
+            } else {
+                "no container (static app)".to_string()
+            };
+            let stats = crate::deploy::container_stats(&app.name, &env, container.as_deref()).await;
+            let cpu = stats["cpu"].as_str().unwrap_or("n/a");
+            let mem = stats["memory"].as_str().unwrap_or("n/a");
+            let stats_note = stats["note"].as_str().unwrap_or("");
+            let mut selector = String::from("<option value=\"\">latest deploy</option>");
+            for d in &deploys {
+                let short = &d.id[..d.id.len().min(8)];
+                selector.push_str(&format!(
+                    "<option value=\"{id}\"{sel}>{} · {} · {}</option>",
+                    short,
+                    d.env,
+                    d.status,
+                    id = esc(&d.id),
+                    sel = if selected.map(|x| x.id == d.id).unwrap_or(false) { " selected" } else { "" }
+                ));
+            }
+            let mut access = String::new();
+            for r in st.db.access_logs(&app.name, 50).unwrap_or_default() {
+                access.push_str(&format!(
+                    "<tr><td class=muted>{}</td><td><code>{}</code> {}</td><td>{}</td><td class=muted>{} ms</td><td class=muted>{}</td></tr>",
+                    esc(&age(r.ts)),
+                    esc(&r.method),
+                    esc(&r.path),
+                    esc(&r.status.to_string()),
+                    esc(&r.latency_ms.to_string()),
+                    esc(r.ip.as_deref().unwrap_or("-"))
+                ));
+            }
+            if access.is_empty() {
+                access.push_str("<tr><td colspan=5 class=muted>No proxy requests recorded yet.</td></tr>");
+            }
+            let deploy_q = selected
+                .map(|d| format!("&deploy={}", d.id))
+                .unwrap_or_default();
             content.push_str(&format!(
-                "<div class=\"row between\"><h2 style=\"margin-top:18px\">Logs · {env}</h2>\
-<a class=btn href=\"/api/v1/projects/{app}/logs/stream?env={env}\">Live stream API</a></div>\
-<div class=\"muted small\">The stream endpoint needs your API token (Bearer). In a terminal: <code>dok logs {app} -f</code>.</div>\
-<h3>Build</h3><pre class=log>{build}</pre><h3>Runtime</h3><pre class=log>{runtime}</pre>",
-                env = esc(&env),
+                "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Logs</h2>\
+<a class=\"btn\" href=\"/dashboard/stream/{app}?env={env}{deploy_q}\">Live stream</a></div>\
+<form class=\"row\" method=get action=\"/dashboard/project/{app}/logs\" style=\"margin:10px 0 16px\">\
+<select name=deploy style=\"max-width:360px\">{selector}</select><button class=\"btn\">Show build</button></form>\
+<div class=\"muted small\">Runtime: CPU {cpu} · memory {mem}{note}</div>\
+<h3>Build log</h3><pre class=log>{build}</pre><h3>Runtime log</h3><pre class=log>{runtime}</pre>\
+<h3>Recent requests</h3><table><thead><tr><th>When</th><th>Request</th><th>Status</th><th>Latency</th><th>IP</th></tr></thead><tbody>{access}</tbody></table>",
                 app = esc(&app.name),
+                env = esc(&env),
+                deploy_q = deploy_q,
+                selector = selector,
+                cpu = esc(cpu),
+                mem = esc(mem),
+                note = if stats_note.is_empty() { String::new() } else { format!(" ({})", esc(stats_note)) },
                 build = esc(&build),
-                runtime = esc(&runtime)
+                runtime = esc(&runtime),
+                access = access
             ));
         }
         "env" => {
@@ -736,10 +797,27 @@ async fn render_project(
                         csrf
                     ));
                 }
+                let mut meta = esc(d.author.as_deref().unwrap_or("token"));
+                if let Some(sha) = &d.commit_sha {
+                    let s8 = &sha[..sha.len().min(7)];
+                    let msg = d.commit_message.as_deref().unwrap_or("");
+                    meta.push_str(&format!(
+                        " · <code>{}</code> {}",
+                        esc(s8),
+                        esc(&msg.chars().take(60).collect::<String>())
+                    ));
+                }
+                if let Some(url) = &d.url {
+                    meta.push_str(&format!(
+                        "<br><a class=small href=\"{}\" target=_blank rel=noreferrer>{}</a>",
+                        esc(url),
+                        esc(url.trim_start_matches("https://").trim_start_matches("http://"))
+                    ));
+                }
                 rows.push_str(&format!(
-                    "<tr><td><code>{short}</code><div class=\"muted small\">{author}</div></td><td>{env}</td><td>{status}</td><td class=muted>{age}</td><td style=\"text-align:right\">{actions}</td></tr>",
+                    "<tr><td><code>{short}</code><div class=\"muted small\">{meta}</div></td><td>{env}</td><td>{status}</td><td class=muted>{age}</td><td style=\"text-align:right\">{actions}</td></tr>",
                     short = esc(short),
-                    author = esc(d.author.as_deref().unwrap_or("token")),
+                    meta = meta,
                     env = env_badge(&d.env),
                     status = status_badge(&d.status),
                     age = esc(&age(d.created_at)),
@@ -823,34 +901,23 @@ fn render_team(
             )
         })
         .unwrap_or_default();
-    let can_invite = can_write(
-        &st.db,
-        user,
-        &App {
-            name: String::new(),
-            team_id: Some(team.id.clone()),
-            kind: String::new(),
-            image: None,
-            memory_mb: None,
-            cpus: None,
-            host_port: None,
-            container_port: None,
-            domain: None,
-            status: String::new(),
-            dir: None,
-            repo: None,
-            production_deploy: None,
-            framework: None,
-            updated_at: 0,
-        },
-    );
+    let actor_role = st.db.role(&team.id, &user.id).ok().flatten();
+    let can_invite = crate::db::can_write(actor_role.as_deref());
+    let mut role_options = String::new();
+    for r in ["member", "viewer"] {
+        role_options.push_str(&format!("<option>{r}</option>"));
+    }
+    if actor_role.as_deref() == Some("owner") {
+        role_options.push_str("<option>admin</option><option>owner</option>");
+    }
     let invite_form = if can_invite {
         format!(
-            "<h2>Invite a teammate</h2><form class=\"row\" method=post action=/dashboard/team/invite style=\"max-width:520px\">{}<input type=hidden name=team value=\"{}\">\
-<select name=role style=\"max-width:160px\"><option>member</option><option>admin</option><option>viewer</option></select>\
+            "<h2>Invite a teammate</h2><form class=\"row\" method=post action=/dashboard/team/invite style=\"max-width:520px\">{csrf}<input type=hidden name=team value=\"{slug}\">\
+<select name=role style=\"max-width:160px\">{options}</select>\
 <button class=\"btn primary\">Create invite link</button></form>",
-            csrf_input(session),
-            esc(&team.slug)
+            csrf = csrf_input(session),
+            slug = esc(&team.slug),
+            options = role_options
         )
     } else {
         "<p class=muted>Only owners and admins can invite members.</p>".into()
@@ -941,9 +1008,12 @@ fn create_project(
                 crate::db::can_write(role.as_deref())
             })
     };
+    let Some(team) = team else {
+        return Err(forbidden("you are not an owner or admin of any team"));
+    };
     let app = App {
         name: name.clone(),
-        team_id: team.map(|t| t.id),
+        team_id: Some(team.id),
         kind: "static".into(),
         image: None,
         memory_mb: None,
@@ -999,6 +1069,35 @@ pub async fn handle(
     let user = session.user.clone();
 
     if method == Method::GET {
+        if let Some(rest) = path.strip_prefix("/dashboard/stream/") {
+            let app_name = rest.split('/').next().unwrap_or("");
+            let Some(app) = project_for(&st.db, &user, app_name) else {
+                return Some(not_found("project not found in your teams"));
+            };
+            let deploy = query
+                .get("deploy")
+                .and_then(|id| st.db.deploy(&app.name, id).ok().flatten());
+            let env = deploy
+                .as_ref()
+                .map(|d| d.env.clone())
+                .or_else(|| query.get("env").cloned())
+                .unwrap_or_else(|| "production".into());
+            let kind = deploy
+                .as_ref()
+                .map(|d| if d.image.is_some() { "docker" } else { "static" })
+                .unwrap_or(app.kind.as_str());
+            let container = deploy.as_ref().and_then(|d| d.container.clone());
+            return Some(
+                crate::api::log_stream_response(
+                    st,
+                    &app.name,
+                    &env,
+                    kind,
+                    container.as_deref(),
+                )
+                .await,
+            );
+        }
         if path == "/dashboard" || path == "/dashboard/" {
             return Some(render_dashboard(st, &user, &session, &query));
         }
@@ -1075,9 +1174,12 @@ pub async fn handle(
             "admin" | "viewer" | "member" => role,
             _ => "member".into(),
         };
-        let allowed = crate::db::can_write(st.db.role(&team.id, &user.id).ok().flatten().as_deref());
-        if !allowed {
+        let actor_role = st.db.role(&team.id, &user.id).ok().flatten();
+        if !crate::db::can_write(actor_role.as_deref()) {
             return Some(forbidden("only owners and admins can invite"));
+        }
+        if !crate::db::can_grant(actor_role.as_deref(), &role) {
+            return Some(forbidden("you cannot grant that role"));
         }
         return match st.db.create_invite(&team.id, &role, 7 * 86400) {
             Ok(token) => {
@@ -1160,6 +1262,11 @@ pub async fn handle(
                 let _ = st.db.delete_env(&app.name, &env, &key);
             } else {
                 let vars = parse_vars(form.get("vars").map(String::as_str).unwrap_or(""));
+                for (k, _, _) in st.db.env(&app.name, &env).unwrap_or_default() {
+                    if !vars.iter().any(|(nk, _, _)| nk == &k) {
+                        let _ = st.db.delete_env(&app.name, &env, &k);
+                    }
+                }
                 let _ = st.db.put_env(&app.name, &env, &vars);
             }
             Some(auth::redirect(&format!(
@@ -1170,8 +1277,11 @@ pub async fn handle(
         "domains" => {
             if tail == "remove" {
                 let host = form.get("host").cloned().unwrap_or_default();
-                let _ = st.db.remove_domain(&host);
-                st.sync_traefik();
+                match st.db.remove_domain(&app.name, &host) {
+                    Ok(0) => return Some(not_found("domain not found on this project")),
+                    Ok(_) => st.sync_traefik(),
+                    Err(e) => return Some(server_error(&e.to_string())),
+                }
             } else {
                 let host = form
                     .get("host")
@@ -1179,6 +1289,14 @@ pub async fn handle(
                     .unwrap_or_default();
                 if !crate::api::valid_host(&host) {
                     return Some(not_found("invalid domain (needs a dot)"));
+                }
+                if st.reserved_host(&host) || st.is_base_subdomain(&host) {
+                    return Some(forbidden("host is reserved for the dashboard"));
+                }
+                if let Ok(Some(other)) = st.db.domain_owner(&host) {
+                    if other != app.name {
+                        return Some(forbidden("domain belongs to another project"));
+                    }
                 }
                 let _ = st.db.add_domain(&app.name, &host);
                 st.sync_traefik();
@@ -1196,7 +1314,7 @@ pub async fn handle(
                     if let Some((k, v)) = line.split_once(':') {
                         let k = k.trim();
                         let v = v.trim();
-                        if !k.is_empty() && !v.is_empty() {
+                        if crate::api::safe_header(k) && !v.is_empty() {
                             ps.headers.push((k.to_string(), v.to_string()));
                         }
                     }
@@ -1254,6 +1372,7 @@ pub async fn handle(
         "delete" => {
             crate::deploy::stop_container(&app.name, "production").await;
             crate::deploy::stop_container(&app.name, "preview").await;
+            crate::deploy::stop_all_previews(&app.name).await;
             let _ = tokio::fs::remove_dir_all(st.builds_dir().join(&app.name)).await;
             if let Err(e) = st.db.delete_app(&app.name) {
                 return Some(server_error(&e.to_string()));
@@ -1280,6 +1399,71 @@ mod tests {
                 ("C".into(), "".into(), false),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn dashboard_posts_require_csrf() {
+        let path = std::env::temp_dir().join(format!("dok-ui-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::db::Db::open(&path).unwrap();
+        let u = db.create_user("ui@example.com", "UI").unwrap();
+        let t = db.create_team("UI", "ui", &u.id).unwrap();
+        db.upsert_app(&crate::db::App {
+            name: "app".into(),
+            team_id: Some(t.id),
+            kind: "static".into(),
+            image: None,
+            memory_mb: None,
+            cpus: None,
+            host_port: None,
+            container_port: None,
+            domain: None,
+            status: "new".into(),
+            dir: None,
+            repo: None,
+            production_deploy: None,
+            framework: None,
+            updated_at: crate::db::now(),
+        })
+        .unwrap();
+        let data = std::env::temp_dir().join(format!("dok-ui-data-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data).unwrap();
+        let st = crate::state::AppState::new(db, data, None, "http://localhost".into());
+        let auth = crate::auth::AuthState::new(url::Url::parse("http://localhost").unwrap()).unwrap();
+        let make = |csrf: &str| {
+            axum::http::Request::builder()
+                .method(axum::http::Method::POST)
+                .uri("/dashboard/settings/app")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(axum::body::Body::from(format!(
+                    "csrf={csrf}&repo=https://example.com/r.git"
+                )))
+                .unwrap()
+        };
+        let bad = super::handle(
+            &st,
+            &auth,
+            make("nope"),
+            Some(crate::auth::Session {
+                user: u.clone(),
+                csrf: "good".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(bad.status(), axum::http::StatusCode::FORBIDDEN);
+        let good = super::handle(
+            &st,
+            &auth,
+            make("good"),
+            Some(crate::auth::Session {
+                user: u.clone(),
+                csrf: "good".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(good.status(), axum::http::StatusCode::SEE_OTHER);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

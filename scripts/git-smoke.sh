@@ -23,6 +23,7 @@ for _ in $(seq 1 50); do
   curl -fsS "$DOK_SERVER/api/v1/health" >/dev/null 2>&1 && break
   sleep 0.1
 done
+python3 scripts/seed-user.py "$DATA" smoke@example.com Smoke "$DOK_TOKEN" >/dev/null
 
 # No prior `dok push`: git-init must create the app.
 "$BIN" git-init "$APP" >/dev/null

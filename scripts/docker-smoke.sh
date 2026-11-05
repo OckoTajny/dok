@@ -33,6 +33,7 @@ for _ in $(seq 1 50); do
   curl -fsS "$DOK_SERVER/api/v1/health" >/dev/null 2>&1 && break
   sleep 0.1
 done
+python3 scripts/seed-user.py "$DATA" smoke@example.com Smoke "$DOK_TOKEN" >/dev/null
 
 "$BIN" push "$APP" --app "$APPNAME" --port 8000 >/dev/null
 

@@ -3,9 +3,28 @@ use axum::body::Body;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Tiny in-memory fixed-window limiter (per key, e.g. IP + bucket).
+#[derive(Clone, Default)]
+pub struct RateLimiter(Arc<Mutex<HashMap<String, Vec<i64>>>>);
+
+impl RateLimiter {
+    pub fn allow(&self, key: &str, limit: usize, window_secs: i64) -> bool {
+        let now = crate::db::now();
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let hits = map.entry(key.to_string()).or_default();
+        hits.retain(|t| *t > now - window_secs);
+        if hits.len() >= limit {
+            return false;
+        }
+        hits.push(now);
+        true
+    }
+}
 
 pub type HttpClient = Client<HttpConnector, Body>;
 
@@ -26,6 +45,8 @@ pub struct AppState {
     pub auth: Option<Arc<crate::auth::AuthState>>,
     /// Optional Traefik file-provider directory for per-app routers.
     pub traefik_dir: Option<PathBuf>,
+    pub rate: RateLimiter,
+    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
 impl AppState {
@@ -50,6 +71,8 @@ impl AppState {
             upstream_timeout: 60,
             auth: None,
             traefik_dir: None,
+            rate: RateLimiter::default(),
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -63,6 +86,24 @@ impl AppState {
         self
     }
 
+    pub fn with_trusted_proxies(mut self, nets: Vec<ipnet::IpNet>) -> Self {
+        self.trusted_proxies = nets;
+        self
+    }
+
+    /// Only loopback/private peers (or explicitly configured CIDRs) may set
+    /// X-Forwarded-Proto.
+    pub fn trusted_peer(&self, ip: &str) -> bool {
+        let Ok(addr) = ip.parse::<std::net::IpAddr>() else {
+            return false;
+        };
+        let builtin = match addr {
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),
+        };
+        builtin || self.trusted_proxies.iter().any(|n| n.contains(&addr))
+    }
+
     /// Rewrite the Traefik routers for every app that has a hostname.
     /// Traefik only requests a certificate when it can see the exact Host().
     pub fn sync_traefik(&self) {
@@ -70,15 +111,29 @@ impl AppState {
         if std::fs::create_dir_all(dir).is_err() {
             return;
         }
-        let apps = self.db.list_apps().unwrap_or_default();
+        let mut hosts = std::collections::HashSet::new();
+        for a in self.db.list_apps().unwrap_or_default() {
+            if let Some(d) = &a.domain {
+                hosts.insert(d.clone());
+            }
+            if let Some(b) = &self.base_domain {
+                hosts.insert(format!("{}.{}", a.name, b));
+            }
+            for h in self.db.domains_for(&a.name).unwrap_or_default() {
+                hosts.insert(h);
+            }
+        }
+        for (h, _) in self.db.domain_hosts().unwrap_or_default() {
+            hosts.insert(h);
+        }
         let mut routers = String::new();
-        for a in apps {
-            let host = match (&a.domain, &self.base_domain) {
-                (Some(d), _) => d.clone(),
-                (None, Some(b)) => format!("{}.{}", a.name, b),
-                (None, None) => continue,
-            };
-            let id = a.name.replace(['.', '_'], "-");
+        let mut hosts: Vec<_> = hosts.into_iter().collect();
+        hosts.sort();
+        for host in hosts {
+            let id: String = host
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
             routers.push_str(&format!(
                 "    dok-app-{id}-https:\n      entryPoints: [https]\n      rule: Host(`{host}`)\n      service: dok\n      tls:\n        certResolver: letsencrypt\n    dok-app-{id}-http:\n      entryPoints: [http]\n      rule: Host(`{host}`)\n      middlewares: [dok-redirect-https]\n      service: dok\n"
             ));
@@ -108,6 +163,42 @@ impl AppState {
             Ok(file)
         })
         .await?
+    }
+
+    /// Hostname that serves the dashboard/API; never routed to an app.
+    pub fn dashboard_host(&self) -> Option<String> {
+        url::Url::parse(&self.public_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_ascii_lowercase()))
+    }
+
+    /// True when `host` belongs to the control plane, not to user projects.
+    pub fn reserved_host(&self, host: &str) -> bool {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        if host.is_empty() {
+            return false;
+        }
+        if Some(host.as_str()) == self.dashboard_host().as_deref() {
+            return true;
+        }
+        if let Some(base) = &self.base_domain {
+            let base = base.trim_end_matches('.').to_ascii_lowercase();
+            if host == base {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn is_base_subdomain(&self, host: &str) -> bool {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        match &self.base_domain {
+            Some(base) => {
+                let base = base.trim_end_matches('.').to_ascii_lowercase();
+                host.ends_with(&format!(".{base}"))
+            }
+            None => false,
+        }
     }
 
     pub fn builds_dir(&self) -> PathBuf {

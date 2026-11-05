@@ -27,9 +27,11 @@ cleanup() {
 trap cleanup EXIT
 
 start
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" push examples/hello --app hello >/dev/null
 
 node scripts/e2e-register.js "$URL" "$STATE"
+
+# Setup claims the bootstrap token, so the CLI works only after registration.
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" push examples/hello --app hello >/dev/null
 
 kill "$PID"
 wait "$PID" 2>/dev/null || true

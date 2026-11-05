@@ -42,15 +42,21 @@ fn parse_authority(s: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
-pub fn app_for(st: &AppState, req: &Request<Body>) -> Option<crate::db::App> {
+#[derive(Clone)]
+pub struct Route {
+    pub app: crate::db::App,
+    pub deploy: Option<crate::db::Deploy>,
+}
+
+pub fn app_for(st: &AppState, req: &Request<Body>) -> Option<Route> {
     let host = host_of(req);
     if host.is_empty() {
         return None;
     }
-    find_app(st, &host)
+    find_route(st, &host)
 }
 
-pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) -> Response<Body> {
+pub async fn serve_app(st: AppState, req: Request<Body>, route: Route) -> Response<Body> {
     let started = Instant::now();
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
@@ -59,13 +65,25 @@ pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) ->
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|c| c.0.ip().to_string());
     let host = host_of(&req);
+    let app = route.app.clone();
+    let deploy = route.deploy.clone();
     let settings = st.db.proxy_settings(&app.name);
 
-    if let Some(r) = redirect_for(&st, &req, &host, &settings) {
+    if let Some(r) = redirect_for(&st, &req, &host, &settings, ip.as_deref()) {
         log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
         return apply_headers(r, &settings);
     }
     if let Some(r) = basic_auth_challenge(&req, &settings) {
+        // Only failed attempts count towards the limiter.
+        if !st.rate.allow(&format!("basic:{}", ip.as_deref().unwrap_or("unknown")), 10, 60) {
+            let limited = Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Body::from("dok: too many authentication attempts\n"))
+                .unwrap();
+            log_request(&st, &app.name, &method, &path, &limited, started, ip.as_deref());
+            return apply_headers(limited, &settings);
+        }
         log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
         return apply_headers(r, &settings);
     }
@@ -88,9 +106,15 @@ pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) ->
         }
     }
 
-    let resp = match app.kind.as_str() {
+    let kind = deploy
+        .as_ref()
+        .map(|d| if d.image.is_some() { "docker" } else { "static" })
+        .unwrap_or(app.kind.as_str());
+    let dir_override = deploy.as_ref().and_then(|d| d.dir.clone());
+    let port_override = deploy.as_ref().and_then(|d| d.host_port);
+    let resp = match kind {
         "static" => {
-            let dir = app.dir.clone().unwrap_or_default();
+            let dir = dir_override.clone().or_else(|| app.dir.clone()).unwrap_or_default();
             let method = req.method().clone();
             let path = req.uri().path().to_string();
             let inm = req
@@ -118,7 +142,7 @@ pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) ->
                 None => landing(&st),
             }
         }
-        _ => match app.host_port {
+        _ => match port_override.or(app.host_port) {
             Some(port) => forward(&st, req, port).await,
             None => bad_gateway("app has no running container"),
         },
@@ -151,17 +175,19 @@ fn redirect_for(
     req: &Request<Body>,
     host: &str,
     settings: &crate::db::ProxySettings,
+    peer: Option<&str>,
 ) -> Option<Response<Body>> {
     if host.is_empty() {
         return None;
     }
     let https = st.scheme == "https";
-    let forwarded_https = req
-        .headers()
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.eq_ignore_ascii_case("https"))
-        .unwrap_or(false);
+    let forwarded_https = peer.map(|p| st.trusted_peer(p)).unwrap_or(false)
+        && req
+            .headers()
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("https"))
+            .unwrap_or(false);
     let local = host == "localhost"
         || host == "127.0.0.1"
         || host == "[::1]"
@@ -218,7 +244,7 @@ fn basic_auth_challenge(
         .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
         .and_then(|b| String::from_utf8(b).ok())
         .and_then(|s| s.split_once(':').map(|(u, p)| (u.to_string(), p.to_string())))
-        .map(|(u, p)| u == user && crate::db::verify_password(hash, &p))
+        .map(|(u, p)| ct_eq(u.as_bytes(), user.as_bytes()) && crate::db::verify_password(hash, &p))
         .unwrap_or(false);
     if ok {
         return None;
@@ -233,8 +259,15 @@ fn basic_auth_challenge(
     )
 }
 
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 fn apply_headers(mut resp: Response<Body>, settings: &crate::db::ProxySettings) -> Response<Body> {
     for (name, value) in &settings.headers {
+        if !crate::api::safe_header(name) {
+            continue;
+        }
         if let (Ok(n), Ok(v)) = (
             HeaderName::from_bytes(name.as_bytes()),
             HeaderValue::from_str(value),
@@ -245,16 +278,46 @@ fn apply_headers(mut resp: Response<Body>, settings: &crate::db::ProxySettings) 
     resp
 }
 
+#[cfg(test)]
 fn find_app(st: &AppState, host: &str) -> Option<crate::db::App> {
+    find_route(st, host)
+        .filter(|r| r.deploy.is_none())
+        .map(|r| r.app)
+}
+
+fn find_route(st: &AppState, host: &str) -> Option<Route> {
+    // The dashboard host, the base apex and every `<anything>.<base>` name is
+    // reserved for the control plane and must never resolve to user code.
+    if st.reserved_host(host) {
+        return None;
+    }
     if let Ok(Some(app)) = st.db.app_by_domain(host) {
-        return Some(app);
+        return Some(Route { app, deploy: None });
     }
     if let Some(base) = &st.base_domain {
         let base = base.to_ascii_lowercase();
         if let Some(prefix) = host.strip_suffix(&format!(".{base}")) {
-            if !prefix.is_empty() && !prefix.contains('.') {
-                if let Ok(Some(app)) = st.db.get_app(prefix) {
-                    return Some(app);
+            if prefix.is_empty() || prefix.contains('.') {
+                return None;
+            }
+            // `<app>-<deploy8>` points at one preview/earlier artifact.
+            if let Some((candidate, short)) = prefix.rsplit_once('-') {
+                if short.len() == 8 && short.chars().all(|c| c.is_ascii_hexdigit()) {
+                    if let Ok(Some(app)) = st.db.get_app(candidate) {
+                        if let Ok(Some(deploy)) = st.db.deploy_by_prefix(&app.name, short) {
+                            return Some(Route {
+                                app,
+                                deploy: Some(deploy),
+                            });
+                        }
+                    }
+                }
+            }
+            if let Ok(Some(app)) = st.db.get_app(prefix) {
+                // A project with an explicit custom domain is only served
+                // on that domain, never on its default subdomain.
+                if app.domain.is_none() {
+                    return Some(Route { app, deploy: None });
                 }
             }
         }
@@ -296,6 +359,10 @@ async fn forward(st: &AppState, mut req: Request<Body>, port: u16) -> Response<B
         for (k, v) in parts.headers.iter() {
             let name = k.as_str();
             if !upgrade && HOP_BY_HOP.contains(&name) {
+                continue;
+            }
+            // The control-plane session must never reach user code.
+            if name == "cookie" || name == "authorization" || name == "proxy-authorization" {
                 continue;
             }
             h.append(k.clone(), v.clone());
@@ -368,6 +435,13 @@ async fn forward(st: &AppState, mut req: Request<Body>, port: u16) -> Response<B
         .unwrap_or_else(|_| bad_gateway("bad upstream response"))
 }
 
+fn hidden_path(url_path: &str) -> bool {
+    url_path
+        .trim_start_matches('/')
+        .split('/')
+        .any(|part| part.starts_with('.') && part != ".well-known")
+}
+
 fn safe_join(root: &Path, url_path: &str) -> Option<PathBuf> {
     let mut out = root.to_path_buf();
     for comp in Path::new(url_path.trim_start_matches('/')).components() {
@@ -393,6 +467,14 @@ async fn serve_static(
             Response::builder()
                 .status(StatusCode::METHOD_NOT_ALLOWED)
                 .header(header::ALLOW, "GET, HEAD")
+                .body(Body::empty())
+                .unwrap(),
+        );
+    }
+    if hidden_path(url_path) {
+        return Some(
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
                 .body(Body::empty())
                 .unwrap(),
         );
@@ -538,8 +620,65 @@ pub fn landing(st: &AppState) -> Response<Body> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_authority, safe_join};
+    use super::{hidden_path, parse_authority, safe_join};
     use std::path::Path;
+
+    #[test]
+    fn routing_never_serves_control_plane() {
+        let path = std::env::temp_dir().join(format!("dok-proxy-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::db::Db::open(&path).unwrap();
+        let base = crate::db::App {
+            name: "plain".into(),
+            team_id: Some("t".into()),
+            kind: "static".into(),
+            image: None,
+            memory_mb: None,
+            cpus: None,
+            host_port: None,
+            container_port: None,
+            domain: None,
+            status: "new".into(),
+            dir: None,
+            repo: None,
+            production_deploy: None,
+            framework: None,
+            updated_at: 0,
+        };
+        db.upsert_app(&base).unwrap();
+        let mut custom = base.clone();
+        custom.name = "custom".into();
+        custom.domain = Some("custom.test".into());
+        db.upsert_app(&custom).unwrap();
+        let data = std::env::temp_dir().join(format!("dok-proxy-data-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data).unwrap();
+        let st = crate::state::AppState::new(
+            db,
+            data,
+            Some("apps.test".into()),
+            "http://dok.test".into(),
+        );
+        assert!(super::find_app(&st, "plain.apps.test").is_some());
+        assert!(super::find_app(&st, "dok.test").is_none());
+        assert!(super::find_app(&st, "apps.test").is_none());
+        assert!(super::find_app(&st, "custom.apps.test").is_none());
+        assert!(super::find_app(&st, "custom.test").is_some());
+        assert!(super::find_app(&st, "anything.apps.test").is_none());
+        let id = "abcdef1234567890";
+        st.db
+            .add_deploy(id, "plain", "ok", Some("/tmp/preview"), "preview", None)
+            .unwrap();
+        let route = super::find_route(&st, "plain-abcdef12.apps.test").unwrap();
+        assert_eq!(route.deploy.unwrap().id, id);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn hides_dotfiles() {
+        assert!(hidden_path("/.env"));
+        assert!(hidden_path("/assets/.git/config"));
+        assert!(!hidden_path("/.well-known/acme-challenge/x"));
+        assert!(!hidden_path("/index.html"));
+    }
 
     #[test]
     fn joins_normal_paths() {

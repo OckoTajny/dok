@@ -34,8 +34,7 @@ const { chromium } = require("playwright");
   await page.click("#go");
   await page.waitForURL("**/dashboard", { timeout: 20000 });
   const text = await page.textContent("body");
-  if (!text.includes("hello")) fail("app list missing deployed app");
-  if (!text.includes("rollback")) fail("deploy history missing");
+  if (!text.includes("New project")) fail("dashboard missing project form");
 
   const creds = await cdp.send("WebAuthn.getCredentials", { authenticatorId });
   if (creds.credentials.length !== 1) fail("expected 1 credential");

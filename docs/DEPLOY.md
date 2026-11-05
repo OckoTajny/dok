@@ -28,6 +28,20 @@ Traefik owns :80/:443 on ku-bot.
 Per-project proxy settings (headers, basic auth, www/apex redirect,
 compression, max body, force HTTPS) apply in both modes and are edited from
 the project's **Proxy** tab or `GET/PUT /api/v1/projects/{app}/proxy`.
+Basic-auth passwords are argon2 hashes. If an external load balancer
+terminates TLS, add its CIDR with `--trusted-proxy 10.0.0.0/8` so
+`X-Forwarded-Proto` is honoured; loopback/private peers are trusted by
+default.
+
+The dashboard host and `BASE_DOMAIN` apex are reserved and never proxied to
+apps. Custom domains cannot be added on `*.<base_domain>`. Preview deploys are
+routed on `<app>-<deploy8>.<base_domain>` and keep their own artifact, so they
+never replace production.
+
+Certificates are refreshed when the DB host set changes and a renew request
+forces a fresh ACME order; `notAfter` is parsed into the certificate status
+shown in the UI. A wildcard DNS/TLS setup is still recommended if preview
+deploys must be reachable over HTTPS in edge mode.
 
 ## Install on a machine
 

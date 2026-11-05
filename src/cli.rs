@@ -23,13 +23,18 @@ pub enum Cmd {
     Push(PushArgs),
     /// List apps.
     Apps,
-    /// List projects (alias of apps).
-    Projects,
+    /// List projects, or create/remove one.
+    Projects {
+        #[command(subcommand)]
+        cmd: Option<ProjectsCmd>,
+    },
     /// Show build and runtime logs (-f to follow).
     Logs {
         app: String,
         #[arg(short, long)]
         follow: bool,
+        #[arg(long, default_value = "production")]
+        env: String,
     },
     /// Set environment variables (KEY=VALUE ...). `env pull <app>` prints them.
     Env {
@@ -39,6 +44,11 @@ pub enum Cmd {
     },
     /// Point a domain at an app.
     Domain { app: String, host: String },
+    /// List or remove project domains.
+    Domains {
+        #[command(subcommand)]
+        cmd: DomainsCmd,
+    },
     /// Set the git repo used by webhooks / redeploy.
     Git { app: String, repo: String },
     /// Redeploy from the configured repo.
@@ -58,6 +68,24 @@ pub enum Cmd {
     DeployGit { app: String, #[arg(long)] data: String },
     /// Delete an app and stop its container.
     Rm { app: String },
+    /// Show the user and teams behind the saved token.
+    Whoami,
+}
+
+#[derive(Subcommand)]
+pub enum ProjectsCmd {
+    /// Create a project.
+    Create { name: String },
+    /// Delete a project and stop its containers.
+    Rm { name: String },
+}
+
+#[derive(Subcommand)]
+pub enum DomainsCmd {
+    /// List domains for a project.
+    List { app: String },
+    /// Remove a domain from a project.
+    Rm { app: String, host: String },
 }
 
 #[derive(Args, Clone)]
@@ -101,6 +129,9 @@ pub struct ServeArgs {
     /// Built-in edge: bind :80/:443, issue certs for every DB host, redirect HTTP to HTTPS.
     #[arg(long, env = "DOK_EDGE")]
     pub edge: bool,
+    /// CIDR of an additional trusted reverse proxy (X-Forwarded-Proto).
+    #[arg(long = "trusted-proxy", env = "DOK_TRUSTED_PROXY")]
+    pub trusted_proxy: Vec<String>,
 }
 
 #[derive(Args)]
@@ -224,21 +255,40 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 .send()?;
             handle(resp)
         }
-        Cmd::Projects => {
+        Cmd::Projects { cmd } => {
             let cfg = load_config()?;
-            let resp = client()?
-                .get(format!("{}/api/v1/projects", base(&cfg)))
-                .bearer_auth(&cfg.token)
-                .send()?;
-            handle(resp)
+            match cmd {
+                None => {
+                    let resp = client()?
+                        .get(format!("{}/api/v1/projects", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+                Some(ProjectsCmd::Create { name }) => {
+                    let resp = client()?
+                        .post(format!("{}/api/v1/projects", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .json(&serde_json::json!({"name": name}))
+                        .send()?;
+                    handle(resp)
+                }
+                Some(ProjectsCmd::Rm { name }) => {
+                    let resp = client()?
+                        .delete(format!("{}/api/v1/projects/{name}", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+            }
         }
         Cmd::Push(args) => push(args),
-        Cmd::Logs { app, follow } => {
+        Cmd::Logs { app, follow, env } => {
             let cfg = load_config()?;
             if follow {
                 let mut resp = client()?
                     .get(format!(
-                        "{}/api/v1/projects/{app}/logs/stream?env=production",
+                        "{}/api/v1/projects/{app}/logs/stream?env={env}",
                         base(&cfg)
                     ))
                     .bearer_auth(&cfg.token)
@@ -251,7 +301,10 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 return Ok(());
             }
             let resp = client()?
-                .get(format!("{}/api/v1/projects/{app}/logs", base(&cfg)))
+                .get(format!(
+                    "{}/api/v1/projects/{app}/logs?env={env}",
+                    base(&cfg)
+                ))
                 .bearer_auth(&cfg.token)
                 .send()?;
             if !resp.status().is_success() {
@@ -263,6 +316,24 @@ pub fn run(cmd: Cmd) -> Result<()> {
             Ok(())
         }
         Cmd::Env { app, vars } => {
+            if app == "rm" {
+                let Some(target) = vars.first() else {
+                    bail!("usage: dok env rm <app> <KEY> [env]");
+                };
+                let Some(key) = vars.get(1) else {
+                    bail!("usage: dok env rm <app> <KEY> [env]");
+                };
+                let env = vars.get(2).map(String::as_str).unwrap_or("production");
+                let cfg = load_config()?;
+                let resp = client()?
+                    .delete(format!(
+                        "{}/api/v1/projects/{target}/env/{env}/{key}",
+                        base(&cfg)
+                    ))
+                    .bearer_auth(&cfg.token)
+                    .send()?;
+                return handle(resp);
+            }
             // `dok env pull <app>` — keep the historical `dok env <app> K=V` form.
             if app == "pull" {
                 let Some(target) = vars.first() else {
@@ -312,6 +383,39 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 .post(format!("{}/api/v1/apps/{app}/domain", base(&cfg)))
                 .bearer_auth(&cfg.token)
                 .json(&serde_json::json!({"domain": host}))
+                .send()?;
+            handle(resp)
+        }
+        Cmd::Domains { cmd } => {
+            let cfg = load_config()?;
+            match cmd {
+                DomainsCmd::List { app } => {
+                    let resp = client()?
+                        .get(format!(
+                            "{}/api/v1/projects/{app}/domains",
+                            base(&cfg)
+                        ))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+                DomainsCmd::Rm { app, host } => {
+                    let resp = client()?
+                        .delete(format!(
+                            "{}/api/v1/projects/{app}/domains/{host}",
+                            base(&cfg)
+                        ))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+            }
+        }
+        Cmd::Whoami => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .get(format!("{}/api/v1/whoami", base(&cfg)))
+                .bearer_auth(&cfg.token)
                 .send()?;
             handle(resp)
         }
@@ -512,6 +616,15 @@ fn pack(dir: &Path, out: &Path) -> Result<()> {
             continue;
         }
         let rel = path.strip_prefix(dir)?;
+        // Never upload secrets or other dotfiles; .well-known must stay public.
+        if rel.components().any(|c| {
+            c.as_os_str()
+                .to_str()
+                .map(|name| name.starts_with('.') && name != ".well-known")
+                .unwrap_or(false)
+        }) {
+            continue;
+        }
         tb.append_path_with_name(path, rel)?;
         count += 1;
     }

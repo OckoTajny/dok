@@ -45,6 +45,12 @@ pub struct Deploy {
     pub image: Option<String>,
     pub url: Option<String>,
     pub author: Option<String>,
+    pub container: Option<String>,
+    pub host_port: Option<u16>,
+    pub commit_sha: Option<String>,
+    pub commit_message: Option<String>,
+    pub commit_author: Option<String>,
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,29 +99,47 @@ pub fn can_write(role: Option<&str>) -> bool {
     matches!(role, Some("owner" | "admin"))
 }
 
+/// An admin may invite members/viewers; only an owner may grant admin/owner.
+pub fn can_grant(actor: Option<&str>, target: &str) -> bool {
+    match actor {
+        Some("owner") => matches!(target, "owner" | "admin" | "member" | "viewer"),
+        Some("admin") => matches!(target, "member" | "viewer"),
+        _ => false,
+    }
+}
+
 pub fn hash_password(password: &str) -> String {
-    let salt = uuid::Uuid::new_v4().simple().to_string();
-    let digest = sha2::Sha256::digest(format!("{salt}:{password}").as_bytes());
-    format!("sha256${salt}${digest:x}")
+    use argon2::password_hash::SaltString;
+    use argon2::{Argon2, PasswordHasher};
+    use rand_core::OsRng;
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .unwrap_or_default()
 }
 
 pub fn verify_password(stored: &str, password: &str) -> bool {
-    let Some(rest) = stored.strip_prefix("sha256$") else {
-        return false;
-    };
-    let Some((salt, want)) = rest.split_once('$') else {
-        return false;
-    };
-    let got = format!(
-        "{:x}",
-        sha2::Sha256::digest(format!("{salt}:{password}").as_bytes())
-    );
-    got.len() == want.len()
-        && got
-            .bytes()
-            .zip(want.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            == 0
+    use argon2::{Argon2, PasswordHash, PasswordVerifier};
+    if let Some(rest) = stored.strip_prefix("sha256$") {
+        // Legacy hashes from before argon2; verify then the next save upgrades.
+        let Some((salt, want)) = rest.split_once('$') else {
+            return false;
+        };
+        let got = format!(
+            "{:x}",
+            sha2::Sha256::digest(format!("{salt}:{password}").as_bytes())
+        );
+        return got.len() == want.len()
+            && got
+                .bytes()
+                .zip(want.bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0;
+    }
+    PasswordHash::new(stored)
+        .map(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,6 +171,10 @@ CREATE TABLE IF NOT EXISTS env (
 CREATE TABLE IF NOT EXISTS tokens (
   hash TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS token_blacklist (
+  hash TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS deploys (
@@ -225,6 +253,82 @@ CREATE TABLE IF NOT EXISTS access_log (
 CREATE INDEX IF NOT EXISTS access_log_app ON access_log (app, id);
 "#;
 
+const DB_VERSION: i64 = 3;
+
+/// One transactional step per schema version. New databases start at 0 and
+/// run the same steps as old ones so migrations are exercised everywhere.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    loop {
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version >= DB_VERSION {
+            return Ok(());
+        }
+        let tx = conn.transaction()?;
+        match version {
+            0 => {
+                for sql in [
+                    "ALTER TABLE apps ADD COLUMN image TEXT",
+                    "ALTER TABLE apps ADD COLUMN memory_mb INTEGER",
+                    "ALTER TABLE apps ADD COLUMN cpus REAL",
+                    "ALTER TABLE apps ADD COLUMN team_id TEXT",
+                    "ALTER TABLE apps ADD COLUMN production_deploy TEXT",
+                    "ALTER TABLE apps ADD COLUMN framework TEXT",
+                    "ALTER TABLE deploys ADD COLUMN dir TEXT",
+                    "ALTER TABLE deploys ADD COLUMN env TEXT",
+                    "ALTER TABLE deploys ADD COLUMN image TEXT",
+                    "ALTER TABLE deploys ADD COLUMN url TEXT",
+                    "ALTER TABLE deploys ADD COLUMN author TEXT",
+                    "ALTER TABLE tokens ADD COLUMN user_id TEXT",
+                    "ALTER TABLE sessions ADD COLUMN user_id TEXT",
+                ] {
+                    let _ = tx.execute(sql, []);
+                }
+                // Keep one owner per legacy domain before the unique index.
+                let _ = tx.execute(
+                    "UPDATE apps SET domain = NULL WHERE domain IS NOT NULL AND rowid NOT IN (
+                       SELECT MAX(rowid) FROM apps WHERE domain IS NOT NULL GROUP BY domain)",
+                    [],
+                );
+                let _ = tx.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS apps_domain_unique
+                     ON apps(domain) WHERE domain IS NOT NULL",
+                    [],
+                );
+                let _ = tx.execute(
+                    "INSERT OR IGNORE INTO env_vars (app, env, key, value, secret)
+                     SELECT app, 'production', key, value, 0 FROM env",
+                    [],
+                );
+            }
+            1 => {
+                let _ = tx.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS access_log (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT, app TEXT NOT NULL,
+                       ts INTEGER NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL,
+                       status INTEGER NOT NULL, latency_ms INTEGER NOT NULL, ip TEXT);
+                     CREATE INDEX IF NOT EXISTS access_log_app ON access_log (app, id);",
+                );
+            }
+            2 => {
+                for sql in [
+                    "ALTER TABLE deploys ADD COLUMN container TEXT",
+                    "ALTER TABLE deploys ADD COLUMN host_port INTEGER",
+                    "ALTER TABLE deploys ADD COLUMN commit_sha TEXT",
+                    "ALTER TABLE deploys ADD COLUMN commit_message TEXT",
+                    "ALTER TABLE deploys ADD COLUMN commit_author TEXT",
+                    "ALTER TABLE deploys ADD COLUMN branch TEXT",
+                ] {
+                    let _ = tx.execute(sql, []);
+                }
+            }
+            _ => break,
+        }
+        tx.pragma_update(None, "user_version", version + 1)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
 fn app_from_row(r: &rusqlite::Row) -> rusqlite::Result<App> {
     Ok(App {
         name: r.get(0)?,
@@ -252,37 +356,16 @@ impl Db {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
-        for sql in [
-            "ALTER TABLE apps ADD COLUMN image TEXT",
-            "ALTER TABLE apps ADD COLUMN memory_mb INTEGER",
-            "ALTER TABLE apps ADD COLUMN cpus REAL",
-            "ALTER TABLE apps ADD COLUMN team_id TEXT",
-            "ALTER TABLE apps ADD COLUMN production_deploy TEXT",
-            "ALTER TABLE apps ADD COLUMN framework TEXT",
-            "ALTER TABLE deploys ADD COLUMN dir TEXT",
-            "ALTER TABLE deploys ADD COLUMN env TEXT",
-            "ALTER TABLE deploys ADD COLUMN image TEXT",
-            "ALTER TABLE deploys ADD COLUMN url TEXT",
-            "ALTER TABLE deploys ADD COLUMN author TEXT",
-            "ALTER TABLE tokens ADD COLUMN user_id TEXT",
-            "ALTER TABLE sessions ADD COLUMN user_id TEXT",
-        ] {
-            let _ = conn.execute(sql, []);
-        }
-        // Copy legacy env into env_vars once.
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO env_vars (app, env, key, value, secret)
-             SELECT app, 'production', key, value, 0 FROM env",
-            [],
-        );
+        migrate(&mut conn)?;
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.0.lock().expect("db mutex poisoned")
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // ---------- users & passkeys ----------
@@ -322,6 +405,26 @@ impl Db {
                 },
             )
             .optional()?)
+    }
+
+    pub fn single_user(&self) -> Result<Option<User>> {
+        let c = self.conn();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
+        if n != 1 {
+            return Ok(None);
+        }
+        Ok(c.query_row(
+            "SELECT id, email, name FROM users LIMIT 1",
+            [],
+            |r| {
+                Ok(User {
+                    id: r.get(0)?,
+                    email: r.get(1)?,
+                    name: r.get(2)?,
+                })
+            },
+        )
+        .optional()?)
     }
 
     pub fn user_by_email(&self, email: &str) -> Result<Option<User>> {
@@ -522,6 +625,47 @@ impl Db {
         Ok(())
     }
 
+    pub fn update_member_role(&self, team_id: &str, user_id: &str, role: &str) -> Result<usize> {
+        Ok(self.conn().execute(
+            "UPDATE members SET role = ?3 WHERE team_id = ?1 AND user_id = ?2",
+            params![team_id, user_id, role],
+        )?)
+    }
+
+    pub fn remove_member(&self, team_id: &str, user_id: &str) -> Result<usize> {
+        Ok(self.conn().execute(
+            "DELETE FROM members WHERE team_id = ?1 AND user_id = ?2",
+            params![team_id, user_id],
+        )?)
+    }
+
+    pub fn owner_count(&self, team_id: &str) -> Result<i64> {
+        Ok(self.conn().query_row(
+            "SELECT COUNT(*) FROM members WHERE team_id = ?1 AND role = 'owner'",
+            params![team_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn invites_for(&self, team_id: &str) -> Result<Vec<(String, String, i64, i64, Option<i64>)>> {
+        let c = self.conn();
+        let mut st = c.prepare(
+            "SELECT token, role, created_at, expires_at, used_at FROM invites
+             WHERE team_id = ?1 ORDER BY created_at DESC, rowid DESC",
+        )?;
+        let rows = st.query_map(params![team_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn revoke_invite(&self, team_id: &str, token: &str) -> Result<usize> {
+        Ok(self.conn().execute(
+            "DELETE FROM invites WHERE team_id = ?1 AND token = ?2",
+            params![team_id, token],
+        )?)
+    }
+
     pub fn create_invite(&self, team_id: &str, role: &str, ttl: i64) -> Result<String> {
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.conn().execute(
@@ -547,10 +691,13 @@ impl Db {
             return Ok(None);
         };
         let c = self.conn();
-        c.execute(
-            "UPDATE invites SET used_at = ?2 WHERE token = ?1",
+        let changed = c.execute(
+            "UPDATE invites SET used_at = ?2 WHERE token = ?1 AND used_at IS NULL AND expires_at > ?2",
             params![token, now()],
         )?;
+        if changed != 1 {
+            return Ok(None);
+        }
         c.execute(
             "INSERT OR IGNORE INTO members (team_id, user_id, role, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![team_id, user_id, role, now()],
@@ -636,10 +783,26 @@ impl Db {
     }
 
     pub fn delete_app(&self, name: &str) -> Result<()> {
+        let hosts: Vec<String> = self.domains_for(name).unwrap_or_default();
+        let app_domain = self
+            .get_app(name)
+            .ok()
+            .flatten()
+            .and_then(|a| a.domain)
+            .into_iter();
         let c = self.conn();
-        for table in ["env", "env_vars", "domains", "deploys"] {
-            let col = if table == "domains" { "app" } else { "app" };
-            c.execute(&format!("DELETE FROM {table} WHERE {col} = ?1"), params![name])?;
+        for table in ["env", "env_vars", "domains", "deploys", "access_log"] {
+            c.execute(&format!("DELETE FROM {table} WHERE app = ?1"), params![name])?;
+        }
+        c.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            params![format!("proxy:{name}")],
+        )?;
+        for host in hosts.into_iter().chain(app_domain) {
+            c.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                params![format!("cert:{host}")],
+            )?;
         }
         c.execute("DELETE FROM apps WHERE name = ?1", params![name])?;
         Ok(())
@@ -720,7 +883,8 @@ impl Db {
     pub fn deploys_env(&self, app: &str, env: Option<&str>, limit: usize) -> Result<Vec<Deploy>> {
         let c = self.conn();
         let mut st = c.prepare(
-            "SELECT id, created_at, status, COALESCE(env,'production'), dir, image, url, author
+            "SELECT id, created_at, status, COALESCE(env,'production'), dir, image, url, author,
+                    container, host_port, commit_sha, commit_message, commit_author, branch
              FROM deploys WHERE app = ?1 AND (?2 IS NULL OR COALESCE(env,'production') = ?2)
              ORDER BY created_at DESC, rowid DESC LIMIT ?3",
         )?;
@@ -734,6 +898,12 @@ impl Db {
                 image: r.get(5)?,
                 url: r.get(6)?,
                 author: r.get(7)?,
+                container: r.get(8)?,
+                host_port: r.get::<_, Option<i64>>(9)?.map(|p| p as u16),
+                commit_sha: r.get(10)?,
+                commit_message: r.get(11)?,
+                commit_author: r.get(12)?,
+                branch: r.get(13)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -742,7 +912,8 @@ impl Db {
     pub fn deploy(&self, app: &str, id: &str) -> Result<Option<Deploy>> {
         let c = self.conn();
         Ok(c.query_row(
-            "SELECT id, created_at, status, COALESCE(env,'production'), dir, image, url, author
+            "SELECT id, created_at, status, COALESCE(env,'production'), dir, image, url, author,
+                    container, host_port, commit_sha, commit_message, commit_author, branch
              FROM deploys WHERE id = ?1 AND app = ?2",
             params![id, app],
             |r| {
@@ -755,6 +926,12 @@ impl Db {
                     image: r.get(5)?,
                     url: r.get(6)?,
                     author: r.get(7)?,
+                    container: r.get(8)?,
+                    host_port: r.get::<_, Option<i64>>(9)?.map(|p| p as u16),
+                    commit_sha: r.get(10)?,
+                    commit_message: r.get(11)?,
+                    commit_author: r.get(12)?,
+                    branch: r.get(13)?,
                 })
             },
         )
@@ -784,6 +961,17 @@ impl Db {
         Ok(())
     }
 
+    pub fn deploy_log(&self, app: &str, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT log FROM deploys WHERE app = ?1 AND id = ?2",
+                params![app, id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn last_deploy_log(&self, app: &str) -> Result<Option<String>> {
         Ok(self
             .conn()
@@ -795,13 +983,118 @@ impl Db {
             .optional()?)
     }
 
-    pub fn prune_deploys(&self, app: &str, keep: usize) -> Result<()> {
+    /// Global retention (both envs). Never removes the production pointer.
+    #[allow(dead_code)]
+    pub fn prune_deploys(&self, app: &str, keep: usize) -> Result<Vec<Deploy>> {
+        self.prune_inner(app, None, keep)
+    }
+
+    /// Per-environment retention. Pruning previews never sees production rows.
+    pub fn prune_deploys_env(&self, app: &str, env: &str, keep: usize) -> Result<Vec<Deploy>> {
+        self.prune_inner(app, Some(env), keep)
+    }
+
+    fn prune_inner(&self, app: &str, env: Option<&str>, keep: usize) -> Result<Vec<Deploy>> {
+        use std::collections::HashSet;
+        let all = self.deploys_env(app, env, 100_000)?;
+        let production = if env == Some("production") {
+            self.get_app(app)?
+                .and_then(|a| a.production_deploy)
+                .unwrap_or_default()
+        } else if env.is_none() {
+            self.get_app(app)?
+                .and_then(|a| a.production_deploy)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let mut keep_ids: HashSet<String> = HashSet::new();
+        if env.is_none() {
+            for e in ["production", "preview"] {
+                for d in all.iter().filter(|d| d.env == e).take(keep) {
+                    keep_ids.insert(d.id.clone());
+                }
+            }
+            if !production.is_empty() {
+                keep_ids.insert(production);
+            }
+        } else {
+            for d in all.iter().take(keep) {
+                keep_ids.insert(d.id.clone());
+            }
+            if !production.is_empty() {
+                keep_ids.insert(production);
+            }
+        }
+        let mut removed = Vec::new();
+        let c = self.conn();
+        for d in all {
+            if !keep_ids.contains(&d.id) {
+                if c.execute("DELETE FROM deploys WHERE id = ?1", params![d.id])
+                    .is_ok()
+                {
+                    removed.push(d);
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    pub fn set_deploy_routing(
+        &self,
+        id: &str,
+        container: Option<&str>,
+        host_port: Option<u16>,
+    ) -> Result<()> {
         self.conn().execute(
-            "DELETE FROM deploys WHERE app = ?1 AND id NOT IN (
-               SELECT id FROM deploys WHERE app = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2)",
-            params![app, keep as i64],
+            "UPDATE deploys SET container = ?2, host_port = ?3 WHERE id = ?1",
+            params![id, container, host_port.map(|p| p as i64)],
         )?;
         Ok(())
+    }
+
+    pub fn set_deploy_commit(
+        &self,
+        id: &str,
+        sha: &str,
+        message: &str,
+        author: &str,
+        branch: &str,
+    ) -> Result<()> {
+        self.conn().execute(
+            "UPDATE deploys SET commit_sha = ?2, commit_message = ?3, commit_author = ?4, branch = ?5 WHERE id = ?1",
+            params![id, sha, message, author, branch],
+        )?;
+        Ok(())
+    }
+
+    pub fn deploy_by_prefix(&self, app: &str, prefix: &str) -> Result<Option<Deploy>> {
+        let c = self.conn();
+        Ok(c.query_row(
+            "SELECT id, created_at, status, COALESCE(env,'production'), dir, image, url, author,
+                    container, host_port, commit_sha, commit_message, commit_author, branch
+             FROM deploys WHERE app = ?1 AND id LIKE ?2 || '%' ORDER BY created_at DESC LIMIT 1",
+            params![app, prefix],
+            |r| {
+                Ok(Deploy {
+                    id: r.get(0)?,
+                    created_at: r.get(1)?,
+                    status: r.get(2)?,
+                    env: r.get(3)?,
+                    dir: r.get(4)?,
+                    image: r.get(5)?,
+                    url: r.get(6)?,
+                    author: r.get(7)?,
+                    container: r.get(8)?,
+                    host_port: r.get::<_, Option<i64>>(9)?.map(|p| p as u16),
+                    commit_sha: r.get(10)?,
+                    commit_message: r.get(11)?,
+                    commit_author: r.get(12)?,
+                    branch: r.get(13)?,
+                })
+            },
+        )
+        .optional()?)
     }
 
     pub fn set_production(&self, app: &str, deploy: &str) -> Result<()> {
@@ -840,10 +1133,23 @@ impl Db {
             .optional()?)
     }
 
-    pub fn remove_domain(&self, host: &str) -> Result<()> {
-        self.conn()
-            .execute("DELETE FROM domains WHERE host = ?1", params![host])?;
-        Ok(())
+    pub fn remove_domain(&self, app: &str, host: &str) -> Result<usize> {
+        Ok(self.conn().execute(
+            "DELETE FROM domains WHERE host = ?1 AND app = ?2",
+            params![host, app],
+        )?)
+    }
+
+    /// Owner of an `apps.domain` value (legacy domain column).
+    pub fn app_domain_owner(&self, host: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT name FROM apps WHERE domain = ?1 LIMIT 1",
+                params![host],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     // ---------- tokens & sessions ----------
@@ -860,7 +1166,8 @@ impl Db {
         let row = self
             .conn()
             .query_row(
-                "SELECT user_id FROM tokens WHERE hash = ?1",
+                "SELECT user_id FROM tokens WHERE hash = ?1
+                 AND hash NOT IN (SELECT hash FROM token_blacklist)",
                 params![hash],
                 |r| r.get::<_, Option<String>>(0),
             )
@@ -876,6 +1183,15 @@ impl Db {
         Ok(())
     }
 
+    /// Claim pre-multi-user projects for the first team.
+    pub fn assign_orphan_apps(&self, team_id: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE apps SET team_id = ?1, updated_at = ?2 WHERE team_id IS NULL",
+            params![team_id, now()],
+        )?;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn token_exists(&self, hash: &str) -> Result<bool> {
         Ok(self
@@ -886,6 +1202,15 @@ impl Db {
                 |r| r.get::<_, i64>(0),
             )?
             > 0)
+    }
+
+    #[allow(dead_code)]
+    pub fn revoke_token(&self, hash: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR IGNORE INTO token_blacklist (hash, created_at) VALUES (?1, ?2)",
+            params![hash, now()],
+        )?;
+        Ok(())
     }
 
     pub fn count_tokens(&self) -> Result<i64> {
@@ -929,6 +1254,14 @@ impl Db {
     }
 
     // ---------- settings ----------
+
+    /// Atomically claim the single first-run slot. Exactly one caller wins.
+    pub fn claim_first_user(&self) -> Result<bool> {
+        Ok(self.conn().execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('first_user_claimed', '1')",
+            [],
+        )? == 1)
+    }
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         Ok(self
@@ -1076,6 +1409,103 @@ mod tests {
         assert!(verify_password(&h, "hunter2"));
         assert!(!verify_password(&h, "wrong"));
         assert!(!verify_password("plain", "hunter2"));
+    }
+
+    #[test]
+    fn invites_are_single_use_and_expire() {
+        let (db, path) = tmp_db();
+        let u = db.create_user("i@example.com", "Invitee").unwrap();
+        let t = db.create_team("Team", "team", &u.id).unwrap();
+        let token = db.create_invite(&t.id, "member", 60).unwrap();
+        assert!(db.use_invite(&token, &u.id).unwrap().is_some());
+        assert!(db.use_invite(&token, &u.id).unwrap().is_none());
+        let expired = db.create_invite(&t.id, "member", -1).unwrap();
+        assert!(db.use_invite(&expired, &u.id).unwrap().is_none());
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn preview_retention_keeps_production() {
+        let (db, path) = tmp_db();
+        let t = db.create_user("r@example.com", "R").unwrap();
+        let _ = t;
+        for i in 0..12 {
+            let id = format!("preview-{i:02}");
+            db.add_deploy(&id, "app", "ok", Some("/tmp/p"), "preview", None)
+                .unwrap();
+        }
+        for i in 0..3 {
+            let id = format!("production-deploy-{i}");
+            db.add_deploy(&id, "app", "ok", Some("/tmp/d"), "production", None)
+                .unwrap();
+            db.set_production("app", &id).unwrap();
+        }
+        let removed = db.prune_deploys_env("app", "preview", 10).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert_eq!(db.deploys_env("app", Some("production"), 100).unwrap().len(), 3);
+        let all = db.deploys("app", 100).unwrap();
+        assert!(all.iter().any(|d| d.id == "production-deploy-2"));
+        assert!(db.deploy("app", "production-deploy-2").unwrap().is_some());
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn first_user_claim_is_atomic() {
+        let (db, path) = tmp_db();
+        assert!(db.claim_first_user().unwrap());
+        assert!(!db.claim_first_user().unwrap());
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_legacy_database() {
+        let path = std::env::temp_dir().join(format!("dok-legacy-{}.db", uuid::Uuid::new_v4()));
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE apps (name TEXT PRIMARY KEY, created_at INTEGER NOT NULL,
+                   kind TEXT NOT NULL DEFAULT 'docker', host_port INTEGER, container_port INTEGER,
+                   domain TEXT, status TEXT NOT NULL DEFAULT 'new', dir TEXT, repo TEXT,
+                   updated_at INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE env (app TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                   PRIMARY KEY (app, key));
+                 CREATE TABLE deploys (id TEXT PRIMARY KEY, app TEXT NOT NULL,
+                   created_at INTEGER NOT NULL, status TEXT NOT NULL, log TEXT NOT NULL DEFAULT '');
+                 CREATE TABLE tokens (hash TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL);
+                 CREATE TABLE sessions (hash TEXT PRIMARY KEY, csrf TEXT NOT NULL,
+                   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+                 INSERT INTO apps (name, created_at, domain) VALUES ('old', 1, 'same.test');
+                 INSERT INTO apps (name, created_at, domain) VALUES ('old2', 2, 'same.test');
+                 INSERT INTO env (app, key, value) VALUES ('old', 'A', '1');",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let app = db.get_app("old").unwrap().unwrap();
+        assert_eq!(app.team_id, None);
+        assert_eq!(
+            db.env_resolved("old", "production").unwrap(),
+            vec![("A".into(), "1".into())]
+        );
+        let version: i64 = db
+            .conn()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let dupes: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM apps WHERE domain = 'same.test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dupes, 1);
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

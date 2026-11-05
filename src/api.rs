@@ -1,6 +1,7 @@
 use crate::deploy::{self, DeployOutcome};
 use crate::proxy;
 use crate::state::AppState;
+use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -15,13 +16,11 @@ use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
 
-const MAX_UPLOAD: usize = 512 * 1024 * 1024;
+const MAX_UPLOAD: usize = 200 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Caller {
-    /// None means a legacy token created before the first user existed; it has
-    /// full access (the live single-tenant install keeps working).
-    pub user: Option<String>,
+    pub user: String,
 }
 
 pub fn router(st: AppState) -> Router {
@@ -29,9 +28,13 @@ pub fn router(st: AppState) -> Router {
 }
 
 async fn dispatch(State(st): State<AppState>, req: Request) -> Response {
-    // A routed app always wins: its own /api/... paths must reach the app.
-    if let Some(app) = proxy::app_for(&st, &req) {
-        return proxy::serve_app(st, req, app).await;
+    // The dashboard/control-plane host never proxies to user code.
+    let host = proxy::host_of(&req);
+    if !st.reserved_host(&host) {
+        // A routed app always wins: its own /api/... paths must reach the app.
+        if let Some(app) = proxy::app_for(&st, &req) {
+            return proxy::serve_app(st, req, app).await;
+        }
     }
 
     let path = req.uri().path().to_string();
@@ -75,8 +78,18 @@ fn api_routes(st: AppState) -> Router {
             delete(remove_domain),
         )
         .route("/api/v1/projects/{app}/metrics", get(metrics))
+        .route("/api/v1/projects/{app}/redeploy", post(redeploy))
         .route("/api/v1/projects/{app}/access-log", get(access_log))
         .route("/api/v1/projects/{app}/proxy", get(get_proxy).put(put_proxy))
+        .route("/api/v1/whoami", get(whoami))
+        .route(
+            "/api/v1/projects/{app}/env/{env}/{key}",
+            delete(delete_env_key),
+        )
+        .route(
+            "/api/v1/projects/{app}/webhook",
+            get(get_webhook).put(put_webhook),
+        )
         .route("/api/v1/projects/{app}/logs", get(logs))
         .route("/api/v1/projects/{app}/logs/stream", get(logs_stream))
         // Old app API, kept as aliases.
@@ -100,7 +113,20 @@ fn api_routes(st: AppState) -> Router {
             "/api/v1/certificates/{host}/renew",
             post(renew_certificate),
         )
-        .route("/api/v1/teams/{team}/invites", post(create_invite))
+        .route("/api/v1/teams", get(list_teams).post(create_team_api))
+        .route("/api/v1/teams/{team}/members", get(list_members))
+        .route(
+            "/api/v1/teams/{team}/members/{user}",
+            put(put_member).delete(delete_member),
+        )
+        .route(
+            "/api/v1/teams/{team}/invites",
+            get(list_invites).post(create_invite),
+        )
+        .route(
+            "/api/v1/teams/{team}/invites/{token}",
+            delete(revoke_invite),
+        )
         .route("/api/v1/deploy", post(deploy_root))
         .route_layer(middleware::from_fn_with_state(st.clone(), require_token));
 
@@ -130,10 +156,15 @@ async fn require_token(State(st): State<AppState>, mut req: Request, next: Next)
         return (StatusCode::UNAUTHORIZED, "missing token\n").into_response();
     };
     match st.db.token_user(&hash_token(&token)) {
-        Ok(Some(user)) => {
+        Ok(Some(Some(user))) => {
             req.extensions_mut().insert(Caller { user });
             next.run(req).await
         }
+        Ok(Some(None)) => (
+            StatusCode::UNAUTHORIZED,
+            "token is not bound to a user; finish dashboard setup or issue a new token\n",
+        )
+            .into_response(),
         _ => (StatusCode::UNAUTHORIZED, "invalid token\n").into_response(),
     }
 }
@@ -150,6 +181,23 @@ fn bad(msg: &str) -> Response {
     (StatusCode::BAD_REQUEST, format!("{msg}\n")).into_response()
 }
 
+fn domain_conflict(st: &AppState, app: &str, host: &str) -> Result<(), Response> {
+    if st.reserved_host(host) || st.is_base_subdomain(host) {
+        return Err((StatusCode::CONFLICT, "host is reserved for the dashboard\n").into_response());
+    }
+    if let Ok(Some(other)) = st.db.domain_owner(host) {
+        if other != app {
+            return Err((StatusCode::CONFLICT, "domain belongs to another project\n").into_response());
+        }
+    }
+    if let Ok(Some(other)) = st.db.app_domain_owner(host) {
+        if other != app {
+            return Err((StatusCode::CONFLICT, "domain belongs to another project\n").into_response());
+        }
+    }
+    Ok(())
+}
+
 fn internal(e: anyhow::Error) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -162,36 +210,26 @@ fn internal(e: anyhow::Error) -> Response {
 /// names outside the caller's teams are not disclosed.
 fn project_for(st: &AppState, caller: &Caller, name: &str) -> Result<crate::db::App, Response> {
     let app = st.db.get_app(name).ok().flatten().ok_or_else(not_found)?;
-    match (&caller.user, &app.team_id) {
-        (None, _) => Ok(app),
-        (Some(_), None) => Ok(app), // legacy project without a team
-        (Some(uid), Some(tid)) => {
-            let role = st.db.role(tid, uid).ok().flatten();
-            if crate::db::can_read(role.as_deref()) {
-                Ok(app)
-            } else {
-                Err(not_found())
-            }
-        }
+    let tid = app.team_id.as_deref().ok_or_else(not_found)?;
+    let role = st.db.role(tid, &caller.user).ok().flatten();
+    if crate::db::can_read(role.as_deref()) {
+        Ok(app)
+    } else {
+        Err(not_found())
     }
 }
 
 fn require_write(st: &AppState, caller: &Caller, app: &crate::db::App) -> Result<(), Response> {
-    let Some(uid) = &caller.user else {
-        return Ok(());
+    let Some(tid) = &app.team_id else {
+        return Err(forbidden());
     };
-    match &app.team_id {
-        None => Ok(()),
-        Some(tid) => {
-            let role = st.db.role(tid, uid).ok().flatten();
-            if crate::db::can_write(role.as_deref()) {
-                Ok(())
-            } else if crate::db::can_read(role.as_deref()) {
-                Err(forbidden())
-            } else {
-                Err(not_found())
-            }
-        }
+    let role = st.db.role(tid, &caller.user).ok().flatten();
+    if crate::db::can_write(role.as_deref()) {
+        Ok(())
+    } else if crate::db::can_read(role.as_deref()) {
+        Err(forbidden())
+    } else {
+        Err(not_found())
     }
 }
 
@@ -199,10 +237,8 @@ fn team_for_caller(
     st: &AppState,
     caller: &Caller,
     wanted: Option<&str>,
-) -> Result<Option<String>, Response> {
-    let Some(uid) = &caller.user else {
-        return Ok(None);
-    };
+) -> Result<String, Response> {
+    let uid = &caller.user;
     let teams = st.db.teams_for(uid).unwrap_or_default();
     if let Some(w) = wanted {
         let team = teams
@@ -213,43 +249,28 @@ fn team_for_caller(
         if !crate::db::can_write(role.as_deref()) {
             return Err(forbidden());
         }
-        return Ok(Some(team.id.clone()));
+        return Ok(team.id.clone());
     }
-    Ok(teams
+    teams
         .into_iter()
         .find(|t| {
             let role = st.db.role(&t.id, uid).ok().flatten();
             crate::db::can_write(role.as_deref())
         })
-        .map(|t| t.id))
+        .map(|t| t.id)
+        .ok_or_else(forbidden)
 }
 
 fn author_of(st: &AppState, caller: &Caller) -> Option<String> {
-    caller
-        .user
-        .as_ref()
-        .and_then(|uid| st.db.user(uid).ok().flatten())
-        .map(|u| u.email)
+    st.db.user(&caller.user).ok().flatten().map(|u| u.email)
 }
 
 async fn list_projects(State(st): State<AppState>, Extension(caller): Extension<Caller>) -> Response {
-    let apps = match &caller.user {
-        None => st.db.list_apps().unwrap_or_default(),
-        Some(uid) => {
-            let mut out = Vec::new();
-            for team in st.db.teams_for(uid).unwrap_or_default() {
-                out.extend(st.db.apps_for_team(&team.id).unwrap_or_default());
-            }
-            // Legacy projects without a team stay visible.
-            for a in st.db.list_apps().unwrap_or_default() {
-                if a.team_id.is_none() && !out.iter().any(|x| x.name == a.name) {
-                    out.push(a);
-                }
-            }
-            out.sort_by(|a, b| a.name.cmp(&b.name));
-            out
-        }
-    };
+    let mut apps = Vec::new();
+    for team in st.db.teams_for(&caller.user).unwrap_or_default() {
+        apps.extend(st.db.apps_for_team(&team.id).unwrap_or_default());
+    }
+    apps.sort_by(|a, b| a.name.cmp(&b.name));
     Json(json!({"apps": apps, "projects": apps})).into_response()
 }
 
@@ -276,7 +297,7 @@ async fn create_project(
     };
     let app = crate::db::App {
         name: b.name.clone(),
-        team_id,
+        team_id: Some(team_id),
         kind: "static".into(),
         image: None,
         memory_mb: None,
@@ -325,6 +346,7 @@ async fn delete_project(
     }
     deploy::stop_container(&app, "production").await;
     deploy::stop_container(&app, "preview").await;
+    deploy::stop_all_previews(&app).await;
     let _ = tokio::fs::remove_dir_all(st.builds_dir().join(&app)).await;
     match st.db.delete_app(&app) {
         Ok(_) => {
@@ -416,18 +438,17 @@ async fn upload(
         Ok(a) => a,
         Err(e) => return internal(e),
     };
-    let mut team_id = None;
-    if let Some(a) = &existing {
+    let team_id = if let Some(a) = &existing {
         if let Err(r) = require_write(&st, &caller, a) {
             return r;
         }
-        team_id = a.team_id.clone();
-    } else if caller.user.is_some() {
+        a.team_id.clone()
+    } else {
         match team_for_caller(&st, &caller, None) {
-            Ok(t) => team_id = t,
+            Ok(t) => Some(t),
             Err(r) => return r,
         }
-    }
+    };
 
     let tmp = st.data.join("tmp");
     if let Err(e) = tokio::fs::create_dir_all(&tmp).await {
@@ -504,12 +525,22 @@ async fn upload(
     }
 }
 
+fn over_upload_limit(total: usize) -> bool {
+    total > MAX_UPLOAD
+}
+
 async fn save_body(req: Request, path: &PathBuf) -> anyhow::Result<()> {
     use futures_util::StreamExt;
     let mut file = tokio::fs::File::create(path).await?;
     let mut stream = req.into_body().into_data_stream();
+    let mut total = 0usize;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
+        total += chunk.len();
+        if over_upload_limit(total) {
+            let _ = tokio::fs::remove_file(path).await;
+            anyhow::bail!("upload exceeds {} MB", MAX_UPLOAD / (1024 * 1024));
+        }
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
@@ -520,6 +551,7 @@ async fn save_body(req: Request, path: &PathBuf) -> anyhow::Result<()> {
 struct LogQuery {
     env: Option<String>,
     limit: Option<usize>,
+    deploy: Option<String>,
 }
 
 async fn logs(
@@ -533,14 +565,31 @@ async fn logs(
         Err(r) => return r,
     };
     let env = normalize_env(q.env.as_deref().unwrap_or("production")).unwrap_or("production");
-    let build = st.db.last_deploy_log(&app).unwrap_or_default();
-    let runtime = if a.kind == "docker" {
-        deploy::container_logs(&app, env, 200).await
+    let selected = q
+        .deploy
+        .as_deref()
+        .and_then(|id| st.db.deploy(&app, id).ok().flatten());
+    let build = match &selected {
+        Some(d) => st.db.deploy_log(&app, &d.id).ok().flatten(),
+        None => st.db.last_deploy_log(&app).ok().flatten(),
+    };
+    let kind = selected
+        .as_ref()
+        .map(|d| if d.image.is_some() { "docker" } else { "static" })
+        .unwrap_or(a.kind.as_str());
+    let container = selected.as_ref().and_then(|d| d.container.clone());
+    let runtime = if kind == "docker" {
+        deploy::container_logs(&app, env, container.as_deref(), 200).await
     } else {
         "no container (static app)".to_string()
     };
-    Json(json!({"build": build.unwrap_or_default(), "runtime": runtime, "env": env}))
-        .into_response()
+    Json(json!({
+        "build": build.unwrap_or_default(),
+        "runtime": runtime,
+        "env": env,
+        "deploy": selected.map(|d| d.id),
+    }))
+    .into_response()
 }
 
 async fn logs_stream(
@@ -554,7 +603,18 @@ async fn logs_stream(
         Err(r) => return r,
     };
     let env = normalize_env(q.env.as_deref().unwrap_or("production")).unwrap_or("production");
-    if a.kind != "docker" {
+    log_stream_response(&st, &app, env, a.kind.as_str(), None).await
+}
+
+/// Shared live container log stream for token API and session dashboard.
+pub async fn log_stream_response(
+    _st: &AppState,
+    app: &str,
+    env: &str,
+    kind: &str,
+    container: Option<&str>,
+) -> Response {
+    if kind != "docker" {
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -564,8 +624,9 @@ async fn logs_stream(
     if !crate::deploy::docker_available().await {
         return (StatusCode::SERVICE_UNAVAILABLE, "docker unavailable\n").into_response();
     }
-
-    let name = deploy::container_name(&app, env);
+    let name = container
+        .map(str::to_string)
+        .unwrap_or_else(|| deploy::container_name(app, env));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
     tokio::task::spawn_blocking(move || {
         use std::io::{BufRead, BufReader};
@@ -609,7 +670,6 @@ async fn logs_stream(
         }
         let _ = child.wait();
     });
-
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -675,7 +735,7 @@ async fn put_env(
     State(st): State<AppState>,
     Extension(caller): Extension<Caller>,
     Path((app, env)): Path<(String, String)>,
-    Json(vars): Json<HashMap<String, String>>,
+    Json(body): Json<Value>,
 ) -> Response {
     let a = match project_for(&st, &caller, &app) {
         Ok(a) => a,
@@ -687,16 +747,38 @@ async fn put_env(
     if !matches!(env.as_str(), "production" | "preview" | "development") {
         return bad("env must be production, preview or development");
     }
-    put_env_impl(&st, &app, &env, vars)
+    let (vars, replace) = match parse_env_body(body) {
+        Ok(v) => v,
+        Err(msg) => return bad(msg),
+    };
+    put_env_impl(&st, &app, &env, vars, replace)
 }
 
 async fn put_env_root(
     State(st): State<AppState>,
     Extension(caller): Extension<Caller>,
     Path(app): Path<String>,
-    Json(vars): Json<HashMap<String, String>>,
+    Json(body): Json<Value>,
 ) -> Response {
-    put_env(State(st), Extension(caller), Path((app, "production".into())), Json(vars)).await
+    put_env(State(st), Extension(caller), Path((app, "production".into())), Json(body)).await
+}
+
+fn parse_env_body(body: Value) -> Result<(HashMap<String, String>, bool), &'static str> {
+    let (vars, replace) = if body.get("vars").is_some() {
+        let replace = body.get("replace").and_then(Value::as_bool).unwrap_or(false);
+        (body.get("vars").cloned().unwrap_or_else(|| json!({})), replace)
+    } else {
+        (body, false)
+    };
+    let map = vars.as_object().ok_or("env body must be an object")?;
+    let mut out = HashMap::new();
+    for (k, v) in map {
+        let Some(v) = v.as_str() else {
+            return Err("env values must be strings");
+        };
+        out.insert(k.clone(), v.to_string());
+    }
+    Ok((out, replace))
 }
 
 fn put_env_impl(
@@ -704,17 +786,23 @@ fn put_env_impl(
     app: &str,
     env: &str,
     vars: HashMap<String, String>,
+    replace: bool,
 ) -> Response {
-    let existing: HashMap<String, bool> = st
-        .db
-        .env(app, env)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(k, _, s)| (k, s))
+    let existing_rows = st.db.env(app, env).unwrap_or_default();
+    let existing: HashMap<String, bool> = existing_rows
+        .iter()
+        .map(|(k, _, s)| (k.clone(), *s))
         .collect();
     for (_, v) in &vars {
         if v.len() > 64 * 1024 {
             return bad("env value too large");
+        }
+    }
+    if replace {
+        for (k, _, _) in &existing_rows {
+            if !vars.contains_key(k) {
+                let _ = st.db.delete_env(app, env, k);
+            }
         }
     }
     let kv: Vec<(String, String, bool)> = vars
@@ -741,19 +829,46 @@ async fn get_env(
     Extension(caller): Extension<Caller>,
     Path((app, env)): Path<(String, String)>,
 ) -> Response {
-    if let Err(r) = project_for(&st, &caller, &app) {
-        return r;
-    }
+    let a = match project_for(&st, &caller, &app) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     if !matches!(env.as_str(), "production" | "preview" | "development") {
         return bad("env must be production, preview or development");
     }
+    let role = a
+        .team_id
+        .as_deref()
+        .and_then(|tid| st.db.role(tid, &caller.user).ok().flatten());
+    let can_see_values = crate::db::can_write(role.as_deref());
     match st.db.env(&app, &env) {
-        Ok(kv) => Json(json!({
-            "env": kv.into_iter().map(|(k, v, _)| (k, v)).collect::<HashMap<_, _>>(),
-            "resolved": st.db.env_resolved(&app, &env).unwrap_or_default()
-                .into_iter().collect::<HashMap<_, _>>(),
-        }))
-        .into_response(),
+        Ok(kv) => {
+            let env_map: HashMap<String, String> = kv
+                .into_iter()
+                .map(|(k, v, _)| {
+                    let v = if can_see_values { v } else { "***".into() };
+                    (k, v)
+                })
+                .collect();
+            let resolved = if can_see_values {
+                st.db.env_resolved(&app, &env).unwrap_or_default()
+            } else {
+                st.db
+                    .env_resolved(&app, &env)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(k, _)| (k, "***".to_string()))
+                    .collect()
+            }
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+            Json(json!({
+                "env": env_map,
+                "resolved": resolved,
+                "values_visible": can_see_values,
+            }))
+            .into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -764,6 +879,101 @@ async fn get_env_root(
     Path(app): Path<String>,
 ) -> Response {
     get_env(State(st), Extension(caller), Path((app, "production".into()))).await
+}
+
+async fn whoami(State(st): State<AppState>, Extension(caller): Extension<Caller>) -> Response {
+    let user = st.db.user(&caller.user).ok().flatten();
+    let teams = st.db.teams_for(&caller.user).unwrap_or_default();
+    Json(json!({
+        "user": user,
+        "teams": teams,
+    }))
+    .into_response()
+}
+
+async fn delete_env_key(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path((app, env, key)): Path<(String, String, String)>,
+) -> Response {
+    let a = match project_for(&st, &caller, &app) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_write(&st, &caller, &a) {
+        return r;
+    }
+    if !matches!(env.as_str(), "production" | "preview" | "development") {
+        return bad("env must be production, preview or development");
+    }
+    match st.db.delete_env(&app, &env, &key) {
+        Ok(_) => Json(json!({"deleted": key, "env": env})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct WebhookBody {
+    secret: Option<String>,
+    branch: Option<String>,
+}
+
+async fn get_webhook(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path(app): Path<String>,
+) -> Response {
+    let a = match project_for(&st, &caller, &app) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_write(&st, &caller, &a) {
+        return r;
+    }
+    let secret = st.db.get_setting(&format!("webhook_secret:{app}")).ok().flatten();
+    let branch = st
+        .db
+        .get_setting(&format!("webhook_branch:{app}"))
+        .ok()
+        .flatten();
+    Json(json!({"secret": secret, "branch": branch, "configured": secret.is_some()}))
+        .into_response()
+}
+
+async fn put_webhook(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path(app): Path<String>,
+    Json(b): Json<WebhookBody>,
+) -> Response {
+    let a = match project_for(&st, &caller, &app) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_write(&st, &caller, &a) {
+        return r;
+    }
+    if let Some(secret) = b.secret.as_deref().filter(|s| !s.is_empty()) {
+        if secret.len() < 16 {
+            return bad("webhook secret must be at least 16 characters");
+        }
+        if let Err(e) = st.db.set_setting(&format!("webhook_secret:{app}"), secret) {
+            return internal(e);
+        }
+    }
+    if let Some(branch) = b.branch.as_deref() {
+        if !branch.is_empty()
+            && !branch
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+        {
+            return bad("invalid branch name");
+        }
+        let _ = st
+            .db
+            .set_setting(&format!("webhook_branch:{app}"), branch);
+    }
+    Json(json!({"ok": true})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -788,6 +998,9 @@ async fn set_domain(
         return bad("invalid domain");
     }
     let domain = b.domain.trim_end_matches('.').to_ascii_lowercase();
+    if let Err(r) = domain_conflict(&st, &app, &domain) {
+        return r;
+    }
     match st.db.set_domain(&app, &domain) {
         Ok(_) => {
             st.sync_traefik();
@@ -828,10 +1041,8 @@ async fn add_domain(
     if !valid_host(&host) {
         return bad("invalid domain");
     }
-    if let Ok(Some(other)) = st.db.domain_owner(&host) {
-        if other != app {
-            return (StatusCode::CONFLICT, "domain belongs to another project\n").into_response();
-        }
+    if let Err(r) = domain_conflict(&st, &app, &host) {
+        return r;
     }
     match st.db.add_domain(&app, &host) {
         Ok(_) => {
@@ -854,7 +1065,8 @@ async fn remove_domain(
     if let Err(r) = require_write(&st, &caller, &a) {
         return r;
     }
-    match st.db.remove_domain(&host) {
+    match st.db.remove_domain(&app, &host) {
+        Ok(0) => not_found(),
         Ok(_) => {
             st.sync_traefik();
             Json(json!({"removed": host})).into_response()
@@ -875,6 +1087,9 @@ async fn set_repo(
     };
     if let Err(r) = require_write(&st, &caller, &a) {
         return r;
+    }
+    if !valid_repo_url(&b.domain) {
+        return bad("repo must be https://, ssh:// or git@host:path");
     }
     match st.db.set_repo(&app, &b.domain) {
         Ok(_) => Json(json!({"ok": true, "repo": b.domain})).into_response(),
@@ -897,6 +1112,7 @@ async fn metrics(
     let latest = all.first().map(|d| {
         json!({"id": d.id, "status": d.status, "env": d.env, "created_at": d.created_at})
     });
+    let stats = deploy::container_stats(&app, "production", None).await;
     Json(json!({
         "project": a.name,
         "status": a.status,
@@ -909,7 +1125,7 @@ async fn metrics(
             "production": st.db.env(&app, "production").unwrap_or_default().len(),
             "preview": st.db.env(&app, "preview").unwrap_or_default().len(),
         },
-        "requests": st.db.access_logs(&app, 1).unwrap_or_default().len(),
+        "runtime": stats,
     }))
     .into_response()
 }
@@ -973,7 +1189,7 @@ async fn put_proxy(
         b.settings.basic_auth_hash = None;
     }
     b.settings.headers.retain(|(k, v)| {
-        !k.is_empty()
+        safe_header(k)
             && k.len() <= 100
             && !k.contains(['\r', '\n', ':'])
             && v.len() <= 2000
@@ -1030,21 +1246,10 @@ async fn list_certificates(
     Extension(caller): Extension<Caller>,
 ) -> Response {
     let mut hosts = Vec::new();
-    let apps = match &caller.user {
-        None => st.db.list_apps().unwrap_or_default(),
-        Some(uid) => {
-            let mut out = Vec::new();
-            for team in st.db.teams_for(uid).unwrap_or_default() {
-                out.extend(st.db.apps_for_team(&team.id).unwrap_or_default());
-            }
-            for a in st.db.list_apps().unwrap_or_default() {
-                if a.team_id.is_none() && !out.iter().any(|x| x.name == a.name) {
-                    out.push(a);
-                }
-            }
-            out
-        }
-    };
+    let mut apps = Vec::new();
+    for team in st.db.teams_for(&caller.user).unwrap_or_default() {
+        apps.extend(st.db.apps_for_team(&team.id).unwrap_or_default());
+    }
     let mut seen = HashSet::new();
     for a in &apps {
         for h in hosts_for_app(&st, a) {
@@ -1081,12 +1286,258 @@ async fn renew_certificate(
     } else {
         return not_found();
     }
-    let value = json!({"status": "pending", "requested_at": crate::db::now(), "expires": null});
+    let now = crate::db::now();
+    let previous = st
+        .db
+        .get_setting(&format!("cert:{host}"))
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str::<Value>(&v).ok());
+    let prev_status = previous
+        .as_ref()
+        .and_then(|v| v.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("pending");
+    let prev_expiry = previous
+        .as_ref()
+        .and_then(|v| v.get("expires"))
+        .and_then(|v| v.as_i64());
+    let healthy = matches!(prev_status, "issued" | "expiring")
+        && prev_expiry.map(|e| e > now).unwrap_or(true);
+    let status = if healthy { prev_status } else { "renewing" };
+    let value = json!({
+        "status": status,
+        "requested_at": now,
+        "renew_requested_at": now,
+        "expires": prev_expiry,
+    });
+    let _ = st.db.set_setting("cert_renew", &now.to_string());
     match st
         .db
         .set_setting(&format!("cert:{host}"), &value.to_string())
     {
-        Ok(_) => Json(json!({"ok": true, "host": host, "status": "pending"})).into_response(),
+        Ok(_) => Json(json!({"ok": true, "host": host, "status": status, "renewing": true}))
+            .into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+fn lookup_team(st: &AppState, name: &str) -> Result<crate::db::Team, Response> {
+    st.db
+        .team(name)
+        .ok()
+        .flatten()
+        .or_else(|| st.db.team_by_slug(name).ok().flatten())
+        .ok_or_else(not_found)
+}
+
+fn team_role(
+    st: &AppState,
+    caller: &Caller,
+    team: &crate::db::Team,
+) -> Result<Option<String>, Response> {
+    let role = st.db.role(&team.id, &caller.user).ok().flatten();
+    if crate::db::can_read(role.as_deref()) {
+        Ok(role)
+    } else {
+        Err(not_found())
+    }
+}
+
+async fn list_teams(State(st): State<AppState>, Extension(caller): Extension<Caller>) -> Response {
+    let teams = st.db.teams_for(&caller.user).unwrap_or_default();
+    Json(json!({"teams": teams})).into_response()
+}
+
+#[derive(Deserialize)]
+struct NewTeam {
+    name: String,
+}
+
+async fn create_team_api(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Json(b): Json<NewTeam>,
+) -> Response {
+    let name = b.name.trim();
+    if name.is_empty() || name.len() > 64 {
+        return bad("team name must be 1-64 characters");
+    }
+    let base = crate::auth::slugify(name);
+    let mut slug = base.clone();
+    let mut n = 1;
+    while st.db.team_by_slug(&slug).ok().flatten().is_some() {
+        n += 1;
+        slug = format!("{base}-{n}");
+        if n > 50 {
+            return (StatusCode::CONFLICT, "team slug is taken\n").into_response();
+        }
+    }
+    match st.db.create_team(name, &slug, &caller.user) {
+        Ok(t) => Json(t).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+async fn list_members(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path(team): Path<String>,
+) -> Response {
+    let t = match lookup_team(&st, &team) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    if let Err(r) = team_role(&st, &caller, &t) {
+        return r;
+    }
+    let members: Vec<Value> = st
+        .db
+        .members(&t.id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(u, role)| {
+            json!({"id": u.id, "email": u.email, "name": u.name, "role": role})
+        })
+        .collect();
+    Json(json!({"members": members})).into_response()
+}
+
+#[derive(Deserialize)]
+struct RoleBody {
+    role: String,
+}
+
+async fn put_member(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path((team, user)): Path<(String, String)>,
+    Json(b): Json<RoleBody>,
+) -> Response {
+    let t = match lookup_team(&st, &team) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let actor = match team_role(&st, &caller, &t) {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    if actor.as_deref() != Some("owner") {
+        return forbidden();
+    }
+    if !matches!(b.role.as_str(), "owner" | "admin" | "member" | "viewer") {
+        return bad("invalid role");
+    }
+    let current = st.db.role(&t.id, &user).ok().flatten();
+    match current.as_deref() {
+        None => return not_found(),
+        Some("owner") if b.role != "owner" => {
+            if st.db.owner_count(&t.id).unwrap_or(0) <= 1 {
+                return (StatusCode::CONFLICT, "cannot demote the last owner\n").into_response();
+            }
+        }
+        _ => {}
+    }
+    match st.db.update_member_role(&t.id, &user, &b.role) {
+        Ok(0) => not_found(),
+        Ok(_) => Json(json!({"ok": true, "role": b.role})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+async fn delete_member(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path((team, user)): Path<(String, String)>,
+) -> Response {
+    let t = match lookup_team(&st, &team) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let actor = match team_role(&st, &caller, &t) {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    if !crate::db::can_write(actor.as_deref()) {
+        return forbidden();
+    }
+    let current = st.db.role(&t.id, &user).ok().flatten();
+    match current.as_deref() {
+        None => return not_found(),
+        Some("owner") => {
+            if actor.as_deref() != Some("owner") {
+                return forbidden();
+            }
+            if st.db.owner_count(&t.id).unwrap_or(0) <= 1 {
+                return (StatusCode::CONFLICT, "cannot remove the last owner\n").into_response();
+            }
+        }
+        Some("admin") if actor.as_deref() != Some("owner") => return forbidden(),
+        _ => {}
+    }
+    match st.db.remove_member(&t.id, &user) {
+        Ok(0) => not_found(),
+        Ok(_) => Json(json!({"removed": user})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+async fn list_invites(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path(team): Path<String>,
+) -> Response {
+    let t = match lookup_team(&st, &team) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let actor = match team_role(&st, &caller, &t) {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    if !crate::db::can_write(actor.as_deref()) {
+        return forbidden();
+    }
+    let now = crate::db::now();
+    let invites: Vec<Value> = st
+        .db
+        .invites_for(&t.id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(token, role, created_at, expires_at, used_at)| {
+            json!({
+                "token": token,
+                "role": role,
+                "created_at": created_at,
+                "expires_at": expires_at,
+                "used": used_at.is_some(),
+                "expired": expires_at <= now,
+                "link": format!("{}/join/{token}", st.public_url.trim_end_matches('/')),
+            })
+        })
+        .collect();
+    Json(json!({"invites": invites})).into_response()
+}
+
+async fn revoke_invite(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path((team, token)): Path<(String, String)>,
+) -> Response {
+    let t = match lookup_team(&st, &team) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let actor = match team_role(&st, &caller, &t) {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    if !crate::db::can_write(actor.as_deref()) {
+        return forbidden();
+    }
+    match st.db.revoke_invite(&t.id, &token) {
+        Ok(0) => not_found(),
+        Ok(_) => Json(json!({"revoked": token})).into_response(),
         Err(e) => internal(e),
     }
 }
@@ -1113,16 +1564,17 @@ async fn create_invite(
         Some(t) => t,
         None => return not_found(),
     };
-    if let Some(uid) = &caller.user {
-        let role = st.db.role(&team.id, uid).ok().flatten();
-        if !crate::db::can_write(role.as_deref()) {
-            return forbidden();
-        }
+    let actor_role = st.db.role(&team.id, &caller.user).ok().flatten();
+    if !crate::db::can_write(actor_role.as_deref()) {
+        return forbidden();
     }
     let role = match b.role.as_str() {
         "owner" | "admin" | "member" | "viewer" => b.role,
         _ => "member".into(),
     };
+    if !crate::db::can_grant(actor_role.as_deref(), &role) {
+        return (StatusCode::FORBIDDEN, "you cannot grant that role\n").into_response();
+    }
     match st.db.create_invite(&team.id, &role, 7 * 86400) {
         Ok(token) => Json(json!({
             "token": token,
@@ -1154,7 +1606,7 @@ async fn git_init(
         };
         let row = crate::db::App {
             name: app.clone(),
-            team_id,
+            team_id: Some(team_id),
             kind: "static".into(),
             image: None,
             memory_mb: None,
@@ -1176,12 +1628,31 @@ async fn git_init(
     match init_bare_repo(&st, &app) {
         Ok((path, hook)) => {
             let _ = st.db.set_repo(&app, &path);
+            let secret_key = format!("webhook_secret:{app}");
+            let secret = st
+                .db
+                .get_setting(&secret_key)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| {
+                    let s = format!(
+                        "{}{}",
+                        uuid::Uuid::new_v4().simple(),
+                        uuid::Uuid::new_v4().simple()
+                    );
+                    let _ = st.db.set_setting(&secret_key, &s);
+                    let _ = st.db.set_setting(&format!("webhook_branch:{app}"), "main");
+                    s
+                });
             Json(json!({
                 "app": app,
                 "path": path,
                 "remote": format!("ssh://<user>@<host>{path}"),
                 "hint": format!("git remote add dok ssh://<user>@<host>{path} && git push dok main"),
                 "hook": hook,
+                "webhook_secret": secret,
+                "branch": "main",
+                "webhook_url": format!("{}/api/v1/hooks/github/{}", st.public_url.trim_end_matches('/'), app),
             }))
             .into_response()
         }
@@ -1260,29 +1731,117 @@ async fn github_hook(
     Path(app): Path<String>,
     Query(q): Query<HookQuery>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
-    let expected = std::env::var("DOK_HOOK_SECRET").ok();
-    let given = q
-        .secret
-        .or_else(|| {
-            headers
-                .get("x-dok-secret")
+    let project_secret = st
+        .db
+        .get_setting(&format!("webhook_secret:{app}"))
+        .ok()
+        .flatten();
+    let global = std::env::var("DOK_HOOK_SECRET").ok().filter(|s| !s.is_empty());
+    match project_secret.as_deref() {
+        Some(secret) => {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+            let sig = headers
+                .get("x-hub-signature-256")
                 .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-    match expected {
-        Some(exp) if !exp.is_empty() && constant_eq(&exp, &given) => {}
-        _ => return (StatusCode::UNAUTHORIZED, "bad hook secret\n").into_response(),
+                .unwrap_or("");
+            let Some(hex) = sig.strip_prefix("sha256=") else {
+                return (StatusCode::UNAUTHORIZED, "missing X-Hub-Signature-256\n")
+                    .into_response();
+            };
+            let Some(expected) = decode_hex(hex) else {
+                return (StatusCode::UNAUTHORIZED, "bad signature\n").into_response();
+            };
+            let mut mac = match Hmac::<Sha256>::new_from_slice(secret.as_bytes()) {
+                Ok(m) => m,
+                Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "bad secret\n").into_response(),
+            };
+            mac.update(&body);
+            if mac.verify_slice(&expected).is_err() {
+                return (StatusCode::UNAUTHORIZED, "bad signature\n").into_response();
+            }
+        }
+        None => {
+            // Legacy global secret path, kept for existing installs.
+            let given = q
+                .secret
+                .or_else(|| {
+                    headers
+                        .get("x-dok-secret")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            match global {
+                Some(exp) if constant_eq(&exp, &given) => {}
+                _ => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "webhook secret not configured for this project\n",
+                    )
+                        .into_response()
+                }
+            }
+        }
     }
-    match deploy_from_repo(&st, &app).await {
-        Ok(out) => Json(out).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
+
+    let payload: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+    let branch_setting = st
+        .db
+        .get_setting(&format!("webhook_branch:{app}"))
+        .ok()
+        .flatten()
+        .filter(|b| !b.is_empty());
+    let r#ref = payload["ref"].as_str().unwrap_or("");
+    if let Some(branch) = &branch_setting {
+        if !r#ref.is_empty() && r#ref != format!("refs/heads/{branch}") {
+            return Json(json!({"ignored": true, "reason": "branch filter"})).into_response();
+        }
     }
+
+    let out = match deploy_from_repo(&st, &app).await {
+        Ok(out) => out,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+    let sha = payload["after"]
+        .as_str()
+        .or_else(|| payload["head_commit"]["id"].as_str())
+        .unwrap_or("");
+    if !sha.is_empty() {
+        let message = payload["head_commit"]["message"]
+            .as_str()
+            .unwrap_or("webhook deploy");
+        let author = payload["head_commit"]["author"]["name"]
+            .as_str()
+            .unwrap_or("webhook");
+        let branch = r#ref.strip_prefix("refs/heads/").unwrap_or("");
+        let _ = st
+            .db
+            .set_deploy_commit(&out.deploy_id, sha, message, author, branch);
+    }
+    Json(json!({"deploy": out, "branch": branch_setting})).into_response()
+}
+
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = (bytes[i] as char).to_digit(16)?;
+        let lo = (bytes[i + 1] as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Some(out)
 }
 
 fn constant_eq(a: &str, b: &str) -> bool {
@@ -1302,13 +1861,45 @@ pub async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<Deploy
         .repo
         .ok_or_else(|| anyhow::anyhow!("app has no repo; use `dok git {app} <url>`"))?;
 
+    let local_repo = std::path::Path::new(&repo).is_absolute()
+        && std::path::Path::new(&repo).starts_with(st.data.join("repos"));
+    if !local_repo && !valid_repo_url(&repo) {
+        anyhow::bail!("repo must be https://, ssh:// or git@host:path");
+    }
+    let file_policy = if local_repo {
+        "protocol.file.allow=always"
+    } else {
+        "protocol.file.allow=never"
+    };
+    let allow = if local_repo {
+        "https:ssh:file"
+    } else {
+        "https:ssh"
+    };
+    let git = |args: &[&str]| {
+        let mut c = tokio::process::Command::new("git");
+        c.args(["-c", "protocol.ext.allow=never", "-c", file_policy])
+            .args(args)
+            .env("GIT_ALLOW_PROTOCOL", allow)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE");
+        c
+    };
+
+    if !local_repo {
+        let probe = git(&["ls-remote", "--heads", &repo]).output().await?;
+        if !probe.status.success() {
+            anyhow::bail!(
+                "cannot reach repo: {}",
+                String::from_utf8_lossy(&probe.stderr).trim()
+            );
+        }
+    }
+
     let dir = deploy::new_build_dir(st, app)?;
-    let out = tokio::process::Command::new("git")
-        .args(["clone", "--depth", "1", &repo])
+    let out = git(&["clone", "--depth", "1", &repo])
         .arg(&dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
         .output()
         .await?;
     if !out.status.success() {
@@ -1317,6 +1908,7 @@ pub async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<Deploy
     let head = tokio::process::Command::new("git")
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(&dir)
+        .env("GIT_ALLOW_PROTOCOL", allow)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -1325,7 +1917,88 @@ pub async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<Deploy
     if !head.status.success() {
         anyhow::bail!("repo has no commits yet; push a branch first");
     }
-    deploy::deploy_dir(st, app, &dir, None, None, "production", None).await
+    let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let meta = tokio::process::Command::new("git")
+        .args(["log", "-1", "--format=%s%x00%an"])
+        .current_dir(&dir)
+        .env("GIT_ALLOW_PROTOCOL", allow)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let (message, commit_author) = meta.split_once('\0').unwrap_or((meta.as_str(), ""));
+    let branch = tokio::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&dir)
+        .env("GIT_ALLOW_PROTOCOL", allow)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "main".into());
+    let out = deploy::deploy_dir(st, app, &dir, None, None, "production", None).await?;
+    if !sha.is_empty() {
+        let _ = st
+            .db
+            .set_deploy_commit(&out.deploy_id, &sha, message, commit_author, &branch);
+    }
+    Ok(out)
+}
+
+pub(crate) fn safe_header(name: &str) -> bool {
+    let n = name.trim().to_ascii_lowercase();
+    !n.is_empty()
+        && !matches!(
+            n.as_str(),
+            "content-length"
+                | "transfer-encoding"
+                | "content-encoding"
+                | "connection"
+                | "set-cookie"
+                | "location"
+                | "keep-alive"
+                | "trailer"
+                | "upgrade"
+                | "te"
+                | "host"
+                | "proxy-authenticate"
+                | "proxy-authorization"
+                | "date"
+                | "server"
+        )
+}
+
+pub(crate) fn valid_repo_url(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.len() > 500 || s.starts_with('-') || s.contains(char::is_whitespace) {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+    if lower.contains("ext::")
+        || lower.contains("upload-pack")
+        || lower.contains("file://")
+        || lower.contains("--")
+    {
+        return false;
+    }
+    let host_path = if let Some(rest) = lower.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = lower.strip_prefix("ssh://") {
+        rest
+    } else if let Some(rest) = s.strip_prefix("git@") {
+        rest
+    } else {
+        return false;
+    };
+    let host = host_path.split(['/', ':']).next().unwrap_or("");
+    !host.is_empty() && host.contains('.') || host == "localhost"
 }
 
 pub(crate) fn valid_name(s: &str) -> bool {
@@ -1351,7 +2024,7 @@ pub fn hash(t: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_eq, normalize_env, valid_host, valid_name};
+    use super::{api_routes, constant_eq, hash, normalize_env, valid_host, valid_name};
 
     #[test]
     fn app_names() {
@@ -1380,10 +2053,423 @@ mod tests {
     }
 
     #[test]
+    fn repo_urls() {
+        assert!(super::valid_repo_url("https://github.com/a/b.git"));
+        assert!(super::valid_repo_url("ssh://git@example.com/a/b.git"));
+        assert!(super::valid_repo_url("git@github.com:a/b.git"));
+        assert!(!super::valid_repo_url("file:///etc/passwd"));
+        assert!(!super::valid_repo_url("ext::sh -c id"));
+        assert!(!super::valid_repo_url("--upload-pack=id"));
+        assert!(!super::valid_repo_url("http://example.com/a.git"));
+        assert!(!super::valid_repo_url("/tmp/repo"));
+    }
+
+    #[test]
     fn deploy_envs() {
         assert_eq!(normalize_env("production"), Some("production"));
         assert_eq!(normalize_env("preview"), Some("preview"));
         assert_eq!(normalize_env(""), Some("production"));
         assert_eq!(normalize_env("staging"), None);
+    }
+
+    #[test]
+    fn upload_limits() {
+        assert!(!super::over_upload_limit(200 * 1024 * 1024));
+        assert!(super::over_upload_limit(200 * 1024 * 1024 + 1));
+    }
+
+    #[test]
+    fn header_denylist() {
+        assert!(super::safe_header("X-Frame-Options"));
+        assert!(super::safe_header("Strict-Transport-Security"));
+        assert!(!super::safe_header("Content-Length"));
+        assert!(!super::safe_header("Set-Cookie"));
+        assert!(!super::safe_header("Location"));
+        assert!(!super::safe_header("Transfer-Encoding"));
+    }
+
+    // ---------- integration: authz across every route ----------
+
+    use crate::db::{App, Db};
+    use crate::state::AppState;
+    use serde_json::{json, Value};
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use axum::response::Response;
+    use std::path::PathBuf;
+    use tower::ServiceExt;
+
+    fn state() -> (AppState, PathBuf) {
+        let path = std::env::temp_dir().join(format!("dok-api-{}.db", uuid::Uuid::new_v4()));
+        let db = Db::open(&path).unwrap();
+        let data = std::env::temp_dir().join(format!("dok-api-data-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data).unwrap();
+        (
+            AppState::new(db, data, Some("apps.test".into()), "http://dok.test".into()),
+            path,
+        )
+    }
+
+    fn seed(st: &AppState, name: &str, role: &str) -> (String, String, String) {
+        let u = st
+            .db
+            .create_user(&format!("{name}@example.com"), name)
+            .unwrap();
+        let t = st
+            .db
+            .create_team(name, &format!("{name}-team"), &u.id)
+            .unwrap();
+        if role != "owner" {
+            st.db.add_member(&t.id, &u.id, role).unwrap();
+        }
+        let token = format!("token-{name}");
+        st.db.add_token(&hash(&token), name, Some(&u.id)).unwrap();
+        (u.id, t.id, token)
+    }
+
+    fn project(st: &AppState, name: &str, team: &str) {
+        st.db
+            .upsert_app(&App {
+                name: name.into(),
+                team_id: Some(team.into()),
+                kind: "static".into(),
+                image: None,
+                memory_mb: None,
+                cpus: None,
+                host_port: None,
+                container_port: None,
+                domain: None,
+                status: "new".into(),
+                dir: None,
+                repo: None,
+                production_deploy: None,
+                framework: None,
+                updated_at: crate::db::now(),
+            })
+            .unwrap();
+    }
+
+    async fn call(
+        st: &AppState,
+        token: Option<&str>,
+        method: Method,
+        uri: &str,
+        body: Option<&str>,
+    ) -> Response {
+        let mut b = Request::builder().method(method).uri(uri);
+        if let Some(t) = token {
+            b = b.header("authorization", format!("Bearer {t}"));
+        }
+        if body.is_some() {
+            b = b.header("content-type", "application/json");
+        }
+        let req = b
+            .body(body.map(|s| Body::from(s.to_string())).unwrap_or_else(Body::empty))
+            .unwrap();
+        api_routes(st.clone()).oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn authz_across_routes() {
+        let (st, path) = state();
+        let (_a, ta, ta_tok) = seed(&st, "alice", "owner");
+        let (_b, tb, tb_tok) = seed(&st, "bob", "owner");
+        let (_c, _tc, tc_tok) = seed(&st, "carol", "member");
+        st.db.add_member(&ta, &_c, "member").unwrap();
+        project(&st, "app-a", &ta);
+        project(&st, "app-b", &tb);
+
+        // No token and unbound token fail closed.
+        assert_eq!(
+            call(&st, None, Method::GET, "/api/v1/projects", None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        st.db
+            .add_token(&hash("dead-token"), "dead", None)
+            .unwrap();
+        assert_eq!(
+            call(&st, Some("dead-token"), Method::GET, "/api/v1/projects", None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        // Cross-team routes are invisible (404) for read and write.
+        for (method, uri, body) in [
+            (Method::GET, "/api/v1/projects/app-b", None),
+            (Method::DELETE, "/api/v1/projects/app-b", None),
+            (Method::PUT, "/api/v1/projects/app-b/env/production", Some("{}")),
+            (Method::POST, "/api/v1/projects/app-b/domains", Some("{\"domain\":\"x.test\"}")),
+            (Method::GET, "/api/v1/projects/app-b/proxy", None),
+            (Method::PUT, "/api/v1/projects/app-b/proxy", Some("{}")),
+            (Method::GET, "/api/v1/projects/app-b/metrics", None),
+            (Method::GET, "/api/v1/projects/app-b/access-log", None),
+            (Method::GET, "/api/v1/projects/app-b/logs", None),
+            (Method::POST, "/api/v1/projects/app-b/promote/x", None),
+            (Method::POST, "/api/v1/projects/app-b/rollback/x", None),
+        ] {
+            let r = call(&st, Some(&ta_tok), method.clone(), uri, body).await;
+            assert_eq!(r.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        }
+
+        // Members may read their team, never write.
+        assert_eq!(
+            call(&st, Some(&tc_tok), Method::GET, "/api/v1/projects/app-a", None)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        for (method, uri, body) in [
+            (Method::DELETE, "/api/v1/projects/app-a", None),
+            (Method::PUT, "/api/v1/projects/app-a/env/production", Some("{}")),
+            (Method::POST, "/api/v1/projects/app-a/domains", Some("{\"domain\":\"x.test\"}")),
+            (Method::PUT, "/api/v1/projects/app-a/proxy", Some("{}")),
+            (Method::POST, "/api/v1/projects/app-a/redeploy", None),
+        ] {
+            let r = call(&st, Some(&tc_tok), method.clone(), uri, body).await;
+            assert_eq!(r.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        }
+
+        // Owner still sees their own project.
+        assert_eq!(
+            call(&st, Some(&tb_tok), Method::GET, "/api/v1/projects/app-b", None)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    async fn body_json(r: Response) -> Value {
+        let b = axum::body::to_bytes(r.into_body(), 256 * 1024).await.unwrap();
+        serde_json::from_slice(&b).unwrap_or_else(|_| json!({}))
+    }
+
+    #[tokio::test]
+    async fn team_admin_endpoints() {
+        let (st, path) = state();
+        let (_u, _t, owner) = seed(&st, "olga", "owner");
+        let (_b, _bt, bob) = seed(&st, "bob", "member");
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::POST,
+            "/api/v1/teams",
+            Some("{\"name\":\"Second Team\"}"),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let team = body_json(r).await["id"].as_str().unwrap().to_string();
+
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::GET,
+            &format!("/api/v1/teams/{team}/members"),
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(body_json(r).await["members"].as_array().unwrap().len() == 1);
+
+        // Non-members cannot see the team.
+        assert_eq!(
+            call(
+                &st,
+                Some(&bob),
+                Method::GET,
+                &format!("/api/v1/teams/{team}/members"),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+
+        let alice = st.db.members(&team).unwrap()[0].0.id.clone();
+        assert_eq!(
+            call(
+                &st,
+                Some(&owner),
+                Method::PUT,
+                &format!("/api/v1/teams/{team}/members/{alice}"),
+                Some("{\"role\":\"member\"}")
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::POST,
+            &format!("/api/v1/teams/{team}/invites"),
+            Some("{\"role\":\"member\"}"),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let token = body_json(r).await["token"].as_str().unwrap().to_string();
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::GET,
+            &format!("/api/v1/teams/{team}/invites"),
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(
+            call(
+                &st,
+                Some(&owner),
+                Method::DELETE,
+                &format!("/api/v1/teams/{team}/invites/{token}"),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(
+                &st,
+                Some(&owner),
+                Method::DELETE,
+                &format!("/api/v1/teams/{team}/invites/{token}"),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn webhook_requires_signature() {
+        let (st, path) = state();
+        let (_u, team, token) = seed(&st, "hook", "owner");
+        project(&st, "hookapp", &team);
+        st.db
+            .set_setting("webhook_secret:hookapp", "0123456789abcdef")
+            .unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/hooks/github/hookapp")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let r = api_routes(st.clone()).oneshot(req).await.unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        let _ = token;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn env_values_are_role_scoped_and_replace_works() {
+        let (st, path) = state();
+        let (_u, team, owner) = seed(&st, "erin", "owner");
+        let (_v, _t, viewer) = seed(&st, "vic", "viewer");
+        st.db.add_member(&team, &_v, "viewer").unwrap();
+        project(&st, "envapp", &team);
+
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::PUT,
+            "/api/v1/projects/envapp/env/production",
+            Some("{\"A\":\"1\",\"B\":\"2\"}"),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(
+            call(
+                &st,
+                Some(&viewer),
+                Method::GET,
+                "/api/v1/projects/envapp/env/production",
+                None,
+            )
+            .await
+            .into_body(),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("\"***\""), "{text}");
+        assert!(!text.contains("\"1\""), "{text}");
+
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::PUT,
+            "/api/v1/projects/envapp/env/production",
+            Some("{\"replace\":true,\"vars\":{\"B\":\"3\"}}"),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let keys = st.db.env("envapp", "production").unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].0, "B");
+
+        // Removing a domain that is not owned by this project is 404.
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::DELETE,
+            "/api/v1/projects/envapp/domains/nope.test",
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn dashboard_host_cannot_be_claimed() {
+        let (st, path) = state();
+        let (_u, team, token) = seed(&st, "dana", "owner");
+        project(&st, "hostapp", &team);
+
+        for host in ["dok.test", "apps.test", "x.apps.test", "hostapp.apps.test"] {
+            let body = format!("{{\"domain\":\"{host}\"}}");
+            let r = call(
+                &st,
+                Some(&token),
+                Method::POST,
+                "/api/v1/projects/hostapp/domains",
+                Some(&body),
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::CONFLICT, "{host}");
+        }
+
+        let r = call(
+            &st,
+            Some(&token),
+            Method::POST,
+            "/api/v1/projects/hostapp/domains",
+            Some("{\"domain\":\"custom.test\"}"),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+
+        // A second project cannot steal an owned domain.
+        project(&st, "other", &team);
+        let r = call(
+            &st,
+            Some(&token),
+            Method::POST,
+            "/api/v1/projects/other/domains",
+            Some("{\"domain\":\"custom.test\"}"),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        let _ = std::fs::remove_file(path);
     }
 }

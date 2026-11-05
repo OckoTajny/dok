@@ -83,6 +83,13 @@ pub struct Session {
     pub csrf: String,
 }
 
+fn client_ip(req: &Request<Body>) -> String {
+    req.extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
+
 fn hash(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
 }
@@ -105,6 +112,13 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
     let method = req.method().clone();
     let session = auth.session(&st.db, &req);
     let first_run = st.db.user_count().ok()? == 0;
+    if (path.starts_with("/auth/setup")
+        || path.starts_with("/auth/login")
+        || path.starts_with("/auth/join"))
+        && !st.rate.allow(&format!("auth:{}", client_ip(&req)), 10, 60)
+    {
+        return Some((StatusCode::TOO_MANY_REQUESTS, "too many attempts\n").into_response());
+    }
 
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
@@ -147,6 +161,9 @@ struct SetupBody {
 }
 
 async fn setup_start(st: &AppState, auth: &AuthState, req: Request<Body>) -> Response<Body> {
+    if st.db.user_count().unwrap_or(0) != 0 {
+        return forbidden("this instance is already set up; use an invite link");
+    }
     let b: SetupBody = match read_json(req).await {
         Ok(b) => b,
         Err(r) => return r,
@@ -207,8 +224,10 @@ fn register_start(
             let now = crate::db::now();
             let mut p = auth.pending_reg.lock().unwrap();
             p.retain(|_, v| v.exp > now);
-            if p.len() > 64 {
-                p.clear();
+            if p.len() >= 64 {
+                if let Some(k) = p.iter().min_by_key(|(_, v)| v.exp).map(|(k, _)| k.clone()) {
+                    p.remove(&k);
+                }
             }
             p.insert(
                 id.clone(),
@@ -273,6 +292,9 @@ async fn register_finish(st: &AppState, auth: &AuthState, req: Request<Body>) ->
             Err(e) => return bad(&format!("cannot create user: {e}")),
         }
     } else {
+        if !st.db.claim_first_user().unwrap_or(false) {
+            return forbidden("this instance is already set up; use an invite link");
+        }
         let u = match st.db.create_user_with_id(&p.user_id, &p.email, &p.name) {
             Ok(u) => u,
             Err(e) => return bad(&format!("cannot create user: {e}")),
@@ -280,8 +302,11 @@ async fn register_finish(st: &AppState, auth: &AuthState, req: Request<Body>) ->
         if st.db.user_count().unwrap_or(0) == 1 {
             let team = p.team.unwrap_or_else(|| "Personal".into());
             let slug = slugify(&team);
-            if let Err(e) = st.db.create_team(&team, &slug, &u.id) {
-                return bad(&format!("cannot create team: {e}"));
+            match st.db.create_team(&team, &slug, &u.id) {
+                Ok(t) => {
+                    let _ = st.db.assign_orphan_apps(&t.id);
+                }
+                Err(e) => return bad(&format!("cannot create team: {e}")),
             }
             let _ = st.db.assign_orphan_tokens(&u.id);
         }
@@ -310,8 +335,10 @@ fn login_start(st: &AppState, auth: &AuthState) -> Response<Body> {
             let now = crate::db::now();
             let mut p = auth.pending_auth.lock().unwrap();
             p.retain(|_, (_, exp)| *exp > now);
-            if p.len() > 64 {
-                p.clear();
+            if p.len() >= 64 {
+                if let Some(k) = p.iter().min_by_key(|(_, (_, exp))| *exp).map(|(k, _)| k.clone()) {
+                    p.remove(&k);
+                }
             }
             p.insert(id.clone(), (state, now + 600));
             let mut v = serde_json::to_value(rcr).unwrap_or_default();
@@ -414,6 +441,10 @@ pub fn redirect(to: &str) -> Response<Body> {
         .unwrap()
 }
 
+fn forbidden(msg: &str) -> Response<Body> {
+    (StatusCode::FORBIDDEN, format!("{msg}\n")).into_response()
+}
+
 fn bad(msg: &str) -> Response<Body> {
     (StatusCode::BAD_REQUEST, format!("{msg}\n")).into_response()
 }
@@ -458,13 +489,36 @@ pub fn slugify(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{esc, slugify};
+    use super::{esc, setup_start, slugify, AuthState};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use url::Url;
 
     #[test]
     fn slugs() {
         assert_eq!(slugify("My Team"), "my-team");
         assert_eq!(slugify("  --a__b--  "), "a-b");
         assert_eq!(slugify("???"), "team");
+    }
+
+    #[tokio::test]
+    async fn setup_is_closed_after_first_user() {
+        let path = std::env::temp_dir().join(format!("dok-auth-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::db::Db::open(&path).unwrap();
+        db.create_user("first@example.com", "First").unwrap();
+        let data = std::env::temp_dir().join(format!("dok-auth-data-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data).unwrap();
+        let st = crate::state::AppState::new(db, data, None, "http://localhost".into());
+        let auth = AuthState::new(Url::parse("http://localhost").unwrap()).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/auth/setup/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"email":"second@example.com","name":"Second"}"#))
+            .unwrap();
+        let resp = setup_start(&st, &auth, req).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

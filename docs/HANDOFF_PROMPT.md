@@ -1,38 +1,62 @@
-# Handoff: dok
+# Handoff: dok v2 → 9/10
 
 ## Cíl
-Lehký self-hosted PaaS v Rustu (push, Docker, statika, proxy, passkey dashboard).
-**Běží na desktopu**, ku-bot je jen veřejná TLS brána. Nic se nestaví na ku-botu.
+Open-source, self-hosted Vercel/Coolify alternativa (Rust, SQLite, Docker, jeden binary).
+Cíl je, aby tři kritici podle `docs/RUBRIC.md` dali každý **9/10**.
 
-## Stav (hotovo)
-- Repo: `~/projects/dok`, branch `main`, commity lokálně.
-- Služby na desktopu (user systemd): `dok.service` (port 8080), `dok-traefik-sync.path` + `.service`.
-- Veřejně: `https://dok.solta.tech` (passkey zatím neregistrovaný), `https://hello.apps.solta.tech`, `https://docker-hello.apps.solta.tech`.
-- Traefik na ku-botu proxyuje `dok.solta.tech` a `*.apps.solta.tech` na `http://100.88.8.51:8080` (tailscale).
-- Data: `~/.local/share/dok` (dok.db, builds/, backups/, traefik/dok-apps.yaml, initial-token).
-- Funkce: push, Dockerfile build/run, statika, git push deploy, GitHub webhook, redeploy, rollback (poslední 3 buildy), logy, env, domény, limity (`dok.toml memory_mb/cpus`), denní zálohy DB, persistentní sessions, CSRF.
+## Stav
+- Repo `~/projects/dok`, branch `main`, commity lokálně — **nepushovat**.
+- v2 hotové: multi-user passkey auth, týmy/role/pozvánky, sessions v SQLite, projekty,
+  preview deploye s veřejnou URL `<app>-<deploy8>.<base>`, promote/rollback, retence per env,
+  env per prostředí, build auto-detekce (Node/Python/Go), edge režim s ACME a cert lifecycle,
+  per-projekt proxy (hlavičky, basic auth, redirect, komprese), access log, docker stats.
+- Security kolo hotové: host ownership, fail-closed tokeny, team-only projects, CSRF, rate limit,
+  upload capy, git transport allowlist, verzované migrace.
+- Poslední kritiky: feature 5/10, UX 5/10, engineering 5/10 (engineering už opravený).
 
 ## Testy
 ```
-cargo test
-scripts/smoke.sh scripts/docker-smoke.sh scripts/git-smoke.sh scripts/rollback-smoke.sh scripts/auth-smoke.sh
-NODE_PATH=/tmp/dok-e2e/node_modules scripts/e2e-auth.sh
+cargo test                     # 38 testů
+bash scripts/smoke.sh
+bash scripts/docker-smoke.sh
+bash scripts/git-smoke.sh
+bash scripts/rollback-smoke.sh
+bash scripts/preview-smoke.sh
+bash scripts/auth-smoke.sh
+NODE_PATH=/tmp/dok-e2e/node_modules bash scripts/e2e-auth.sh
 ```
 
-## Další kroky v pořadí
-1. **Úklid ku-botu**: smazat `~/.config/systemd/user/dok.service` a `~/dok-src`; data `~/.local/share/dok` nechat jako zálohu; odebrat iptables pravidlo pro 8080; zkontrolovat, že v `/data/coolify/proxy/dynamic/` jsou jen `dok.yaml` a `dok-apps.yaml`.
-2. **`install.sh`**: binárka + user unity + token na nový stroj (režim desktop / edge), idempotentní.
-3. **`dok logs -f`**: live tail (dnes vrací jen posledních 200/300 řádků).
-4. **Keep-awake**: desktop se nesmí uspat, jinak web padá. Přidat user unit se `systemd-inhibit` (sleep:idle) nebo vypnout idle suspend a zdokumentovat.
-5. Doladit README + `docs/DEPLOY.md` pro desktop architekturu, projít CI.
+## Co dodělat (UX kritika, v tomto pořadí)
+1. **First run**: `dok serve` bez flagů nesmí skončit 404. Buď fail-fast s jasnou chybou, nebo
+   branded stránka „dashboard not configured" s konkrétním flagem. Akceptuj `host:port`
+   a `localhost` RP ID (port se nesmí přidat dvakrát).
+2. **Env editor**: secret hodnoty nikdy nevracej do textarea (write-only nebo `KEY=` = beze změny),
+   per-row secret checkbox, mazání klíčů, žádné tiché deklasifikování.
+3. **Flash zprávy** po každém POST (uloženo/chyba) místo `let _ =`; validační chyby inline s 422,
+   ne 404/500.
+4. **Error stránky**: branded HTML 502/504/404 s názvem appky, časem posledního dobrého deploye
+   a request id. Dashboard jen na dashboard hostu; cizí hosty generic 404, žádný seznam projektů.
+5. **Logs tab**: live stream přes session (ne bearer odkaz), výběr deploye, pause/copy/download,
+   prázdné stavy, access log tabulka.
+6. **Teams UI**: změna role, odebrání člena, seznam/revoke pozvánek, vytvoření týmu;
+   join stránka řekne tým a kdo zve; neplatný invite hned, ne až po passkey.
+7. **Destruktivní akce**: confirm s výčtem co zmizí, potvrzení u domén, jednotný danger pattern.
+8. **Wayfinding**: aktivní projekt v sidebaru, titulky `{projekt} · {tab} · dok`, reálná metadata
+   karet, badge pro new/failed, absolutní časy, promote jen u preview deployů.
+9. **Mobil/a11y**: `main` první v DOM, drawer sidebar, `:focus-visible`, labely, formuláře s Enterem,
+   kontrast ≥4.5:1, 44px tap targets.
 
-## Pozor
-- Traefik vydá cert jen pro přesné `Host()` pravidlo → `dok-apps.yaml` se generuje při každém deployi a syncuje na ku-bot. Nový host má cert ~10 s po prvním requestu.
-- `docker.sock` na desktopu má ACL pro `jachym` (`/etc/systemd/system/docker.socket.d/dok-acl.conf`); user systemd nemá docker grupu.
-- Na ku-botu jsou ACL na `/data/coolify`, `/data/coolify/proxy`, `.../dynamic` pro `ubuntu`.
-- `coolify-proxy` nikdy nerestartovat (Traefik hot-reload z dynamické složky).
+## Loop
+Po opravách spusť 3 nezávislé kritiky jako fresh `opencode run` (produkt/funkce, UX/design,
+engineering/security) s rubrikou z `docs/RUBRIC.md`, výsledky ulož do `docs/REVIEW-round-N.md`.
+Opakuj, dokud všechny tři nedají **≥9**. Maximum 4 kola; každé kolo commit.
 
-## Pravidla
-- Po každém kroku commit lokálně, **nepushovat**.
-- Nikdy nekončit blokující otázkou; pracovat průběžně a psát, co je hotové.
+## Až bude hotovo
+- commit lokálně (nepushovat)
+- pošli mail na `jachym@solta.tech`:
+  ```
+  printf '...shrnutí, skóre, URL...' > /tmp/dok-mail.txt
+  ssh ku-bot '~/bin/mailsend jachym@solta.tech "dok: hotovo (9/10)" /tmp/dok-mail.txt'
+  ```
+- Nikdy nekonči blokující otázkou; pracuj průběžně a piš, co je hotové.
 - Žádná tajemství do repa.
