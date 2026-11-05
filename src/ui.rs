@@ -110,6 +110,7 @@ pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;
  .btn,.menu,.tabs a,.side a{min-height:44px}
  .tabs a{display:flex;align-items:center;justify-content:center;flex:1 0 auto}
  .grid{grid-template-columns:1fr}
+ input,select,textarea{font-size:16px}
  .head{padding-top:18px}
  .errpage{margin:8vh auto}
 }
@@ -924,10 +925,11 @@ fn tabs(app: &str, active: &str) -> String {
     let mut s = String::from("<nav class=tabs>");
     for (id, label) in items {
         s.push_str(&format!(
-            "<a class=\"{}\" href=\"/dashboard/project/{}/{}\">{}</a>",
+            "<a class=\"{}\" href=\"/dashboard/project/{}/{}\"{}>{}</a>",
             if id == active { "on" } else { "" },
             esc(app),
             id,
+            if id == active { " aria-current=page" } else { "" },
             label
         ));
     }
@@ -1069,7 +1071,7 @@ async fn render_project(
                 format!("<pre class=log id=build-log>{}</pre>", esc(&build))
             };
             let runtime_body = if kind != "docker" {
-                format!("<div class=empty><strong>Static app</strong><div class=small style=\"margin-top:6px\">This project is served as files, so there is no container runtime log. Build output is above.</div></div>")
+                "<div class=empty><strong>Static app</strong><div class=small style=\"margin-top:6px\">This project is served as files, so there is no container runtime log. Build output is above.</div></div>".to_string()
             } else if runtime.trim().is_empty() {
                 "<div class=empty><strong>No runtime output yet</strong><div class=small style=\"margin-top:6px\">The container has not written to stdout/stderr.</div></div>".to_string()
             } else {
@@ -1288,14 +1290,14 @@ liveCtl=null;b.textContent='Live stream';}}\
                 "<h2 style=\"margin-top:18px\">Proxy</h2>\
 <div class=\"muted small\" style=\"margin-bottom:12px\">Applied by the built-in edge/proxy on every request to this project.</div>\
 <form method=post action=\"/dashboard/proxy/{app}\" class=form>{csrf}\
-<label>Custom response headers (Name: value, one per line)</label>\
-<textarea name=headers placeholder=\"X-Frame-Options: DENY\nContent-Security-Policy: default-src 'self'\">{headers}</textarea>\
-<label>Basic auth user</label><input name=basic_auth_user value=\"{user}\" placeholder=\"leave blank to disable\">\
-<label>Basic auth password</label><input name=basic_auth_password type=password placeholder=\"{pw}\">\
-<label>www / apex redirect</label><select name=redirect>{opts}</select>\
+<label for=proxy-headers>Custom response headers (Name: value, one per line)</label>\
+<textarea id=proxy-headers name=headers placeholder=\"X-Frame-Options: DENY\nContent-Security-Policy: default-src 'self'\">{headers}</textarea>\
+<label for=basic-user>Basic auth user</label><input id=basic-user name=basic_auth_user value=\"{user}\" placeholder=\"leave blank to disable\">\
+<label for=basic-pass>Basic auth password</label><input id=basic-pass name=basic_auth_password type=password placeholder=\"{pw}\">\
+<label for=redirect>www / apex redirect</label><select id=redirect name=redirect>{opts}</select>\
 <div class=\"row\" style=\"margin-top:12px\"><label style=\"margin:0\"><input type=checkbox name=compression value=1{comp} style=\"width:auto\"> Compress static text</label>\
 <label style=\"margin:0\"><input type=checkbox name=force_https value=1{https} style=\"width:auto\"> Force HTTPS</label></div>\
-<label>Max request body (MB, 0 = unlimited)</label><input name=max_body_mb type=number min=0 max=512 value=\"{max}\">\
+<label for=max-body>Max request body (MB, 0 = unlimited)</label><input id=max-body name=max_body_mb type=number min=0 max=512 value=\"{max}\">\
 <button class=\"btn primary\">Save proxy settings</button></form>",
                 app = esc(&app.name),
                 csrf = csrf,
@@ -1362,7 +1364,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                         csrf = csrf,
                         confirm = confirm(&format!(
                             "Roll production back to deploy {}? Visitors switch to this build as soon as it is ready.",
-                            &d.id.chars().take(8).collect::<String>()
+                            d.id.chars().take(8).collect::<String>()
                         ))
                     ));
                 }
@@ -1565,6 +1567,7 @@ fn render_team(
     let now = crate::db::now();
     let mut invite_rows = String::new();
     for (token, role, created, expires, used, invited_by) in &invites {
+        let role_html = format!("<span class=badge>{}</span>", esc(role));
         let state = if used.is_some() {
             "<span class=badge>used</span>".to_string()
         } else if *expires <= now {
@@ -1600,7 +1603,7 @@ fn render_team(
                 "by {}",
                 invited_by.as_deref().unwrap_or("an owner")
             )),
-            role = format!("<span class=badge>{}</span>", esc(role)),
+            role = role_html,
             state = state,
             created = when(*created),
             expires = when(*expires),

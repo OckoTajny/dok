@@ -368,6 +368,7 @@ impl Db {
         let lock_path = path.with_extension("migrate.lock");
         let lock = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&lock_path)
