@@ -977,18 +977,23 @@ fn cert_table(st: &AppState, app: &App, csrf: &str) -> String {
             "expiring" => "run",
             _ => "",
         };
+        let expires = info["expires"]
+            .as_i64()
+            .map(fmt_time)
+            .unwrap_or_else(|| "-".into());
         rows.push_str(&format!(
-            "<tr><td><code>{host}</code></td><td><span class=\"badge {cls}\">{status}</span></td><td style=\"text-align:right\">\
+            "<tr><td><code>{host}</code></td><td><span class=\"badge {cls}\">{status}</span></td><td class=muted>{expires}</td><td style=\"text-align:right\">\
 <form class=inline method=post action=/dashboard/certificates/renew>{csrf}<input type=hidden name=app value=\"{app}\"><input type=hidden name=host value=\"{host}\">\
 <button class=\"btn link\">Renew</button></form></td></tr>",
             host = esc(&host),
             cls = cls,
             status = esc(status),
+            expires = esc(&expires),
             csrf = csrf,
             app = esc(&app.name)
         ));
     }
-    format!("<table><thead><tr><th>Host</th><th>Status</th><th></th></tr></thead><tbody>{rows}</tbody></table><p class=\"muted small\">Certificates are issued by the built-in edge (<code>dok serve --edge</code>) or your external proxy.</p>")
+    format!("<div style=\"overflow:auto\"><table><thead><tr><th>Host</th><th>Status</th><th>Expires</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div><p class=\"muted small\">Certificates are issued by the built-in edge (<code>dok serve --edge</code>) or your external proxy.</p>")
 }
 
 async fn render_project(
