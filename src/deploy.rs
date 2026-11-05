@@ -221,6 +221,7 @@ pub async fn deploy_dir(
         updated_at: crate::db::now(),
     };
     st.db.upsert_app(&row)?;
+    st.sync_traefik();
 
     // Point traffic at the new container, then retire the old one.
     if kind == "docker" {

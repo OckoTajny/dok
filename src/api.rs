@@ -109,7 +109,10 @@ async fn delete_app(State(st): State<AppState>, Path(app): Path<String>) -> Resp
     deploy::stop_container(&app).await;
     let _ = tokio::fs::remove_dir_all(st.builds_dir().join(&app)).await;
     match st.db.delete_app(&app) {
-        Ok(_) => Json(json!({"deleted": app})).into_response(),
+        Ok(_) => {
+            st.sync_traefik();
+            Json(json!({"deleted": app})).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -229,7 +232,10 @@ async fn set_domain(
     }
     let domain = b.domain.trim_end_matches('.').to_ascii_lowercase();
     match st.db.set_domain(&app, &domain) {
-        Ok(_) => Json(json!({"ok": true, "domain": domain})).into_response(),
+        Ok(_) => {
+            st.sync_traefik();
+            Json(json!({"ok": true, "domain": domain})).into_response()
+        }
         Err(e) => internal(e),
     }
 }

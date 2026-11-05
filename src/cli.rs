@@ -66,6 +66,9 @@ pub struct ServeArgs {
     /// Public origin for the passkey dashboard, e.g. https://dok.example.com.
     #[arg(long, env = "DOK_DASHBOARD_ORIGIN")]
     pub dashboard_origin: Option<String>,
+    /// Traefik file-provider directory; dok writes per-app routers there.
+    #[arg(long, env = "DOK_TRAEFIK_DIR")]
+    pub traefik_dir: Option<PathBuf>,
     /// Register this API token (otherwise one is generated on first start).
     #[arg(long, env = "DOK_TOKEN")]
     pub token: Option<String>,

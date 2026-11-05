@@ -77,7 +77,10 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         args.base_domain.clone(),
         public_url.clone(),
     )
-    .with_auth(auth);
+    .with_auth(auth)
+    .with_traefik_dir(args.traefik_dir.clone());
+
+    st.sync_traefik();
 
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.http_port));
     tracing::info!("listening on {addr}, public url {public_url}");

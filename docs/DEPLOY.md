@@ -34,7 +34,10 @@ cat ~/.local/share/dok/initial-token
 # 4. Traefik route (no restart, Traefik watches the dir)
 sudo install -m644 deploy/traefik-dok.yaml /data/coolify/proxy/dynamic/dok.yaml
 
-# 5. allow Traefik -> host:8080
+# 5. let dok write its per-app routers into the Traefik dynamic dir
+sudo setfacl -m u:ubuntu:rwx /data/coolify/proxy/dynamic
+
+# 6. allow Traefik -> host:8080
 sudo iptables -I INPUT -s 172.18.0.0/16 -p tcp -m tcp --dport 8080 -j ACCEPT
 sudo netfilter-persistent save   # or iptables-save > /etc/iptables/rules.v4
 ```
