@@ -4,6 +4,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub type HttpClient = Client<HttpConnector, Body>;
 
@@ -16,6 +17,8 @@ pub struct AppState {
     pub base_domain: Option<String>,
     /// Public base URL used in CLI output (http://host:port or https://host).
     pub public_url: String,
+    /// Passkey dashboard, when configured.
+    pub auth: Option<Arc<crate::auth::AuthState>>,
 }
 
 impl AppState {
@@ -27,7 +30,13 @@ impl AppState {
             client,
             base_domain,
             public_url,
+            auth: None,
         }
+    }
+
+    pub fn with_auth(mut self, auth: Option<Arc<crate::auth::AuthState>>) -> Self {
+        self.auth = auth;
+        self
     }
 
     pub fn builds_dir(&self) -> PathBuf {

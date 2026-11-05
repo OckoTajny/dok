@@ -25,6 +25,7 @@ pub fn router(st: AppState) -> Router {
         .route("/apps/{app}/env", put(put_env).get(get_env))
         .route("/apps/{app}/domain", post(set_domain))
         .route("/apps/{app}/repo", post(set_repo))
+        .route("/apps/{app}/git-init", post(git_init))
         .route("/apps/{app}/redeploy", post(redeploy))
         .route_layer(middleware::from_fn_with_state(st.clone(), require_token));
 
@@ -37,7 +38,13 @@ pub fn router(st: AppState) -> Router {
 }
 
 async fn proxy_fallback(State(st): State<AppState>, req: Request) -> Response {
-    proxy::handle(st, req).await
+    if let Some(app) = proxy::app_for(&st, &req) {
+        return proxy::serve_app(st, req, app).await;
+    }
+    if let Some(r) = crate::auth::handle(&st, req).await {
+        return r;
+    }
+    proxy::landing(&st)
 }
 
 async fn health() -> impl IntoResponse {
@@ -214,6 +221,62 @@ async fn set_repo(
     }
 }
 
+async fn git_init(State(st): State<AppState>, Path(app): Path<String>) -> Response {
+    if !matches!(st.db.get_app(&app), Ok(Some(_))) {
+        return (StatusCode::NOT_FOUND, "no such app\n").into_response();
+    }
+    match init_bare_repo(&st, &app) {
+        Ok((path, hook)) => {
+            let _ = st.db.set_repo(&app, &path);
+            Json(json!({
+                "app": app,
+                "path": path,
+                "remote": format!("ssh://<user>@<host>{path}"),
+                "hint": format!("git remote add dok ssh://<user>@<host>{path} && git push dok main"),
+                "hook": hook,
+            }))
+            .into_response()
+        }
+        Err(e) => internal(e),
+    }
+}
+
+fn init_bare_repo(st: &AppState, app: &str) -> anyhow::Result<(String, String)> {
+    let dir = st.data.join("repos").join(format!("{app}.git"));
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if !dir.exists() {
+        let out = std::process::Command::new("git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(&dir)
+            .output()?;
+        if !out.status.success() {
+            anyhow::bail!("git init failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+    let exe = std::env::current_exe()?;
+    let log = st.data.join("logs").join(format!("{app}.log"));
+    if let Some(parent) = log.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let hook_body = format!(
+        "#!/bin/sh\nexec '{}' deploy-git '{}' --data '{}' >> '{}' 2>&1\n",
+        exe.display(),
+        app,
+        st.data.display(),
+        log.display()
+    );
+    let hook_path = dir.join("hooks/post-receive");
+    std::fs::write(&hook_path, hook_body)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok((dir.to_string_lossy().to_string(), hook_path.to_string_lossy().to_string()))
+}
+
 async fn redeploy(State(st): State<AppState>, Path(app): Path<String>) -> Response {
     match deploy_from_repo(&st, &app).await {
         Ok(out) => Json(out).into_response(),
@@ -260,7 +323,7 @@ async fn github_hook(
     }
 }
 
-async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<DeployOutcome> {
+pub async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<DeployOutcome> {
     let row = st
         .db
         .get_app(app)?

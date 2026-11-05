@@ -43,12 +43,31 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         }
     };
 
+    let origin = args
+        .dashboard_origin
+        .clone()
+        .unwrap_or_else(|| public_url.clone());
+    let auth = match url::Url::parse(&origin) {
+        Ok(u) => match crate::auth::AuthState::new(u) {
+            Ok(a) => Some(std::sync::Arc::new(a)),
+            Err(e) => {
+                tracing::warn!("dashboard disabled: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!("dashboard disabled: bad origin {origin}: {e}");
+            None
+        }
+    };
+
     let st = AppState::new(
         db,
         data.clone(),
         args.base_domain.clone(),
         public_url.clone(),
-    );
+    )
+    .with_auth(auth);
 
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.http_port));
     tracing::info!("listening on {addr}, public url {public_url}");

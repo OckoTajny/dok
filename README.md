@@ -6,7 +6,8 @@ Tiny self-hosted deploy platform in one Rust binary. Think "Vercel/Coolify, but 
 - Dockerfile → build + run container, otherwise the directory is served statically
 - built-in reverse proxy with host routing (`app.example.com` or `<app>.base.domain`)
 - automatic Let's Encrypt certificates (TLS-ALPN-01)
-- git deploy: `git clone` on webhook/redeploy
+- git deploy: `git push`, GitHub webhook, or `dok redeploy`
+- passkey dashboard (Proton Pass, iCloud, Google, hardware keys) — no passwords
 - SQLite, no external services
 
 ```
@@ -42,6 +43,7 @@ dok logs <app>                   build + runtime logs
 dok env <app> KEY=VALUE ...      set env (applies on next deploy)
 dok domain <app> <host>          route a domain
 dok git <app> <repo-url>         repo used by webhooks / redeploy
+dok git-init <app>               make a bare repo, print the git remote
 dok redeploy <app>               clone + deploy from the repo
 dok rm <app>                     stop container, delete app
 ```
@@ -62,7 +64,18 @@ domain = "my-app.example.com"
 | Tarball | `dok push` |
 | Docker | a `Dockerfile` in the uploaded directory |
 | Static | no `Dockerfile` (SPA fallback to `index.html`) |
-| Git | `dok git <app> <url>` + `dok redeploy`, or GitHub webhook |
+| Git | `git push` to the bare repo, `dok redeploy`, or GitHub webhook |
+
+`git push` deploy:
+
+```bash
+dok git-init my-app            # prints ssh://<user>@<host>/<data>/repos/my-app.git
+git remote add dok ssh://<user>@<host>/<data>/repos/my-app.git
+git push dok main              # post-receive hook builds and deploys
+```
+
+The hook runs `dok deploy-git <app> --data <dir>`; the ssh user needs read/write
+access to that directory (or use the `file://` path locally).
 
 GitHub webhook:
 
@@ -92,13 +105,24 @@ dok serve [--data DIR] [--http-port 8080] [--base-domain example.com]
 Everything lives in the data dir (`~/.local/share/dok` by default):
 `dok.db`, `builds/`, `acme/`, `initial-token`.
 
+## Dashboard and passkeys
+
+Open the server in a browser (`--dashboard-origin https://dok.example.com`).
+On first visit you register a passkey; that becomes the admin login. Any
+WebAuthn provider works, including Proton Pass, iCloud Keychain, Google
+Password Manager and hardware keys. No passwords, no tokens in the browser.
+The dashboard lists apps, their status and domains.
+
+Sessions live in memory, so a server restart logs you out (the passkey stays).
+
 ## Roadmap
 
 - [x] push, docker, static, proxy, ACME, webhook, CLI
-- [ ] passkey login for a small web dashboard (works with Proton Pass passkeys)
-- [ ] `git push dok main` via bare repos + `post-receive`
+- [x] passkey dashboard (Proton Pass passkeys)
+- [x] `git push dok main` via bare repos + `post-receive`
 - [ ] zero-downtime switch, per-app resource limits
 - [ ] `dok logs -f`
+- [ ] arm64 build + one-command install
 
 ## License
 

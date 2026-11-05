@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod cli;
 mod db;
 mod deploy;
@@ -17,6 +18,19 @@ fn main() -> anyhow::Result<()> {
                 .build()?;
             rt.block_on(server::run(args))
         }
+        cli::Cmd::DeployGit { app, data } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(cli::deploy_git(app, data))
+        }
         cmd => cli::run(cmd),
     }
+}
+
+#[allow(dead_code)]
+fn _assert_send()
+where
+    std::sync::Arc<crate::auth::AuthState>: Send + Sync,
+{
 }

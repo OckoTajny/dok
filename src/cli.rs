@@ -37,6 +37,11 @@ pub enum Cmd {
     Git { app: String, repo: String },
     /// Redeploy from the configured repo.
     Redeploy { app: String },
+    /// Create a bare repo on the server and print the git remote.
+    GitInit { app: String },
+    /// Internal: deploy a pushed git repo (called by the post-receive hook).
+    #[command(hide = true)]
+    DeployGit { app: String, #[arg(long)] data: String },
     /// Delete an app and stop its container.
     Rm { app: String },
 }
@@ -58,6 +63,9 @@ pub struct ServeArgs {
     /// Host shown in CLI output when no domain is set.
     #[arg(long, env = "DOK_PUBLIC_HOST", default_value = "127.0.0.1")]
     pub public_host: String,
+    /// Public origin for the passkey dashboard, e.g. https://dok.example.com.
+    #[arg(long, env = "DOK_DASHBOARD_ORIGIN")]
+    pub dashboard_origin: Option<String>,
     /// Register this API token (otherwise one is generated on first start).
     #[arg(long, env = "DOK_TOKEN")]
     pub token: Option<String>,
@@ -220,6 +228,15 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 .send()?;
             handle(resp)
         }
+        Cmd::GitInit { app } => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .post(format!("{}/api/v1/apps/{app}/git-init", base(&cfg)))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            handle(resp)
+        }
+        Cmd::DeployGit { .. } => unreachable!("deploy-git is async"),
         Cmd::Redeploy { app } => {
             let cfg = load_config()?;
             let resp = client()?
@@ -237,6 +254,24 @@ pub fn run(cmd: Cmd) -> Result<()> {
             handle(resp)
         }
     }
+}
+
+pub async fn deploy_git(app: String, data: String) -> Result<()> {
+    let data = PathBuf::from(expand_home(&data));
+    let db = crate::db::Db::open(&data.join("dok.db"))?;
+    let st = crate::state::AppState::new(db, data, None, String::new());
+    let out = crate::api::deploy_from_repo(&st, &app).await?;
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+fn expand_home(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest).to_string_lossy().to_string();
+        }
+    }
+    p.to_string()
 }
 
 fn push(args: PushArgs) -> Result<()> {

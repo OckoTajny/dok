@@ -15,7 +15,7 @@ const HOP_BY_HOP: &[&str] = &[
     "upgrade",
 ];
 
-pub async fn handle(st: AppState, req: Request<Body>) -> Response<Body> {
+pub fn app_for(st: &AppState, req: &Request<Body>) -> Option<crate::db::App> {
     let host = req
         .headers()
         .get(header::HOST)
@@ -25,19 +25,17 @@ pub async fn handle(st: AppState, req: Request<Body>) -> Response<Body> {
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
+    find_app(st, &host)
+}
 
-    let app = match find_app(&st, &host) {
-        Some(a) => a,
-        None => return not_found(&st, &req),
-    };
-
+pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) -> Response<Body> {
     match app.kind.as_str() {
         "static" => {
             let dir = app.dir.clone().unwrap_or_default();
             let path = req.uri().path().to_string();
             match serve_static(Path::new(&dir), &path).await {
                 Some(r) => r,
-                None => not_found(&st, &req),
+                None => landing(&st),
             }
         }
         _ => match app.host_port {
@@ -175,7 +173,7 @@ fn bad_gateway(msg: &str) -> Response<Body> {
         .unwrap()
 }
 
-fn not_found(st: &AppState, _req: &Request<Body>) -> Response<Body> {
+pub fn landing(st: &AppState) -> Response<Body> {
     let mut names = Vec::new();
     if let Ok(apps) = st.db.list_apps() {
         for a in apps {

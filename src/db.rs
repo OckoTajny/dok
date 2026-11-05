@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS tokens (
   name TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS deploys (
   id TEXT PRIMARY KEY,
   app TEXT NOT NULL,
@@ -219,6 +223,27 @@ impl Db {
             )
             .optional()?;
         Ok(log)
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let c = self.conn();
+        let v = c
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(v)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     pub fn count_tokens(&self) -> Result<i64> {
