@@ -38,6 +38,16 @@ apps. Custom domains cannot be added on `*.<base_domain>`. Preview deploys are
 routed on `<app>-<deploy8>.<base_domain>` and keep their own artifact, so they
 never replace production.
 
+The dashboard, passkey auth and token API only answer on the dashboard host.
+A bare `dok serve` uses `http://localhost:<port>` as the WebAuthn origin, so
+open that URL (not a bare IP) the first time. `--dashboard-origin` accepts a
+full URL or `host:port`; if it is omitted, `--public-host` is used and bare IPs
+fall back to `localhost`. The inherited dashboard cookie and CSRF flow is
+unchanged.
+
+Proxy errors (404/502/504) are branded pages with the app name, last good
+production deploy and an `x-request-id`; they never list other projects.
+
 Certificates are refreshed when the DB host set changes and a renew request
 forces a fresh ACME order; `notAfter` is parsed into the certificate status
 shown in the UI. A wildcard DNS/TLS setup is still recommended if preview

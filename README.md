@@ -30,12 +30,19 @@ On the server:
 # or: DOMAIN=dok.example.com BASE_DOMAIN=apps.example.com ./install.sh
 ```
 
-The installer prints the initial token. On your laptop:
+The installer prints the initial token. First run: open the dashboard URL
+(`http://localhost:8080` for a bare `dok serve`, or your
+`--dashboard-origin`) and register a passkey. Then, on your laptop:
 
 ```bash
 dok login https://dok.example.com <token>
 dok push ./my-app --app my-app
 ```
+
+A bare `dok serve` works out of the box: the dashboard defaults to
+`http://localhost:<port>` because WebAuthn needs a hostname rather than a bare
+IP. `--dashboard-origin` accepts a full URL or just `host:port`, and the port
+is never appended twice.
 
 If the machine may sleep, install the keep-awake unit too:
 
@@ -143,6 +150,9 @@ dok serve [--data DIR] [--http-port 8080] [--base-domain example.com]
 - With `--acme-domain` it also listens on `:443` and issues certificates.
   Add domains **before** starting the server (or `dok domain` + restart); the
   ACME domain list is built at startup.
+- The dashboard, passkey auth and token API are only served on the dashboard
+  host (and its `localhost` alias). Every other host is either proxied to a
+  project or answers a generic branded 404 without a project list.
 
 Everything lives in the data dir (`~/.local/share/dok` by default):
 `dok.db`, `builds/`, `acme/`, `logs/`, `locks/`, `backups/`, `initial-token`.
@@ -157,11 +167,16 @@ WebAuthn provider works, including Proton Pass, iCloud Keychain, Google
 Password Manager and hardware keys. No passwords, no tokens in the browser.
 Additional users join through a seven-day invite link from the team page.
 
-Each project has tabs for **Deployments** (env badge, promote/rollback),
-**Logs**, **Environment** (production / preview / development), **Domains**
-(with certificate status and renew), **Proxy** and **Settings**. Sessions and
-CSRF tokens live in SQLite, so a restart does not log you out; every dashboard
-write is CSRF-protected.
+Each project has tabs for **Deployments** (env badge, promote only previews,
+rollback), **Logs** (deploy picker, live session stream with pause, copy and
+download, access log), **Environment** (production / preview / development),
+**Domains** (with certificate status and renew), **Proxy** and **Settings**.
+Environment secrets are write-only: values are masked, `KEY=` in the bulk
+editor keeps the current value, and a secret can only be declassified by
+explicitly clearing its per-row checkbox. Every write returns a flash message;
+validation errors are inline `422` pages. Sessions and CSRF tokens live in
+SQLite, so a restart does not log you out; every dashboard write is
+CSRF-protected.
 
 ## API (v1)
 
@@ -233,8 +248,19 @@ path, status, latency, client IP) with automatic retention. They are shown on
 the project Logs page and exposed at `/api/v1/projects/{app}/access-log`.
 The dashboard live stream is session-authenticated (`/dashboard/stream/<app>`),
 so no API token is needed in the browser. Build logs can be selected per deploy,
-and metrics show real `docker stats` CPU/memory (or explicit nulls when Docker
-stats are unavailable).
+the runtime stream can be paused, copied or downloaded, and metrics show real
+`docker stats` CPU/memory (or explicit nulls when Docker stats are unavailable).
+
+Proxy failures are branded HTML pages with the project name, the last good
+production deploy and a request id (also returned as `x-request-id`) for 404,
+502 and 504. They never expose the dashboard or other project names.
+
+## Teams
+
+The team page lists members with editable roles, remove-with-confirmation,
+invite links with creator, status, expiry and revoke, plus team creation. A
+join link names the team and inviter before the passkey prompt and reports an
+invalid or expired invite immediately instead of after the ceremony.
 
 ## Safety limits
 
@@ -260,6 +286,8 @@ viewers. Invites are single-use and expire after seven days.
 - [x] teams, invites, production/preview, promote/rollback, per-env vars
 - [x] per-project proxy settings, access log, certificate status UI
 - [x] built-in edge mode with HTTP-01 + TLS-ALPN-01
+- [x] first-run onboarding, write-only secrets, flash messages, branded error pages
+- [x] full team management UI, live log controls, mobile drawer and a11y pass
 
 ## License
 

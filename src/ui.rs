@@ -685,7 +685,7 @@ fn layout_with_sidebar(
 <button class=scrim type=button aria-label=\"Close menu\" onclick=\"toggleNav()\"></button>{side}</div></div>\
 <script>\
 function toggleNav(b){{var open=document.body.classList.toggle('nav-open');\
-if(b&&b.classList.contains('menu'))b.setAttribute('aria-expanded',open);\
+var m=document.querySelector('button.menu');if(m)m.setAttribute('aria-expanded',open);\
 if(open){{var c=document.getElementById('nav-close');if(c)c.focus();}}}}\
 document.addEventListener('keydown',function(e){{if(e.key==='Escape'&&document.body.classList.contains('nav-open'))document.body.classList.remove('nav-open');}});\
 </script>",
@@ -1398,7 +1398,12 @@ fn render_team(
     for (u, role) in &members {
         let current = role.as_str();
         let mut opts = String::new();
+        let mut seen: Vec<&str> = Vec::new();
         for r in granted.iter().copied().chain(std::iter::once(current)) {
+            if seen.contains(&r) {
+                continue;
+            }
+            seen.push(r);
             opts.push_str(&format!(
                 "<option value=\"{r}\"{}>{r}</option>",
                 if r == current { " selected" } else { "" }
@@ -1896,6 +1901,14 @@ pub async fn handle(
         }
         let back = format!("/dashboard/team?team={}", team.slug);
         if form.get("action").map(String::as_str) == Some("remove") {
+            if matches!(target_role.as_deref(), Some("owner") | Some("admin"))
+                && actor_role.as_deref() != Some("owner")
+            {
+                return Some(unprocessable(
+                    "Only an owner can remove an owner or admin.",
+                    &back,
+                ));
+            }
             if target_role.as_deref() == Some("owner") && st.db.owner_count(&team.id).unwrap_or(0) <= 1
             {
                 return Some(unprocessable(
@@ -2127,6 +2140,14 @@ pub async fn handle(
                     ));
                 }
             }
+            if let Ok(Some(other)) = st.db.app_domain_owner(&host) {
+                if other != app.name {
+                    return Some(unprocessable(
+                        "That domain is the primary domain of another project.",
+                        &back,
+                    ));
+                }
+            }
             if let Err(e) = st.db.add_domain(&app.name, &host) {
                 return Some(server_error(&e.to_string()));
             }
@@ -2234,7 +2255,7 @@ fn valid_env_key(k: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{age, parse_vars};
+    use super::{age, dec_cookie, enc_cookie, fmt_time, parse_vars};
 
     #[test]
     fn parses_env_lines() {
@@ -2247,6 +2268,118 @@ mod tests {
                 ("C".into(), "".into(), false),
             ]
         );
+    }
+
+    #[test]
+    fn formats_absolute_time() {
+        assert_eq!(fmt_time(0), "1970-01-01 00:00 UTC");
+        assert_eq!(fmt_time(1_700_000_000), "2023-11-14 22:13 UTC");
+        assert_eq!(fmt_time(1_793_891_740), "2026-11-05 15:15 UTC");
+    }
+
+    #[test]
+    fn flash_cookies_roundtrip() {
+        let raw = "ok|Project my-app created. 100%";
+        assert_eq!(dec_cookie(&enc_cookie(raw)).unwrap(), raw);
+        assert!(enc_cookie(raw).bytes().all(|b| b.is_ascii_graphic() && b != b';'));
+    }
+
+    #[tokio::test]
+    async fn env_editor_keeps_secrets_write_only() {
+        let path = std::env::temp_dir().join(format!("dok-ui-env-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::db::Db::open(&path).unwrap();
+        let u = db.create_user("env@example.com", "Env").unwrap();
+        let t = db.create_team("Env", "env", &u.id).unwrap();
+        db.upsert_app(&crate::db::App {
+            name: "app".into(),
+            team_id: Some(t.id),
+            kind: "static".into(),
+            image: None,
+            memory_mb: None,
+            cpus: None,
+            host_port: None,
+            container_port: None,
+            domain: None,
+            status: "new".into(),
+            dir: None,
+            repo: None,
+            production_deploy: None,
+            framework: None,
+            updated_at: crate::db::now(),
+        })
+        .unwrap();
+        let data = std::env::temp_dir().join(format!("dok-ui-env-data-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data).unwrap();
+        let st = crate::state::AppState::new(db.clone(), data, None, "http://localhost".into());
+        let auth = crate::auth::AuthState::new(url::Url::parse("http://localhost").unwrap()).unwrap();
+        let session = || crate::auth::Session {
+            user: u.clone(),
+            csrf: "good".into(),
+        };
+        let post = |body: &str| {
+            axum::http::Request::builder()
+                .method(axum::http::Method::POST)
+                .uri("/dashboard/env/app")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap()
+        };
+        let get = || {
+            axum::http::Request::builder()
+                .uri("/dashboard/project/app/env")
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+
+        let r = super::handle(
+            &st,
+            &auth,
+            post("csrf=good&env=production&op=set&key=TOKEN&value=s3cret&secret=1"),
+            Some(session()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.status(), axum::http::StatusCode::SEE_OTHER);
+
+        let r = super::handle(&st, &auth, get(), Some(session())).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), 512 * 1024).await.unwrap();
+        let page = String::from_utf8_lossy(&body);
+        assert!(!page.contains("s3cret"), "secret leaked into the page");
+        assert!(page.contains("TOKEN="), "secret key missing from bulk editor");
+
+        // `KEY=` in the bulk editor keeps the stored secret value.
+        let r = super::handle(
+            &st,
+            &auth,
+            post("csrf=good&env=production&op=bulk&vars=TOKEN%3D%0AOTHER%3D1"),
+            Some(session()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.status(), axum::http::StatusCode::SEE_OTHER);
+        let vars = db.env("app", "production").unwrap();
+        assert_eq!(
+            vars,
+            vec![
+                ("OTHER".into(), "1".into(), false),
+                ("TOKEN".into(), "s3cret".into(), true),
+            ]
+        );
+
+        // Unchecking the per-row secret box is the only way to declassify.
+        super::handle(
+            &st,
+            &auth,
+            post("csrf=good&env=production&op=set&key=TOKEN"),
+            Some(session()),
+        )
+        .await
+        .unwrap();
+        let vars = db.env("app", "production").unwrap();
+        let token = vars.iter().find(|(k, _, _)| k == "TOKEN").unwrap();
+        assert_eq!(token.1, "s3cret");
+        assert!(!token.2);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

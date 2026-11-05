@@ -130,7 +130,14 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         args.http_port
     };
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, http_port));
-    tracing::info!("listening on {addr}, public url {public_url}");
+    tracing::info!(
+        "listening on {addr}, public url {public_url}, dashboard {origin}{}",
+        if origin != public_url {
+            " (open the dashboard on this URL for passkeys)"
+        } else {
+            ""
+        }
+    );
 
     let mut domains = args.acme_domain.clone();
     for (_, d) in st.db.domains().unwrap_or_default() {
