@@ -776,6 +776,7 @@ function toggleNav(b){{var open=document.body.classList.toggle('nav-open');\
 var m=document.querySelector('button.menu');if(m)m.setAttribute('aria-expanded',open);\
 if(open){{var c=document.getElementById('nav-close');if(c)c.focus();}}}}\
 document.addEventListener('keydown',function(e){{if(e.key==='Escape'&&document.body.classList.contains('nav-open'))document.body.classList.remove('nav-open');}});\
+function copyText(t,b){{if(!navigator.clipboard)return;navigator.clipboard.writeText(t).then(function(){{if(!b)return;var o=b.textContent;b.textContent='Copied';setTimeout(function(){{b.textContent=o}},1500)}});}}\
 </script>",
         user = esc(&user.name),
         team = esc(selected.map(|t| t.name.as_str()).unwrap_or("")),
@@ -1138,7 +1139,7 @@ async fn render_project(
             let copy_btn = if build.trim().is_empty() {
                 String::new()
             } else {
-                "<button class=\"btn link\" type=button onclick=\"copyLog('build-log')\">Copy</button>\
+                "<button class=\"btn link\" type=button onclick=\"copyLog('build-log',this)\">Copy</button>\
 <button class=\"btn link\" type=button onclick=\"downloadLog('build-log','build.log')\">Download</button>".to_string()
             };
             content.push_str(&format!(
@@ -1147,14 +1148,14 @@ async fn render_project(
 <label class=sr for=deploy-select>Deploy</label><select id=deploy-select name=deploy style=\"max-width:420px\">{selector}</select><button class=\"btn\">Show deploy</button></form>\
 <div class=\"row small\" style=\"margin-bottom:4px\"><h3 style=\"margin:0\">Build log</h3>{copy_btn}</div>{build_body}\
 <div class=\"row small\" style=\"margin:18px 0 4px\"><h3 style=\"margin:0\">Runtime log</h3>\
-<button class=\"btn link\" type=button onclick=\"copyLog('runtime-log')\">Copy</button>\
+<button class=\"btn link\" type=button onclick=\"copyLog('runtime-log',this)\">Copy</button>\
 <button class=\"btn link\" type=button onclick=\"downloadLog('runtime-log','runtime.log')\">Download</button></div>{runtime_body}\
 <div class=\"muted small\" style=\"margin-top:10px\">Runtime: CPU {cpu} · memory {mem}{note}</div>\
 <h3 style=\"margin-top:24px\">Recent requests</h3>\
 <div style=\"overflow:auto\"><table><thead><tr><th>When</th><th>Request</th><th>Status</th><th>Latency</th><th>IP</th></tr></thead><tbody>{access}</tbody></table></div>\
 <script>\
 var liveCtl=null;\
-function copyLog(id){{var el=document.getElementById(id);if(el)navigator.clipboard.writeText(el.textContent);}}\
+function copyLog(id,b){{var el=document.getElementById(id);if(el)copyText(el.textContent,b);}}\
 function downloadLog(id,name){{var el=document.getElementById(id);if(!el)return;var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([el.textContent],{{type:'text/plain'}}));a.download=name;a.click();setTimeout(function(){{URL.revokeObjectURL(a.href)}},2000);}}\
 async function toggleLive(url){{var b=document.getElementById('live-btn');var el=document.getElementById('runtime-log');\
 if(liveCtl){{liveCtl.abort();liveCtl=null;b.textContent='Resume stream';return;}}\
@@ -1645,7 +1646,7 @@ fn render_team(
         let link = esc(&format!("{}/join/{}", st.public_url.trim_end_matches('/'), token));
         let copy = if used.is_none() && *expires > now {
             format!(
-                "<button class=\"btn link\" type=button onclick=\"navigator.clipboard.writeText('{link}')\">Copy link</button>"
+                "<button class=\"btn link\" type=button onclick=\"copyText('{link}',this)\">Copy link</button>"
             )
         } else {
             String::new()
