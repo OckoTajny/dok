@@ -39,6 +39,29 @@ const { chromium } = require("playwright");
   const logs = await page.goto(url + "/dashboard/logs/hello", { waitUntil: "domcontentloaded" });
   if (!logs || logs.status() !== 200) fail("logs page: " + (logs && logs.status()));
 
+  // Every project tab must render, including the edge/certificate views.
+  const tabs = {
+    deployments: "Deployments",
+    env: "Environment",
+    domains: "Certificates",
+    proxy: "Basic auth",
+    settings: "Danger zone",
+  };
+  for (const [tab, needle] of Object.entries(tabs)) {
+    const resp2 = await page.goto(url + "/dashboard/project/hello/" + tab, {
+      waitUntil: "domcontentloaded",
+    });
+    if (!resp2 || resp2.status() !== 200) fail(tab + " tab: " + (resp2 && resp2.status()));
+    const body = await page.textContent("body");
+    if (!body.includes(needle)) fail(tab + " tab missing " + needle);
+  }
+
+  // Creating a project from the dashboard writes through the CSRF-protected form.
+  await page.goto(url + "/dashboard", { waitUntil: "domcontentloaded" });
+  await page.fill('input[name="name"]', "e2e-new");
+  await page.click("text=New project");
+  await page.waitForSelector("text=e2e-new", { timeout: 10000 });
+
   await browser.close();
   console.log("resume: OK");
 })().catch((e) => {

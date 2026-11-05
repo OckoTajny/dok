@@ -1,7 +1,8 @@
-use crate::db::Db;
+use crate::db::{Db, User};
 use crate::state::AppState;
 use axum::body::Body;
 use axum::http::{header, HeaderValue, Request, Response, StatusCode};
+use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -15,14 +16,22 @@ use webauthn_rs::prelude::*;
 pub struct AuthState {
     web: Webauthn,
     secure: bool,
-    pending_reg: Mutex<HashMap<String, (PasskeyRegistration, i64)>>,
+    pending_reg: Mutex<HashMap<String, PendingReg>>,
     pending_auth: Mutex<HashMap<String, (PasskeyAuthentication, i64)>>,
+}
+
+struct PendingReg {
+    state: PasskeyRegistration,
+    user_id: String,
+    email: String,
+    name: String,
+    team: Option<String>,
+    invite: Option<String>,
+    exp: i64,
 }
 
 const COOKIE: &str = "dok_session";
 const SESSION_TTL: i64 = 60 * 60 * 24 * 30;
-const PASSKEY_KEY: &str = "passkeys";
-const USER_KEY: &str = "user_id";
 
 impl AuthState {
     pub fn new(origin: Url) -> anyhow::Result<Self> {
@@ -33,51 +42,29 @@ impl AuthState {
         let web = WebauthnBuilder::new(&rp_id, &origin)?
             .rp_name("dok")
             .build()?;
-        let secure = origin.scheme() == "https";
         Ok(Self {
             web,
-            secure,
+            secure: origin.scheme() == "https",
             pending_reg: Mutex::new(HashMap::new()),
             pending_auth: Mutex::new(HashMap::new()),
         })
     }
 
-    fn passkeys(&self, db: &Db) -> Vec<Passkey> {
-        db.get_setting(PASSKEY_KEY)
-            .ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    fn save_passkeys(&self, db: &Db, keys: &[Passkey]) -> anyhow::Result<()> {
-        db.set_setting(PASSKEY_KEY, &serde_json::to_string(keys)?)?;
-        Ok(())
-    }
-
-    fn user_id(&self, db: &Db) -> Uuid {
-        if let Ok(Some(v)) = db.get_setting(USER_KEY) {
-            if let Ok(u) = Uuid::parse_str(&v) {
-                return u;
-            }
-        }
-        let u = Uuid::new_v4();
-        let _ = db.set_setting(USER_KEY, &u.to_string());
-        u
-    }
-
-    fn start_session(&self, db: &Db) -> String {
+    fn start_session(&self, db: &Db, user_id: &str) -> String {
         let id = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let csrf = Uuid::new_v4().simple().to_string();
-        let _ = db.create_session(&hash(&id), &csrf, SESSION_TTL);
+        let _ = db.create_session(&hash(&id), user_id, &csrf, SESSION_TTL);
         id
     }
 
-    fn session(&self, db: &Db, req: &Request<Body>) -> Option<Session> {
+    pub fn session(&self, db: &Db, req: &Request<Body>) -> Option<Session> {
         let id = cookie(req, COOKIE)?;
         let h = hash(&id);
         match db.session(&h) {
-            Ok(Some((csrf, exp))) if exp > crate::db::now() => Some(Session { csrf }),
+            Ok(Some((user_id, csrf, exp))) if exp > crate::db::now() => {
+                let user = db.user(&user_id).ok().flatten()?;
+                Some(Session { user, csrf })
+            }
             _ => None,
         }
     }
@@ -91,8 +78,9 @@ impl AuthState {
     }
 }
 
-struct Session {
-    csrf: String,
+pub struct Session {
+    pub user: User,
+    pub csrf: String,
 }
 
 fn hash(s: &str) -> String {
@@ -102,8 +90,7 @@ fn hash(s: &str) -> String {
 fn cookie(req: &Request<Body>, name: &str) -> Option<String> {
     let h = req.headers().get(header::COOKIE)?.to_str().ok()?;
     for part in h.split(';') {
-        let part = part.trim();
-        if let Some((k, v)) = part.split_once('=') {
+        if let Some((k, v)) = part.trim().split_once('=') {
             if k == name {
                 return Some(v.to_string());
             }
@@ -117,112 +104,124 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
     let path = req.uri().path().to_string();
     let method = req.method().clone();
     let session = auth.session(&st.db, &req);
+    let first_run = st.db.user_count().ok()? == 0;
 
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
             if session.is_some() {
                 Some(redirect("/dashboard"))
+            } else if first_run {
+                Some(crate::ui::page_setup())
             } else {
-                Some(html(&login_page(auth.passkeys(&st.db).is_empty())))
+                Some(crate::ui::page_login())
             }
         }
-        ("GET", "/dashboard") => {
-            let Some(s) = session else {
-                return Some(redirect("/"));
-            };
-            Some(html(&dashboard_page(st, &s)))
+        ("GET", "/login") => Some(crate::ui::page_login()),
+        ("GET", p) if p.starts_with("/join/") => {
+            let token = p.trim_start_matches("/join/").to_string();
+            Some(crate::ui::page_join(&token))
         }
-        ("POST", "/auth/register/start") => {
-            Some(register_start(st, auth, session.is_some()).await)
-        }
-        ("POST", "/auth/register/finish") => Some(register_finish(st, auth, req).await),
+        ("POST", "/auth/setup/start") => Some(setup_start(st, auth, req).await),
+        ("POST", "/auth/setup/finish") => Some(register_finish(st, auth, req).await),
+        ("POST", "/auth/join/start") => Some(join_start(st, auth, req).await),
         ("POST", "/auth/login/start") => Some(login_start(st, auth)),
         ("POST", "/auth/login/finish") => Some(login_finish(st, auth, req).await),
         ("POST", "/auth/logout") => Some(logout(auth, &st.db, &req)),
         ("GET", "/auth/status") => Some(
             Json(json!({
                 "authenticated": session.is_some(),
-                "has_passkeys": !auth.passkeys(&st.db).is_empty(),
+                "first_run": first_run,
             }))
             .into_response(),
         ),
-        (m, p) if m == "POST" && p.starts_with("/dashboard/") => {
-            Some(dashboard_action(st, req, session).await)
-        }
-        (m, p) if m == "GET" && p.starts_with("/dashboard/logs/") => {
-            let Some(_s) = session else {
-                return Some(redirect("/"));
-            };
-            let app = p.trim_start_matches("/dashboard/logs/").to_string();
-            Some(html(&logs_page(st, &app).await))
-        }
-        _ => None,
+        _ => crate::ui::handle(st, auth, req, session).await,
     }
 }
 
-async fn dashboard_action(
-    st: &AppState,
-    req: Request<Body>,
-    session: Option<Session>,
-) -> Response<Body> {
-    let Some(s) = session else {
-        return redirect("/");
-    };
-    let path = req.uri().path().to_string();
-    let body = match axum::body::to_bytes(req.into_body(), 64 * 1024).await {
+#[derive(Deserialize)]
+struct SetupBody {
+    email: String,
+    name: String,
+    team: Option<String>,
+    invite: Option<String>,
+}
+
+async fn setup_start(st: &AppState, auth: &AuthState, req: Request<Body>) -> Response<Body> {
+    let b: SetupBody = match read_json(req).await {
         Ok(b) => b,
-        Err(_) => return bad("body too large"),
+        Err(r) => return r,
     };
-    let form: HashMap<String, String> =
-        serde_urlencoded::from_bytes(&body).unwrap_or_default();
-    if form.get("csrf").map(|v| v.as_str()) != Some(s.csrf.as_str()) {
-        return (StatusCode::FORBIDDEN, "bad csrf token\n").into_response();
-    }
-
-    let result = if let Some(app) = path.strip_prefix("/dashboard/redeploy/") {
-        crate::api::deploy_from_repo(st, app).await.map(|_| ())
-    } else if let Some(rest) = path.strip_prefix("/dashboard/rollback/") {
-        match rest.split_once('/') {
-            Some((app, deploy)) => crate::deploy::rollback(st, app, deploy).await.map(|_| ()),
-            None => Err(anyhow::anyhow!("bad rollback path")),
-        }
-    } else {
-        Err(anyhow::anyhow!("unknown action"))
-    };
-
-    match result {
-        Ok(_) => redirect("/dashboard"),
-        Err(e) => html(&format!(
-            "<p>Action failed: {}</p><p><a href=\"/dashboard\">back</a></p>",
-            esc(&e.to_string())
-        )),
-    }
+    register_start(
+        st,
+        auth,
+        &b.email,
+        &b.name,
+        b.team.or_else(|| Some("Personal".into())),
+        b.invite,
+        None,
+    )
 }
 
-async fn register_start(st: &AppState, auth: &AuthState, authed: bool) -> Response<Body> {
-    let keys = auth.passkeys(&st.db);
-    if !keys.is_empty() && !authed {
-        return (StatusCode::FORBIDDEN, "already set up; log in first\n").into_response();
+async fn join_start(st: &AppState, auth: &AuthState, req: Request<Body>) -> Response<Body> {
+    #[derive(Deserialize)]
+    struct JoinBody {
+        token: String,
+        email: String,
+        name: String,
     }
-    let user = auth.user_id(&st.db);
-    let exclude = if keys.is_empty() {
-        None
-    } else {
-        Some(keys.iter().map(|k| k.cred_id().clone()).collect())
+    let b: JoinBody = match read_json(req).await {
+        Ok(b) => b,
+        Err(r) => return r,
     };
+    if st.db.invite(&b.token).ok().flatten().is_none() {
+        return bad("invite is invalid or expired");
+    }
+    register_start(st, auth, &b.email, &b.name, None, Some(b.token), None)
+}
+
+fn register_start(
+    st: &AppState,
+    auth: &AuthState,
+    email: &str,
+    name: &str,
+    team: Option<String>,
+    invite: Option<String>,
+    _unused: Option<()>,
+) -> Response<Body> {
+    let email = email.trim().to_ascii_lowercase();
+    if !email.contains('@') || name.trim().is_empty() {
+        return bad("name and a valid email are required");
+    }
+    if st.db.user_by_email(&email).ok().flatten().is_some() {
+        return bad("a user with that email already exists; log in instead");
+    }
+    let user_id = Uuid::new_v4().to_string();
+    let uid = Uuid::parse_str(&user_id).unwrap();
+    let exclude = None;
     match auth
         .web
-        .start_passkey_registration(user, "dok", "dok admin", exclude)
+        .start_passkey_registration(uid, &email, name, exclude)
     {
         Ok((ccr, state)) => {
             let id = Uuid::new_v4().simple().to_string();
             let now = crate::db::now();
-            let mut pending = auth.pending_reg.lock().unwrap();
-            pending.retain(|_, (_, exp)| *exp > now);
-            if pending.len() > 64 {
-                pending.clear();
+            let mut p = auth.pending_reg.lock().unwrap();
+            p.retain(|_, v| v.exp > now);
+            if p.len() > 64 {
+                p.clear();
             }
-            pending.insert(id.clone(), (state, now + 300));
+            p.insert(
+                id.clone(),
+                PendingReg {
+                    state,
+                    user_id,
+                    email,
+                    name: name.to_string(),
+                    team,
+                    invite,
+                    exp: now + 600,
+                },
+            );
             let mut v = serde_json::to_value(ccr).unwrap_or_default();
             v["id"] = json!(id);
             Json(v).into_response()
@@ -238,7 +237,7 @@ struct FinishBody {
 }
 
 async fn register_finish(st: &AppState, auth: &AuthState, req: Request<Body>) -> Response<Body> {
-    let body = match read_json(req).await {
+    let body: FinishBody = match read_json(req).await {
         Ok(b) => b,
         Err(r) => return r,
     };
@@ -246,31 +245,62 @@ async fn register_finish(st: &AppState, auth: &AuthState, req: Request<Body>) ->
         Ok(c) => c,
         Err(e) => return bad(&format!("bad credential: {e}")),
     };
-    let state = {
+    let pending = {
         let now = crate::db::now();
         let mut p = auth.pending_reg.lock().unwrap();
-        p.remove(&body.id)
-            .and_then(|(s, exp)| if exp > now { Some(s) } else { None })
+        p.remove(&body.id).filter(|v| v.exp > now)
     };
-    let Some(state) = state else {
+    let Some(p) = pending else {
         return bad("registration expired");
     };
-    match auth.web.finish_passkey_registration(&cred, &state) {
-        Ok(passkey) => {
-            let mut keys = auth.passkeys(&st.db);
-            keys.push(passkey);
-            if let Err(e) = auth.save_passkeys(&st.db, &keys) {
-                return bad(&format!("cannot save passkey: {e}"));
-            }
-            let id = auth.start_session(&st.db);
-            with_cookie(auth, id, json!({"ok": true}))
+
+    let passkey = match auth.web.finish_passkey_registration(&cred, &p.state) {
+        Ok(k) => k,
+        Err(e) => return bad(&format!("registration failed: {e}")),
+    };
+    let data = match serde_json::to_string(&passkey) {
+        Ok(d) => d,
+        Err(e) => return bad(&format!("cannot store passkey: {e}")),
+    };
+
+    let user = if let Some(invite) = &p.invite {
+        match st.db.use_invite(invite, &p.user_id) {
+            Ok(Some(_)) => {}
+            _ => return bad("invite is no longer valid"),
         }
-        Err(e) => bad(&format!("registration failed: {e}")),
+        match st.db.create_user_with_id(&p.user_id, &p.email, &p.name) {
+            Ok(u) => u,
+            Err(e) => return bad(&format!("cannot create user: {e}")),
+        }
+    } else {
+        let u = match st.db.create_user_with_id(&p.user_id, &p.email, &p.name) {
+            Ok(u) => u,
+            Err(e) => return bad(&format!("cannot create user: {e}")),
+        };
+        if st.db.user_count().unwrap_or(0) == 1 {
+            let team = p.team.unwrap_or_else(|| "Personal".into());
+            let slug = slugify(&team);
+            if let Err(e) = st.db.create_team(&team, &slug, &u.id) {
+                return bad(&format!("cannot create team: {e}"));
+            }
+            let _ = st.db.assign_orphan_tokens(&u.id);
+        }
+        u
+    };
+    if let Err(e) = st.db.add_passkey(&user.id, &data) {
+        return bad(&format!("cannot store passkey: {e}"));
     }
+    let sid = auth.start_session(&st.db, &user.id);
+    with_cookie(auth, sid, json!({"ok": true}))
 }
 
 fn login_start(st: &AppState, auth: &AuthState) -> Response<Body> {
-    let keys = auth.passkeys(&st.db);
+    let mut keys = Vec::new();
+    for (_, data) in st.db.all_passkeys().unwrap_or_default() {
+        if let Ok(k) = serde_json::from_str::<Passkey>(&data) {
+            keys.push(k);
+        }
+    }
     if keys.is_empty() {
         return Json(json!({"setup": true})).into_response();
     }
@@ -278,12 +308,12 @@ fn login_start(st: &AppState, auth: &AuthState) -> Response<Body> {
         Ok((rcr, state)) => {
             let id = Uuid::new_v4().simple().to_string();
             let now = crate::db::now();
-            let mut pending = auth.pending_auth.lock().unwrap();
-            pending.retain(|_, (_, exp)| *exp > now);
-            if pending.len() > 64 {
-                pending.clear();
+            let mut p = auth.pending_auth.lock().unwrap();
+            p.retain(|_, (_, exp)| *exp > now);
+            if p.len() > 64 {
+                p.clear();
             }
-            pending.insert(id.clone(), (state, now + 300));
+            p.insert(id.clone(), (state, now + 600));
             let mut v = serde_json::to_value(rcr).unwrap_or_default();
             v["id"] = json!(id);
             Json(v).into_response()
@@ -293,7 +323,7 @@ fn login_start(st: &AppState, auth: &AuthState) -> Response<Body> {
 }
 
 async fn login_finish(st: &AppState, auth: &AuthState, req: Request<Body>) -> Response<Body> {
-    let body = match read_json(req).await {
+    let body: FinishBody = match read_json(req).await {
         Ok(b) => b,
         Err(r) => return r,
     };
@@ -310,18 +340,46 @@ async fn login_finish(st: &AppState, auth: &AuthState, req: Request<Body>) -> Re
     let Some(state) = state else {
         return bad("login expired");
     };
-    match auth.web.finish_passkey_authentication(&cred, &state) {
-        Ok(result) => {
-            let mut keys = auth.passkeys(&st.db);
-            for k in keys.iter_mut() {
-                k.update_credential(&result);
+    let result = match auth.web.finish_passkey_authentication(&cred, &state) {
+        Ok(r) => r,
+        Err(e) => return bad(&format!("login failed: {e}")),
+    };
+    let cred_id = result.cred_id().clone();
+    let mut found: Option<String> = None;
+    for (user_id, data) in st.db.all_passkeys().unwrap_or_default() {
+        if let Ok(k) = serde_json::from_str::<Passkey>(&data) {
+            if k.cred_id() == &cred_id {
+                let mut keys = load_keys(&st.db, &user_id);
+                for key in keys.iter_mut() {
+                    key.update_credential(&result);
+                }
+                save_keys(&st.db, &user_id, &keys);
+                found = Some(user_id);
+                break;
             }
-            let _ = auth.save_passkeys(&st.db, &keys);
-            let id = auth.start_session(&st.db);
-            with_cookie(auth, id, json!({"ok": true}))
         }
-        Err(e) => bad(&format!("login failed: {e}")),
     }
+    let Some(user_id) = found else {
+        return bad("unknown credential");
+    };
+    let sid = auth.start_session(&st.db, &user_id);
+    with_cookie(auth, sid, json!({"ok": true}))
+}
+
+fn load_keys(db: &Db, user_id: &str) -> Vec<Passkey> {
+    db.passkeys_for(user_id)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|d| serde_json::from_str::<Passkey>(d).ok())
+        .collect()
+}
+
+fn save_keys(db: &Db, user_id: &str, keys: &[Passkey]) {
+    let data: Vec<String> = keys
+        .iter()
+        .filter_map(|k| serde_json::to_string(k).ok())
+        .collect();
+    let _ = db.replace_passkeys(user_id, &data);
 }
 
 fn logout(auth: &AuthState, db: &Db, req: &Request<Body>) -> Response<Body> {
@@ -334,7 +392,7 @@ fn logout(auth: &AuthState, db: &Db, req: &Request<Body>) -> Response<Body> {
     r
 }
 
-async fn read_json(req: Request<Body>) -> Result<FinishBody, Response<Body>> {
+async fn read_json<T: for<'de> Deserialize<'de>>(req: Request<Body>) -> Result<T, Response<Body>> {
     let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
         .await
         .map_err(|_| bad("body too large"))?;
@@ -348,7 +406,7 @@ fn with_cookie(auth: &AuthState, session: String, body: Value) -> Response<Body>
     r
 }
 
-fn redirect(to: &str) -> Response<Body> {
+pub fn redirect(to: &str) -> Response<Body> {
     Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, to)
@@ -356,194 +414,61 @@ fn redirect(to: &str) -> Response<Body> {
         .unwrap()
 }
 
-fn html(body: &str) -> Response<Body> {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
 fn bad(msg: &str) -> Response<Body> {
     (StatusCode::BAD_REQUEST, format!("{msg}\n")).into_response()
 }
 
+/// Escape untrusted text for HTML text nodes and quoted attributes.
 pub fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
-fn dashboard_page(st: &AppState, session: &Session) -> String {
-    let apps = st.db.list_apps().unwrap_or_default();
-    let mut rows = String::new();
-    for a in &apps {
-        let target = a
-            .domain
-            .clone()
-            .map(|d| format!("https://{d}"))
-            .unwrap_or_else(|| "—".into());
-        let history = st
-            .db
-            .deploys(&a.name, 3)
-            .unwrap_or_default()
-            .iter()
-            .map(|d| {
-                format!(
-                    "<form method=post action=\"/dashboard/rollback/{}/{}\" style=\"display:inline\">\
-                     <input type=hidden name=csrf value=\"{}\">\
-                     <button class=mini>rollback {}</button></form>",
-                    esc(&a.name),
-                    esc(&d.id),
-                    session.csrf,
-                    esc(&d.status)
-                )
-            })
-            .collect::<String>();
-        rows.push_str(&format!(
-            "<tr><td><b>{}</b><div class=sub>{} · {}</div></td>\
-             <td><code>{}</code></td>\
-             <td class=actions>\
-             <form method=post action=\"/dashboard/redeploy/{}\" style=\"display:inline\">\
-             <input type=hidden name=csrf value=\"{}\">\
-             <button>redeploy</button></form>\
-             <a class=btn href=\"/dashboard/logs/{}\">logs</a>{}</td></tr>",
-            esc(&a.name),
-            esc(&a.kind),
-            esc(&a.status),
-            esc(&target),
-            esc(&a.name),
-            session.csrf,
-            esc(&a.name),
-            history
-        ));
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
     }
-    format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>dok</title>
-<style>
-:root{{color-scheme:light dark}}
-body{{font:15px/1.5 system-ui,sans-serif;max-width:64rem;margin:3rem auto;padding:0 1rem}}
-h1{{font-size:1.4rem;margin:0}}
-table{{width:100%;border-collapse:collapse;margin-top:1.5rem}}
-td,th{{text-align:left;padding:.6rem .6rem;border-bottom:1px solid #8883;vertical-align:top}}
-th{{font-weight:600;opacity:.7;font-size:.85rem}}
-code{{background:#8881;padding:.1rem .3rem;border-radius:4px;font-size:.9em}}
-.sub{{opacity:.6;font-size:.85rem}}
-.bar{{display:flex;justify-content:space-between;align-items:center}}
-button,.btn{{font:inherit;font-size:.85rem;padding:.35rem .7rem;border-radius:6px;border:1px solid #8886;background:transparent;cursor:pointer;color:inherit;text-decoration:none;display:inline-block}}
-.mini{{font-size:.75rem;padding:.2rem .45rem;opacity:.8}}
-.actions{{white-space:nowrap}}
-.actions>*{{margin-right:.3rem}}
-</style></head><body>
-<div class="bar"><h1>dok</h1>
-<form method=post action="/auth/logout"><button>Log out</button></form></div>
-<table><thead><tr><th>app</th><th>domain</th><th>actions</th></tr></thead>
-<tbody>{rows}</tbody></table>
-<p class="sub" style="margin-top:1.5rem">Deploy with <code>dok push</code>. Rollback keeps the last 3 builds.</p>
-</body></html>"#
-    )
+    out
 }
 
-async fn logs_page(st: &AppState, app: &str) -> String {
-    let build = st
-        .db
-        .last_deploy_log(app)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let runtime = crate::deploy::container_logs(app, 300).await;
-    format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>dok · {app}</title>
-<style>
-:root{{color-scheme:light dark}}
-body{{font:14px/1.45 system-ui,sans-serif;max-width:72rem;margin:2rem auto;padding:0 1rem}}
-pre{{background:#8881;padding:1rem;border-radius:8px;overflow:auto;font-size:.82rem;line-height:1.4}}
-h2{{font-size:1rem;margin:1.6rem 0 .4rem;opacity:.8}}
-a{{color:inherit}}
-</style></head><body>
-<p><a href="/dashboard">← dashboard</a></p>
-<h1 style="font-size:1.3rem">{name}</h1>
-<h2>build</h2><pre>{build}</pre>
-<h2>runtime</h2><pre>{runtime}</pre>
-</body></html>"#,
-        app = esc(app),
-        name = esc(app),
-        build = esc(&build),
-        runtime = esc(&runtime)
-    )
-}
-
-fn login_page(setup: bool) -> String {
-    let action = if setup { "register" } else { "login" };
-    let label = if setup {
-        "Create a passkey"
+pub fn slugify(s: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in s.to_ascii_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "team".into()
     } else {
-        "Sign in with a passkey"
-    };
-    let hint = if setup {
-        "First run: this passkey becomes the admin login. Proton Pass, iCloud, Google or a hardware key all work."
-    } else {
-        "Use the passkey stored in your password manager (Proton Pass, iCloud, Google) or a hardware key."
-    };
-    format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>dok</title>
-<style>
-:root{{color-scheme:light dark}}
-body{{font:15px/1.6 system-ui,sans-serif;max-width:26rem;margin:12vh auto;padding:0 1.2rem}}
-h1{{font-size:1.6rem;margin:0 0 .4rem}}
-p{{opacity:.75;margin:.2rem 0 1.6rem}}
-button{{font:inherit;font-size:1rem;padding:.7rem 1.1rem;border-radius:8px;border:1px solid #8886;cursor:pointer;width:100%;background:transparent;color:inherit}}
-#msg{{margin-top:1rem;font-size:.9rem;color:#c33;white-space:pre-wrap}}
-code{{background:#8881;padding:.1rem .3rem;border-radius:4px}}
-</style></head><body>
-<h1>dok</h1><p>{hint}</p>
-<button id="go" onclick="{action}()">{label}</button>
-<div id="msg"></div>
-<script>
-const b64u={{
-  toBuf(s){{s=s.replace(/-/g,'+').replace(/_/g,'/');const p='='.repeat((4-s.length%4)%4);const b=atob(s+p);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer}},
-  fromBuf(b){{const u=new Uint8Array(b);let s='';for(const x of u)s+=String.fromCharCode(x);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}}
-}};
-async function jpost(url,body){{
-  const r=await fetch(url,{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify(body||{{}})}});
-  if(!r.ok) throw new Error(await r.text());
-  return r.json();
-}}
-function fail(e){{document.getElementById('msg').textContent=e.message||String(e)}}
-async function register(){{
-  try{{
-    const o=await jpost('/auth/register/start');
-    const pk=o.publicKey;
-    pk.challenge=b64u.toBuf(pk.challenge);
-    pk.user.id=b64u.toBuf(pk.user.id);
-    if(pk.excludeCredentials) pk.excludeCredentials=pk.excludeCredentials.map(c=>({{...c,id:b64u.toBuf(c.id)}}));
-    const c=await navigator.credentials.create({{publicKey:pk}});
-    await jpost('/auth/register/finish',{{id:o.id,credential:{{id:c.id,rawId:b64u.fromBuf(c.rawId),type:c.type,response:{{clientDataJSON:b64u.fromBuf(c.response.clientDataJSON),attestationObject:b64u.fromBuf(c.response.attestationObject),transports:c.response.getTransports?c.response.getTransports():[]}}}}}});
-    location.href='/dashboard';
-  }}catch(e){{fail(e)}}
-}}
-async function login(){{
-  try{{
-    const o=await jpost('/auth/login/start');
-    if(o.setup){{return register()}}
-    const pk=o.publicKey;
-    pk.challenge=b64u.toBuf(pk.challenge);
-    pk.allowCredentials=(pk.allowCredentials||[]).map(c=>({{...c,id:b64u.toBuf(c.id)}}));
-    const c=await navigator.credentials.get({{publicKey:pk}});
-    await jpost('/auth/login/finish',{{id:o.id,credential:{{id:c.id,rawId:b64u.fromBuf(c.rawId),type:c.type,response:{{clientDataJSON:b64u.fromBuf(c.response.clientDataJSON),authenticatorData:b64u.fromBuf(c.response.authenticatorData),signature:b64u.fromBuf(c.response.signature),userHandle:c.response.userHandle?b64u.fromBuf(c.response.userHandle):null}}}}}});
-    location.href='/dashboard';
-  }}catch(e){{fail(e)}}
-}}
-</script></body></html>"#
-    )
+        out
+    }
 }
 
-use axum::response::IntoResponse;
+#[cfg(test)]
+mod tests {
+    use super::{esc, slugify};
+
+    #[test]
+    fn slugs() {
+        assert_eq!(slugify("My Team"), "my-team");
+        assert_eq!(slugify("  --a__b--  "), "a-b");
+        assert_eq!(slugify("???"), "team");
+    }
+
+    #[test]
+    fn escapes_html() {
+        assert_eq!(esc("<a href=\"x\">&'</a>"), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;");
+    }
+}

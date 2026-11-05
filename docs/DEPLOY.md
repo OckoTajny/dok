@@ -12,6 +12,23 @@
   `/data/coolify/proxy/dynamic/dok-apps.yaml` on ku-bot.
 - Nothing is built on ku-bot any more.
 
+## Built-in edge (optional)
+
+`dok serve --edge` makes dok its own edge: it binds :80 and :443, answers ACME
+HTTP-01 challenges, redirects HTTP to HTTPS and issues certificates for every
+custom domain and `<app>.<base_domain>` into `<data>/acme`. Certificates are
+listed (with status) under **Domains**, and can be re-requested from the UI or
+`POST /api/v1/certificates/{host}/renew`. The ACME order list is built at
+startup, so restart after adding a domain.
+
+Without `--edge` dok keeps the current behaviour: plain HTTP behind Traefik.
+The live desktop instance uses that mode; do not switch it to edge while
+Traefik owns :80/:443 on ku-bot.
+
+Per-project proxy settings (headers, basic auth, www/apex redirect,
+compression, max body, force HTTPS) apply in both modes and are edited from
+the project's **Proxy** tab or `GET/PUT /api/v1/projects/{app}/proxy`.
+
 ## Install on a machine
 
 ```bash
@@ -85,8 +102,8 @@ Open `https://dok.solta.tech`, register a passkey (Proton Pass works), done.
 ## Notes
 
 - `DOK_HOOK_SECRET` is read by the server for GitHub webhooks.
-- Sessions are in memory: restarting the service logs the browser out; the
-  passkey stays in `dok.db`.
+- Sessions and CSRF tokens live in SQLite: restarting the service keeps the
+  browser logged in. Passkeys live in `dok.db` too.
 - App domains are issued per host by Traefik on first request; wildcard DNS
   `*.solta.tech` already points at the box.
 - Do not restart `coolify-proxy`; dynamic config is hot-reloaded.

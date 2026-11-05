@@ -27,7 +27,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .as_deref()
         .map(|o| o.starts_with("https://"))
         .unwrap_or(false);
-    let scheme = if !args.acme_domain.is_empty() || tls_terminated {
+    let scheme = if args.edge || !args.acme_domain.is_empty() || tls_terminated {
         "https"
     } else {
         "http"
@@ -93,10 +93,48 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         });
     }
 
-    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.http_port));
+    let http_port = if args.edge && args.http_port == 8080 {
+        80
+    } else {
+        args.http_port
+    };
+    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, http_port));
     tracing::info!("listening on {addr}, public url {public_url}");
 
-    if args.acme_domain.is_empty() {
+    let mut domains = args.acme_domain.clone();
+    for (_, d) in st.db.domains().unwrap_or_default() {
+        if let Some(d) = d {
+            if !domains.contains(&d) {
+                domains.push(d);
+            }
+        }
+    }
+    for (host, _) in st.db.domain_hosts().unwrap_or_default() {
+        if !domains.contains(&host) {
+            domains.push(host);
+        }
+    }
+    if let Some(base) = &args.base_domain {
+        for a in st.db.list_apps().unwrap_or_default() {
+            let host = format!("{}.{}", a.name, base);
+            if !domains.contains(&host) {
+                domains.push(host);
+            }
+        }
+    }
+    let tls_mode = args.edge || !args.acme_domain.is_empty();
+
+    if !tls_mode {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(
+            listener,
+            crate::api::router(st).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
+        return Ok(());
+    }
+    if domains.is_empty() {
+        tracing::warn!("edge/ACME enabled but no domains found; serving plain HTTP on {addr}");
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(
             listener,
@@ -106,12 +144,65 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Plain HTTP (API + proxy) and HTTPS with automatic Let's Encrypt certificates.
+    let domain_count = domains.len();
+    let cert_hosts = domains.clone();
+    let mut acme = rustls_acme::AcmeConfig::new(domains)
+        .contact(args.acme_email.iter().map(|e| format!("mailto:{e}")))
+        .cache(rustls_acme::caches::DirCache::new(data.join("acme")))
+        .directory_lets_encrypt(args.acme_prod)
+        .state();
+    let acceptor = acme.axum_acceptor(acme.default_rustls_config());
+    let resolver = acme.resolver();
+
+    // Plain HTTP: in edge mode this is ACME HTTP-01 + HTTPS redirect; otherwise
+    // it keeps serving the full API/proxy for an external TLS terminator.
     let http_listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("cannot bind HTTP port {addr}"))?;
     let http_st = st.clone();
+    let edge = args.edge;
     let http = tokio::spawn(async move {
+        if edge {
+            let challenge = resolver.clone();
+            let app = axum::Router::new().fallback(
+                move |req: axum::http::Request<axum::body::Body>| {
+                    let resolver = challenge.clone();
+                    async move {
+                        let path = req.uri().path().to_string();
+                        if let Some(token) =
+                            path.strip_prefix("/.well-known/acme-challenge/")
+                        {
+                            if let Some(body) = resolver.get_http_01_key_auth(token) {
+                                return axum::response::Response::builder()
+                                    .status(axum::http::StatusCode::OK)
+                                    .header(
+                                        axum::http::header::CONTENT_TYPE,
+                                        "application/octet-stream",
+                                    )
+                                    .body(axum::body::Body::from(body))
+                                    .unwrap();
+                            }
+                        }
+                        let host = crate::proxy::host_of(&req);
+                        let pq = req
+                            .uri()
+                            .path_and_query()
+                            .map(|v| v.as_str())
+                            .unwrap_or("/");
+                        let location = format!("https://{host}{pq}");
+                        axum::response::Response::builder()
+                            .status(axum::http::StatusCode::MOVED_PERMANENTLY)
+                            .header(axum::http::header::LOCATION, location)
+                            .body(axum::body::Body::empty())
+                            .unwrap()
+                    }
+                },
+            );
+            if let Err(e) = axum::serve(http_listener, app).await {
+                tracing::error!("edge http server stopped: {e}");
+            }
+            return;
+        }
         if let Err(e) = axum::serve(
             http_listener,
             crate::api::router(http_st).into_make_service_with_connect_info::<SocketAddr>(),
@@ -122,27 +213,26 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         }
     });
 
-    let mut domains = args.acme_domain.clone();
-    for (_, d) in st.db.domains().unwrap_or_default() {
-        if let Some(d) = d {
-            if !domains.contains(&d) {
-                domains.push(d);
-            }
-        }
-    }
-    let domain_count = domains.len();
-    let mut acme = rustls_acme::AcmeConfig::new(domains)
-        .contact(args.acme_email.iter().map(|e| format!("mailto:{e}")))
-        .cache(rustls_acme::caches::DirCache::new(data.join("acme")))
-        .directory_lets_encrypt(args.acme_prod)
-        .state();
-    let acceptor = acme.axum_acceptor(acme.default_rustls_config());
-
+    let cert_st = st.clone();
     tokio::spawn(async move {
         use futures_util::StreamExt;
         while let Some(event) = acme.next().await {
             match event {
-                Ok(ok) => tracing::info!("acme: {ok:?}"),
+                Ok(ok) => {
+                    tracing::info!("acme: {ok:?}");
+                    if matches!(ok, rustls_acme::EventOk::DeployedNewCert) {
+                        for host in &cert_hosts {
+                            let value = serde_json::json!({
+                                "status": "issued",
+                                "issued_at": crate::db::now(),
+                                "expires": null
+                            });
+                            let _ = cert_st
+                                .db
+                                .set_setting(&format!("cert:{host}"), &value.to_string());
+                        }
+                    }
+                }
                 Err(err) => tracing::error!("acme: {err:?}"),
             }
         }
@@ -152,9 +242,10 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .with_context(|| format!("cannot bind TLS port {}", args.tls_port))?;
     tls_std.set_nonblocking(true)?;
     tracing::info!(
-        "ACME: {} ({} domain(s))",
+        "ACME: {} ({} domain(s)){}",
         if args.acme_prod { "production" } else { "staging" },
-        domain_count
+        domain_count,
+        if args.edge { ", edge mode" } else { "" }
     );
     let https_st = st.clone();
     let https = tokio::spawn(async move {
@@ -180,8 +271,13 @@ fn backup_db(st: &AppState, keep: usize) {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let name = format!("dok-{}.db", crate::db::now());
-    let path = dir.join(&name);
+    let stamp = crate::db::now();
+    let mut path = dir.join(format!("dok-{stamp}.db"));
+    let mut n = 1;
+    while path.exists() {
+        path = dir.join(format!("dok-{stamp}-{n}.db"));
+        n += 1;
+    }
     if let Err(e) = st.db.backup_to(&path) {
         tracing::warn!("backup failed: {e}");
         return;
@@ -204,7 +300,7 @@ fn backup_db(st: &AppState, keep: usize) {
 
 fn init_token(db: &Db, data: &std::path::Path, given: Option<&str>) -> Result<()> {
     if let Some(t) = given {
-        db.add_token(&crate::api::hash(t), "cli")?;
+        db.add_token(&crate::api::hash(t), "cli", None)?;
         tracing::info!("token registered");
         return Ok(());
     }
@@ -216,7 +312,7 @@ fn init_token(db: &Db, data: &std::path::Path, given: Option<&str>) -> Result<()
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    db.add_token(&crate::api::hash(&token), "initial")?;
+    db.add_token(&crate::api::hash(&token), "initial", None)?;
     let path = data.join("initial-token");
     std::fs::write(&path, &token)?;
     #[cfg(unix)]

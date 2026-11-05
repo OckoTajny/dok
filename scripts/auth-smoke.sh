@@ -20,14 +20,16 @@ done
 page=$(curl -fsS "http://localhost:$PORT/")
 echo "$page" | grep -q 'Create a passkey'
 
-opts=$(curl -fsS -X POST "http://localhost:$PORT/auth/register/start")
+opts=$(curl -fsS -X POST -H 'content-type: application/json' \
+  --data '{"email":"smoke@example.com","name":"Smoke","team":"Smoke"}' \
+  "http://localhost:$PORT/auth/setup/start")
 echo "$opts" | grep -q '"publicKey"'
 echo "$opts" | grep -q '"challenge"'
 echo "$opts" | grep -q '"id"'
 
 status=$(curl -fsS "http://localhost:$PORT/auth/status")
 echo "$status" | grep -q '"authenticated":false'
-echo "$status" | grep -q '"has_passkeys":false'
+echo "$status" | grep -q '"first_run":true'
 
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$PORT/dashboard")
 test "$code" = "303"

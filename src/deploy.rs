@@ -13,12 +13,14 @@ pub struct DokToml {
     pub dockerfile: Option<String>,
     pub memory_mb: Option<i64>,
     pub cpus: Option<f64>,
+    pub framework: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct DeployOutcome {
     pub app: String,
     pub deploy_id: String,
+    pub env: String,
     pub kind: String,
     pub url: String,
     pub host_port: Option<u16>,
@@ -97,48 +99,73 @@ pub async fn docker_available() -> bool {
         .unwrap_or(false)
 }
 
-pub fn container_name(app: &str) -> String {
-    format!("dok-{app}")
+/// One container per project and environment.
+pub fn container_name(app: &str, env: &str) -> String {
+    format!("dok-{app}-{env}")
 }
 
-pub async fn stop_container(app: &str) {
+pub async fn stop_container(app: &str, env: &str) {
     let _ = Command::new("docker")
-        .args(["rm", "-f", &container_name(app)])
+        .args(["rm", "-f", &container_name(app, env)])
         .output()
         .await;
 }
 
-/// Deploy an unpacked directory: build a Dockerfile if present, otherwise serve it statically.
+fn normalize_env(env: &str) -> &str {
+    if env == "preview" {
+        "preview"
+    } else {
+        "production"
+    }
+}
+
+/// Deploy an unpacked directory: build a Dockerfile if present, otherwise serve
+/// it statically. Preview deploys never touch the production container or the
+/// project row's production pointer.
 pub async fn deploy_dir(
     st: &AppState,
     app: &str,
     dir: &Path,
     port_hint: Option<u16>,
     domain_hint: Option<String>,
+    env: &str,
+    author: Option<&str>,
 ) -> Result<DeployOutcome> {
+    let env = normalize_env(env);
     // One deploy per app at a time, across processes (the git hook runs its own).
     let _lock = st.lock_deploy(app).await?;
     let deploy_id = uuid::Uuid::new_v4().simple().to_string();
-    st.db
-        .add_deploy(&deploy_id, app, "running", Some(&dir.to_string_lossy()))?;
+    st.db.add_deploy(
+        &deploy_id,
+        app,
+        "running",
+        Some(&dir.to_string_lossy()),
+        env,
+        author,
+    )?;
     let mut guard = DeployGuard {
         st,
         app,
         id: deploy_id.clone(),
+        env,
         done: false,
     };
 
     let prev = st.db.get_app(app)?;
     let conf = read_dok_toml(dir);
-    let chosen_domain = match domain_hint.clone().or_else(|| conf.domain.clone()) {
-        Some(d) => {
-            let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
-            if !crate::api::valid_host(&d) {
-                bail!("invalid domain: {d}");
+    let chosen_domain = if env == "production" {
+        match domain_hint.clone().or_else(|| conf.domain.clone()) {
+            Some(d) => {
+                let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
+                if !crate::api::valid_host(&d) {
+                    bail!("invalid domain: {d}");
+                }
+                Some(d)
             }
-            Some(d)
+            None => None,
         }
-        None => None,
+    } else {
+        None
     };
     let dockerfile = conf.dockerfile.clone().unwrap_or_else(|| "Dockerfile".into());
     let memory_mb = conf.memory_mb.unwrap_or(512).max(32);
@@ -158,7 +185,16 @@ pub async fn deploy_dir(
         let tag = format!("dok/{app}:{deploy_id}");
         log.push_str(&format!("$ docker build -f {dockerfile} -t {tag} .\n"));
         let out = Command::new("docker")
-            .args(["build", "-f", &dockerfile, "-t", &tag, "--label", &format!("dok.app={app}"), "."])
+            .args([
+                "build",
+                "-f",
+                &dockerfile,
+                "-t",
+                &tag,
+                "--label",
+                &format!("dok.app={app}"),
+                ".",
+            ])
             .current_dir(dir)
             .output()
             .await
@@ -168,13 +204,15 @@ pub async fn deploy_dir(
         if !out.status.success() {
             st.db.finish_deploy(&deploy_id, "failed", &log)?;
             guard.done = true;
-            st.db.set_status(app, "failed")?;
+            if env == "production" {
+                st.db.set_status(app, "failed")?;
+            }
             bail!("docker build failed (see `dok logs {app}`)");
         }
 
         // Start the replacement first; the old container keeps serving until the
-        // new one is running and the DB points at it. Let Docker pick the port.
-        let temp_name = format!("dok-{app}-{}", &deploy_id[..8]);
+        // new one is running.
+        let temp_name = format!("dok-{app}-{env}-{}", &deploy_id[..8]);
         let mut cmd = Command::new("docker");
         cmd.args([
             "run",
@@ -185,14 +223,16 @@ pub async fn deploy_dir(
             "unless-stopped",
             "-l",
             &format!("dok.app={app}"),
+            "-l",
+            &format!("dok.env={env}"),
             "-p",
             &format!("127.0.0.1::{container_port}"),
             "--memory",
-            &format!("{}m", memory_mb),
+            &format!("{memory_mb}m"),
             "--cpus",
             &format!("{cpus}"),
         ]);
-        for (k, v) in st.db.env(app)? {
+        for (k, v) in st.db.env_resolved(app, env)? {
             cmd.args(["-e", &format!("{k}={v}")]);
         }
         cmd.arg(&tag);
@@ -203,7 +243,9 @@ pub async fn deploy_dir(
             remove_container(&temp_name).await;
             st.db.finish_deploy(&deploy_id, "failed", &log)?;
             guard.done = true;
-            st.db.set_status(app, "failed")?;
+            if env == "production" {
+                st.db.set_status(app, "failed")?;
+            }
             bail!("docker run failed (see `dok logs {app}`)");
         }
         let host_port = match mapped_port(&temp_name, container_port).await {
@@ -218,71 +260,110 @@ pub async fn deploy_dir(
         ("static", None, None)
     };
 
-    let row = crate::db::App {
-        name: app.to_string(),
-        kind: kind.to_string(),
-        image: if kind == "docker" {
-            Some(format!("dok/{app}:{deploy_id}"))
-        } else {
-            None
-        },
-        memory_mb: Some(memory_mb),
-        cpus: Some(cpus),
-        host_port,
-        container_port,
-        domain: chosen_domain,
-        status: "running".into(),
-        dir: Some(dir.to_string_lossy().to_string()),
-        repo: None,
-        updated_at: crate::db::now(),
+    let image = if kind == "docker" {
+        Some(format!("dok/{app}:{deploy_id}"))
+    } else {
+        None
     };
-    st.db.upsert_app(&row)?;
+
+    if env == "production" {
+        let row = crate::db::App {
+            name: app.to_string(),
+            team_id: prev.as_ref().and_then(|p| p.team_id.clone()),
+            kind: kind.to_string(),
+            image: image.clone(),
+            memory_mb: Some(memory_mb),
+            cpus: Some(cpus),
+            host_port,
+            container_port,
+            domain: chosen_domain,
+            status: "running".into(),
+            dir: Some(dir.to_string_lossy().to_string()),
+            repo: None,
+            production_deploy: Some(deploy_id.clone()),
+            framework: conf.framework.clone().or_else(|| prev.as_ref().and_then(|p| p.framework.clone())),
+            updated_at: crate::db::now(),
+        };
+        st.db.upsert_app(&row)?;
+    } else if prev.is_none() {
+        // A preview can bootstrap a project row, but it must not claim to be live.
+        let row = crate::db::App {
+            name: app.to_string(),
+            team_id: None,
+            kind: kind.to_string(),
+            image: None,
+            memory_mb: Some(memory_mb),
+            cpus: Some(cpus),
+            host_port: None,
+            container_port: None,
+            domain: None,
+            status: "new".into(),
+            dir: None,
+            repo: None,
+            production_deploy: None,
+            framework: conf.framework.clone(),
+            updated_at: crate::db::now(),
+        };
+        st.db.upsert_app(&row)?;
+    }
     st.sync_traefik();
 
-    // Point traffic at the new container, then retire the old one.
+    // Point traffic at the new container, then retire the old one. Only the
+    // selected environment is touched.
     if kind == "docker" {
-        let temp_name = format!("dok-{app}-{}", &deploy_id[..8]);
-        stop_container(app).await;
+        let temp_name = format!("dok-{app}-{env}-{}", &deploy_id[..8]);
+        stop_container(app, env).await;
         let _ = Command::new("docker")
-            .args(["rename", &temp_name, &container_name(app)])
+            .args(["rename", &temp_name, &container_name(app, env)])
             .output()
             .await;
-    } else {
+    } else if env == "production" {
         // Switched to static serving: no container should keep running.
-        stop_container(app).await;
+        stop_container(app, "production").await;
     }
 
-    // Drop the previous image and build tree, keep the last few for rollback.
-    if let Some(prev) = &prev {
-        if kind == "docker" {
-            if let Some(old_image) = &prev.image {
-                if old_image != &format!("dok/{app}:{deploy_id}") {
-                    let _ = Command::new("docker").args(["rmi", old_image]).output().await;
+    // Drop the previous production image, keep build trees for rollback.
+    if env == "production" {
+        if let Some(prev) = &prev {
+            if kind == "docker" {
+                if let Some(old_image) = &prev.image {
+                    if old_image != &format!("dok/{app}:{deploy_id}") {
+                        let _ = Command::new("docker").args(["rmi", old_image]).output().await;
+                    }
                 }
             }
         }
+        st.db.set_production(app, &deploy_id)?;
     }
     let _ = st.db.prune_deploys(app, 3);
     cleanup_builds(st, app).await;
 
-    st.db.finish_deploy(&deploy_id, "ok", &log)?;
-    guard.done = true;
+    let url = if env == "production" {
+        st.db
+            .get_app(app)?
+            .and_then(|a| a.domain)
+            .map(|d| format!("{}://{d}", st.scheme))
+            .or_else(|| {
+                st.base_domain
+                    .as_ref()
+                    .map(|b| format!("{}://{app}.{b}", st.scheme))
+            })
+            .unwrap_or_else(|| st.public_url.clone())
+    } else {
+        match host_port {
+            Some(p) => format!("http://127.0.0.1:{p}"),
+            None => format!("{} preview", st.public_url),
+        }
+    };
 
-    let url = st
-        .db
-        .get_app(app)?
-        .and_then(|a| a.domain)
-        .map(|d| format!("{}://{d}", st.scheme))
-        .or_else(|| {
-            st.base_domain
-                .as_ref()
-                .map(|b| format!("{}://{app}.{b}", st.scheme))
-        })
-        .unwrap_or_else(|| st.public_url.clone());
+    st.db
+        .finish_deploy_meta(&deploy_id, "ok", &log, image.as_deref(), Some(&url))?;
+    guard.done = true;
 
     Ok(DeployOutcome {
         app: app.to_string(),
         deploy_id,
+        env: env.to_string(),
         kind: kind.to_string(),
         url,
         host_port,
@@ -293,6 +374,7 @@ struct DeployGuard<'a> {
     st: &'a AppState,
     app: &'a str,
     id: String,
+    env: &'a str,
     done: bool,
 }
 
@@ -303,7 +385,9 @@ impl Drop for DeployGuard<'_> {
                 .st
                 .db
                 .finish_deploy(&self.id, "failed", "deploy aborted before completion");
-            let _ = self.st.db.set_status(self.app, "failed");
+            if self.env == "production" {
+                let _ = self.st.db.set_status(self.app, "failed");
+            }
         }
     }
 }
@@ -330,21 +414,35 @@ async fn cleanup_builds(st: &AppState, app: &str) {
     }
 }
 
-/// Redeploy an earlier build (dashboard rollback).
-pub async fn rollback(
+/// Promote any earlier build onto production. Rollback is the same operation
+/// with an older deployment id.
+pub async fn promote(
     st: &AppState,
     app: &str,
     deploy_id: &str,
+    author: Option<&str>,
 ) -> Result<DeployOutcome> {
-    let dir = st
+    let deploy = st
         .db
-        .deploy_dir_for(app, deploy_id)?
+        .deploy(app, deploy_id)?
+        .ok_or_else(|| anyhow::anyhow!("no such deploy {deploy_id}"))?;
+    if deploy.status != "ok" {
+        bail!("deploy {deploy_id} did not finish successfully");
+    }
+    let dir = deploy
+        .dir
         .ok_or_else(|| anyhow::anyhow!("no build for deploy {deploy_id}"))?;
     let path = std::path::PathBuf::from(&dir);
     if !path.is_dir() {
         bail!("build for that deploy is gone (only the last 3 are kept)");
     }
-    deploy_dir(st, app, &path, None, None).await
+    deploy_dir(st, app, &path, None, None, "production", author).await
+}
+
+/// Backwards-compatible name.
+#[allow(dead_code)]
+pub async fn rollback(st: &AppState, app: &str, deploy_id: &str) -> Result<DeployOutcome> {
+    promote(st, app, deploy_id, None).await
 }
 
 async fn remove_container(name: &str) {
@@ -378,13 +476,13 @@ pub fn new_build_dir(st: &AppState, app: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-pub async fn container_logs(app: &str, tail: u32) -> String {
+pub async fn container_logs(app: &str, env: &str, tail: u32) -> String {
     let out = Command::new("docker")
         .args([
             "logs",
             "--tail",
             &tail.to_string(),
-            &container_name(app),
+            &container_name(app, env),
         ])
         .output()
         .await;
@@ -400,7 +498,7 @@ pub async fn container_logs(app: &str, tail: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::exposed_port;
+    use super::{container_name, exposed_port, normalize_env};
 
     #[test]
     fn reads_expose() {
@@ -469,5 +567,13 @@ mod tests {
         std::fs::write(dir.join("Dockerfile"), "FROM scratch\n").unwrap();
         assert_eq!(exposed_port(&dir, "Dockerfile"), None);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn per_env_container_names() {
+        assert_eq!(container_name("app", "production"), "dok-app-production");
+        assert_eq!(container_name("app", "preview"), "dok-app-preview");
+        assert_eq!(normalize_env("preview"), "preview");
+        assert_eq!(normalize_env("staging"), "production");
     }
 }

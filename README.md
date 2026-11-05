@@ -8,6 +8,10 @@ Tiny self-hosted deploy platform in one Rust binary. Think "Vercel/Coolify, but 
 - automatic Let's Encrypt certificates (TLS-ALPN-01)
 - git deploy: `git push`, GitHub webhook, or `dok redeploy`
 - passkey dashboard (Proton Pass, iCloud, Google, hardware keys) — no passwords
+- teams, invite links and per-team roles (owner / admin / member / viewer)
+- production and preview deployments, promote and rollback
+- per-environment variables, custom domains, per-project proxy settings
+- built-in edge mode (`dok serve --edge`) with ACME certificates
 - SQLite, no external services
 
 ```
@@ -44,16 +48,20 @@ sudo systemctl enable --now dok-keepawake.service
 
 ```
 dok login <url> <token>          save server + token (~/.config/dok/config.toml)
-dok push [dir] [--app N] [--domain H] [--port P]
-dok apps                         list apps
+dok push [dir] [--app N] [--domain H] [--port P] [--env production|preview]
+dok apps                         list apps (alias: dok projects)
+dok projects                     list projects
 dok logs <app>                   build + runtime logs
-dok env <app> KEY=VALUE ...      set env (applies on next deploy)
+dok env <app> KEY=VALUE ...      set production env (applies on next deploy)
+dok env pull <app> [env]         print env as KEY=VALUE
 dok domain <app> <host>          route a domain
+dok open <app>                   print the public URL
 dok git <app> <repo-url>         repo used by webhooks / redeploy
 dok git-init <app>               make a bare repo, print the git remote
 dok redeploy <app>               clone + deploy from the repo
-dok deploys <app>                recent deploy ids and status
-dok rollback <app> <deploy-id>   redeploy an earlier build
+dok deploys <app>                recent deploy ids, env and status
+dok promote <app> <deploy-id>    run a build on production
+dok rollback <app> <deploy-id>   alias for promote (roll back)
 dok rm <app>                     stop container, delete app
 ```
 
@@ -79,6 +87,7 @@ previous image tag are removed on the next successful deploy.
 | Docker | a `Dockerfile` in the uploaded directory |
 | Static | no `Dockerfile` (SPA fallback to `index.html`) |
 | Git | `git push` to the bare repo, `dok redeploy`, or GitHub webhook |
+| Preview | `X-Dok-Env: preview` or `?env=preview` on the deploy endpoint |
 
 `git push` deploy:
 
@@ -124,14 +133,63 @@ A consistent database snapshot is written to `backups/` at startup and every
 ## Dashboard and passkeys
 
 Open the server in a browser (`--dashboard-origin https://dok.example.com`).
-On first visit you register a passkey; that becomes the admin login. Any
+On first visit you register a passkey and create the first user and team. Any
 WebAuthn provider works, including Proton Pass, iCloud Keychain, Google
 Password Manager and hardware keys. No passwords, no tokens in the browser.
-The dashboard lists apps, their status and domains, and has **redeploy**,
-**logs** and **rollback** buttons. Sessions are stored in SQLite, so a service
-restart does not log you out; dashboard actions are CSRF-protected.
+Additional users join through a seven-day invite link from the team page.
 
-Sessions live in memory, so a server restart logs you out (the passkey stays).
+Each project has tabs for **Deployments** (env badge, promote/rollback),
+**Logs**, **Environment** (production / preview / development), **Domains**
+(with certificate status and renew), **Proxy** and **Settings**. Sessions and
+CSRF tokens live in SQLite, so a restart does not log you out; every dashboard
+write is CSRF-protected.
+
+## API (v1)
+
+```
+POST /api/v1/deploy                         upload (X-Dok-Project, X-Dok-Env)
+GET  /api/v1/projects                       list projects visible to the token
+POST /api/v1/projects                       {name, team?}
+GET  /api/v1/projects/{app}
+DELETE /api/v1/projects/{app}
+GET  /api/v1/projects/{app}/deployments
+POST /api/v1/projects/{app}/promote/{id}
+POST /api/v1/projects/{app}/rollback/{id}
+GET  /api/v1/projects/{app}/logs?env=
+GET  /api/v1/projects/{app}/logs/stream?env=
+GET/PUT /api/v1/projects/{app}/env/{env}
+GET/POST /api/v1/projects/{app}/domains
+DELETE /api/v1/projects/{app}/domains/{host}
+GET  /api/v1/projects/{app}/metrics
+GET/PUT /api/v1/projects/{app}/proxy
+GET  /api/v1/projects/{app}/access-log
+GET  /api/v1/certificates
+POST /api/v1/certificates/{host}/renew
+POST /api/v1/teams/{team}/invites
+```
+
+`/api/v1/apps/...` remains as an alias. A token resolves to its user; every
+request is checked against the project's team (owner/admin for writes, any
+member for reads). Projects outside the token's teams return 404. Tokens
+created before the first user exists stay full-access for compatibility.
+
+## Proxy, edge and certificates
+
+Per-project proxy settings (custom headers, basic auth, www/apex redirect,
+static compression, max body size, force HTTPS) are available from the Proxy
+tab and the API. They are applied by the built-in proxy for every request.
+
+Default mode is plain HTTP behind an external proxy (Traefik/Caddy), exactly
+as before. `dok serve --edge` binds :80 and :443, redirects HTTP to HTTPS,
+answers ACME HTTP-01 challenges, and issues certificates for every custom
+domain plus `<app>.<base_domain>` into `<data>/acme`. The ACME host list is
+built at startup; add domains then restart the service.
+
+## Access log
+
+The proxy keeps the last 200 requests per project in SQLite (time, method,
+path, status, latency, client IP) with automatic retention. They are shown on
+the project Logs page and exposed at `/api/v1/projects/{app}/access-log`.
 
 ## Roadmap
 
@@ -142,6 +200,9 @@ Sessions live in memory, so a server restart logs you out (the passkey stays).
 - [x] rollback, retention, daily DB backups, persistent sessions
 - [x] `dok logs -f`
 - [x] one-command install script
+- [x] teams, invites, production/preview, promote/rollback, per-env vars
+- [x] per-project proxy settings, access log, certificate status UI
+- [x] built-in edge mode with HTTP-01 + TLS-ALPN-01
 
 ## License
 

@@ -28,6 +28,9 @@ const { chromium } = require("playwright");
   const btn = await page.textContent("#go");
   if (!btn.includes("Create a passkey")) fail("expected setup page, got: " + btn);
 
+  await page.fill("#email", "e2e@example.com");
+  await page.fill("#name", "E2E User");
+  await page.fill("#team", "E2E Team");
   await page.click("#go");
   await page.waitForURL("**/dashboard", { timeout: 20000 });
   const text = await page.textContent("body");

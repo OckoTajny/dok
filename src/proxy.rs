@@ -1,10 +1,11 @@
 use crate::state::AppState;
 use axum::body::Body;
-use axum::http::{header, HeaderValue, Method, Request, Response, StatusCode};
+use axum::http::{header, HeaderName, HeaderValue, Method, Request, Response, StatusCode};
+use base64::Engine;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::io::ReaderStream;
 
 const HOP_BY_HOP: &[&str] = &[
@@ -50,7 +51,44 @@ pub fn app_for(st: &AppState, req: &Request<Body>) -> Option<crate::db::App> {
 }
 
 pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) -> Response<Body> {
-    match app.kind.as_str() {
+    let started = Instant::now();
+    let method = req.method().as_str().to_string();
+    let path = req.uri().path().to_string();
+    let ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip().to_string());
+    let host = host_of(&req);
+    let settings = st.db.proxy_settings(&app.name);
+
+    if let Some(r) = redirect_for(&st, &req, &host, &settings) {
+        log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
+        return apply_headers(r, &settings);
+    }
+    if let Some(r) = basic_auth_challenge(&req, &settings) {
+        log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
+        return apply_headers(r, &settings);
+    }
+    if let Some(max) = settings.max_body_mb {
+        let too_big = req
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|len| len > max.saturating_mul(1024 * 1024))
+            .unwrap_or(false);
+        if too_big {
+            let r = Response::builder()
+                .status(StatusCode::PAYLOAD_TOO_LARGE)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Body::from("dok: request body too large\n"))
+                .unwrap();
+            log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
+            return apply_headers(r, &settings);
+        }
+    }
+
+    let resp = match app.kind.as_str() {
         "static" => {
             let dir = app.dir.clone().unwrap_or_default();
             let method = req.method().clone();
@@ -60,7 +98,22 @@ pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) ->
                 .get(header::IF_NONE_MATCH)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
-            match serve_static(Path::new(&dir), &method, &path, inm.as_deref()).await {
+            let accepts_gzip = req
+                .headers()
+                .get(header::ACCEPT_ENCODING)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.contains("gzip"))
+                .unwrap_or(false);
+            match serve_static(
+                Path::new(&dir),
+                &method,
+                &path,
+                inm.as_deref(),
+                settings.compression,
+                accepts_gzip,
+            )
+            .await
+            {
                 Some(r) => r,
                 None => landing(&st),
             }
@@ -69,7 +122,127 @@ pub async fn serve_app(st: AppState, req: Request<Body>, app: crate::db::App) ->
             Some(port) => forward(&st, req, port).await,
             None => bad_gateway("app has no running container"),
         },
+    };
+    log_request(&st, &app.name, &method, &path, &resp, started, ip.as_deref());
+    apply_headers(resp, &settings)
+}
+
+fn log_request(
+    st: &AppState,
+    app: &str,
+    method: &str,
+    path: &str,
+    resp: &Response<Body>,
+    started: Instant,
+    ip: Option<&str>,
+) {
+    st.db.log_access(
+        app,
+        method,
+        path,
+        resp.status().as_u16(),
+        started.elapsed().as_millis() as i64,
+        ip,
+    );
+}
+
+fn redirect_for(
+    st: &AppState,
+    req: &Request<Body>,
+    host: &str,
+    settings: &crate::db::ProxySettings,
+) -> Option<Response<Body>> {
+    if host.is_empty() {
+        return None;
     }
+    let https = st.scheme == "https";
+    let forwarded_https = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+    let local = host == "localhost"
+        || host == "127.0.0.1"
+        || host == "[::1]"
+        || host.starts_with("127.");
+    if settings.force_https && !https && !forwarded_https && !local {
+        let pq = req
+            .uri()
+            .path_and_query()
+            .map(|v| v.as_str())
+            .unwrap_or("/");
+        return Some(redirect_301(&format!("https://{host}{pq}")));
+    }
+    let redirect = settings.redirect.as_deref().unwrap_or("off");
+    let apex = host.strip_prefix("www.").unwrap_or(host);
+    let target = match redirect {
+        "www-to-apex" if host.starts_with("www.") => Some(apex.to_string()),
+        "apex-to-www" if !host.starts_with("www.") => Some(format!("www.{host}")),
+        _ => None,
+    };
+    target.map(|t| {
+        let scheme = if https || forwarded_https { "https" } else { "http" };
+        let pq = req
+            .uri()
+            .path_and_query()
+            .map(|v| v.as_str())
+            .unwrap_or("/");
+        redirect_301(&format!("{scheme}://{t}{pq}"))
+    })
+}
+
+fn redirect_301(location: &str) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::MOVED_PERMANENTLY)
+        .header(header::LOCATION, location)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn basic_auth_challenge(
+    req: &Request<Body>,
+    settings: &crate::db::ProxySettings,
+) -> Option<Response<Body>> {
+    let (Some(user), Some(hash)) = (
+        settings.basic_auth_user.as_deref(),
+        settings.basic_auth_hash.as_deref(),
+    ) else {
+        return None;
+    };
+    let ok = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Basic "))
+        .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|s| s.split_once(':').map(|(u, p)| (u.to_string(), p.to_string())))
+        .map(|(u, p)| u == user && crate::db::verify_password(hash, &p))
+        .unwrap_or(false);
+    if ok {
+        return None;
+    }
+    Some(
+        Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header(header::WWW_AUTHENTICATE, "Basic realm=\"dok\"")
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(Body::from("dok: authentication required\n"))
+            .unwrap(),
+    )
+}
+
+fn apply_headers(mut resp: Response<Body>, settings: &crate::db::ProxySettings) -> Response<Body> {
+    for (name, value) in &settings.headers {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            resp.headers_mut().insert(n, v);
+        }
+    }
+    resp
 }
 
 fn find_app(st: &AppState, host: &str) -> Option<crate::db::App> {
@@ -212,6 +385,8 @@ async fn serve_static(
     method: &Method,
     url_path: &str,
     if_none_match: Option<&str>,
+    compress: bool,
+    accepts_gzip: bool,
 ) -> Option<Response<Body>> {
     if method != Method::GET && method != Method::HEAD {
         return Some(
@@ -283,6 +458,9 @@ async fn serve_static(
     } else {
         "public, max-age=300"
     };
+    let compressible = mime.type_() == mime_guess::mime::TEXT
+        || mime.subtype() == mime_guess::mime::JSON
+        || mime.subtype() == mime_guess::mime::JAVASCRIPT;
     let builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime.as_ref())
@@ -292,6 +470,24 @@ async fn serve_static(
 
     if method == Method::HEAD {
         return builder.body(Body::empty()).ok();
+    }
+    if compress && accepts_gzip && compressible && meta.len() <= 5 * 1024 * 1024 {
+        use std::io::Write;
+        let bytes = tokio::fs::read(&canonical).await.ok()?;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        if enc.write_all(&bytes).is_ok() {
+            if let Ok(gz) = enc.finish() {
+                let len = gz.len();
+                let mut resp = builder
+                    .header(header::CONTENT_ENCODING, "gzip")
+                    .header(header::VARY, "Accept-Encoding")
+                    .body(Body::from(gz))
+                    .ok()?;
+                resp.headers_mut()
+                    .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+                return Some(resp);
+            }
+        }
     }
     let file = tokio::fs::File::open(&canonical).await.ok()?;
     let stream = ReaderStream::new(file);

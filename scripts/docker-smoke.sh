@@ -24,7 +24,7 @@ echo '<h1>hello from docker</h1>' > "$APP/index.html"
 PID=$!
 cleanup() {
   kill "$PID" 2>/dev/null || true
-  docker rm -f "dok-$APPNAME" >/dev/null 2>&1 || true
+  docker rm -f "dok-$APPNAME-production" "dok-$APPNAME-preview" >/dev/null 2>&1 || true
   rm -rf "$DATA" "$APP"
 }
 trap cleanup EXIT
@@ -45,6 +45,6 @@ for _ in $(seq 1 40); do
 done
 echo "$body" | grep -q 'hello from docker'
 
-docker ps --filter "name=dok-$APPNAME" --format '{{.Names}}' | grep -q "dok-$APPNAME"
+docker ps --filter "name=dok-$APPNAME-production" --format '{{.Names}}' | grep -q "dok-$APPNAME-production"
 
 echo "docker smoke: OK"

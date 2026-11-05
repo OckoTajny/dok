@@ -23,13 +23,15 @@ pub enum Cmd {
     Push(PushArgs),
     /// List apps.
     Apps,
+    /// List projects (alias of apps).
+    Projects,
     /// Show build and runtime logs (-f to follow).
     Logs {
         app: String,
         #[arg(short, long)]
         follow: bool,
     },
-    /// Set environment variables (KEY=VALUE ...).
+    /// Set environment variables (KEY=VALUE ...). `env pull <app>` prints them.
     Env {
         app: String,
         #[arg(value_name = "KEY=VALUE")]
@@ -45,6 +47,10 @@ pub enum Cmd {
     Deploys { app: String },
     /// Roll back to an earlier deploy id.
     Rollback { app: String, deploy: String },
+    /// Promote an earlier deploy onto production.
+    Promote { app: String, deploy: String },
+    /// Print the public URL of a project.
+    Open { app: String },
     /// Create a bare repo on the server and print the git remote.
     GitInit { app: String },
     /// Internal: deploy a pushed git repo (called by the post-receive hook).
@@ -92,6 +98,9 @@ pub struct ServeArgs {
     /// Use the Let's Encrypt production directory (default: staging).
     #[arg(long, env = "DOK_ACME_PROD")]
     pub acme_prod: bool,
+    /// Built-in edge: bind :80/:443, issue certs for every DB host, redirect HTTP to HTTPS.
+    #[arg(long, env = "DOK_EDGE")]
+    pub edge: bool,
 }
 
 #[derive(Args)]
@@ -108,6 +117,9 @@ pub struct PushArgs {
     /// Container port (default: dok.toml, Dockerfile EXPOSE, then 3000).
     #[arg(long)]
     pub port: Option<u16>,
+    /// Deployment environment: production or preview.
+    #[arg(long, default_value = "production")]
+    pub env: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -159,6 +171,25 @@ fn base(cfg: &Config) -> String {
     cfg.server.trim_end_matches('/').to_string()
 }
 
+fn scheme_of(url: &str) -> &str {
+    if url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    }
+}
+
+/// Split `http://host:port/base` into (scheme, host[:port]).
+fn split_server(url: &str) -> (&str, &str) {
+    let scheme = scheme_of(url);
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let host = rest.split('/').next().unwrap_or(rest);
+    (scheme, host)
+}
+
 fn handle(resp: reqwest::blocking::Response) -> Result<()> {
     let status = resp.status();
     let text = resp.text().unwrap_or_default();
@@ -188,7 +219,15 @@ pub fn run(cmd: Cmd) -> Result<()> {
         Cmd::Apps => {
             let cfg = load_config()?;
             let resp = client()?
-                .get(format!("{}/api/v1/apps", base(&cfg)))
+                .get(format!("{}/api/v1/projects", base(&cfg)))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            handle(resp)
+        }
+        Cmd::Projects => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .get(format!("{}/api/v1/projects", base(&cfg)))
                 .bearer_auth(&cfg.token)
                 .send()?;
             handle(resp)
@@ -198,7 +237,10 @@ pub fn run(cmd: Cmd) -> Result<()> {
             let cfg = load_config()?;
             if follow {
                 let mut resp = client()?
-                    .get(format!("{}/api/v1/apps/{app}/logs/stream", base(&cfg)))
+                    .get(format!(
+                        "{}/api/v1/projects/{app}/logs/stream?env=production",
+                        base(&cfg)
+                    ))
                     .bearer_auth(&cfg.token)
                     .send()?;
                 if !resp.status().is_success() {
@@ -209,7 +251,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 return Ok(());
             }
             let resp = client()?
-                .get(format!("{}/api/v1/apps/{app}/logs", base(&cfg)))
+                .get(format!("{}/api/v1/projects/{app}/logs", base(&cfg)))
                 .bearer_auth(&cfg.token)
                 .send()?;
             if !resp.status().is_success() {
@@ -221,6 +263,31 @@ pub fn run(cmd: Cmd) -> Result<()> {
             Ok(())
         }
         Cmd::Env { app, vars } => {
+            // `dok env pull <app>` — keep the historical `dok env <app> K=V` form.
+            if app == "pull" {
+                let Some(target) = vars.first() else {
+                    bail!("usage: dok env pull <app>");
+                };
+                let cfg = load_config()?;
+                let resp = client()?
+                    .get(format!(
+                        "{}/api/v1/projects/{target}/env/{}",
+                        base(&cfg),
+                        vars.get(1).map(String::as_str).unwrap_or("production")
+                    ))
+                    .bearer_auth(&cfg.token)
+                    .send()?;
+                if !resp.status().is_success() {
+                    return handle(resp);
+                }
+                let v: serde_json::Value = resp.json()?;
+                if let Some(map) = v["env"].as_object() {
+                    for (k, val) in map {
+                        println!("{k}={}", val.as_str().unwrap_or(""));
+                    }
+                }
+                return Ok(());
+            }
             let cfg = load_config()?;
             let mut map = serde_json::Map::new();
             for v in vars {
@@ -230,7 +297,10 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 map.insert(k.to_string(), serde_json::Value::String(val.to_string()));
             }
             let resp = client()?
-                .put(format!("{}/api/v1/apps/{app}/env", base(&cfg)))
+                .put(format!(
+                    "{}/api/v1/projects/{app}/env/production",
+                    base(&cfg)
+                ))
                 .bearer_auth(&cfg.token)
                 .json(&map)
                 .send()?;
@@ -266,7 +336,10 @@ pub fn run(cmd: Cmd) -> Result<()> {
         Cmd::Deploys { app } => {
             let cfg = load_config()?;
             let resp = client()?
-                .get(format!("{}/api/v1/apps/{app}/deploys", base(&cfg)))
+                .get(format!(
+                    "{}/api/v1/projects/{app}/deployments",
+                    base(&cfg)
+                ))
                 .bearer_auth(&cfg.token)
                 .send()?;
             handle(resp)
@@ -275,12 +348,44 @@ pub fn run(cmd: Cmd) -> Result<()> {
             let cfg = load_config()?;
             let resp = client()?
                 .post(format!(
-                    "{}/api/v1/apps/{app}/rollback/{deploy}",
+                    "{}/api/v1/projects/{app}/rollback/{deploy}",
                     base(&cfg)
                 ))
                 .bearer_auth(&cfg.token)
                 .send()?;
             handle(resp)
+        }
+        Cmd::Promote { app, deploy } => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .post(format!(
+                    "{}/api/v1/projects/{app}/promote/{deploy}",
+                    base(&cfg)
+                ))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            handle(resp)
+        }
+        Cmd::Open { app } => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .get(format!("{}/api/v1/projects/{app}", base(&cfg)))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            if !resp.status().is_success() {
+                return handle(resp);
+            }
+            let v: serde_json::Value = resp.json()?;
+            let base_url = base(&cfg);
+            let url = match v["domain"].as_str() {
+                Some(d) => format!("{}://{d}", scheme_of(&base_url)),
+                None => {
+                    let (scheme, host) = split_server(&base_url);
+                    format!("{scheme}://{app}.{host}")
+                }
+            };
+            println!("{url}");
+            Ok(())
         }
         Cmd::Redeploy { app } => {
             let cfg = load_config()?;
@@ -337,13 +442,16 @@ fn push(args: PushArgs) -> Result<()> {
     let tmp = std::env::temp_dir().join(format!("dok-{}.tar.gz", uuid::Uuid::new_v4().simple()));
     pack(&dir, &tmp)?;
 
-    let mut url = format!("{}/api/v1/apps/{}/deploy", base(&cfg), app);
+    let mut url = format!("{}/api/v1/projects/{}/deploy", base(&cfg), app);
     let mut q = Vec::new();
     if let Some(p) = args.port {
         q.push(format!("port={p}"));
     }
     if let Some(d) = &args.domain {
         q.push(format!("domain={d}"));
+    }
+    if args.env != "production" {
+        q.push(format!("env={}", args.env));
     }
     if !q.is_empty() {
         url.push('?');

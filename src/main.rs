@@ -6,6 +6,7 @@ mod deploy;
 mod proxy;
 mod server;
 mod state;
+mod ui;
 
 use clap::Parser;
 
