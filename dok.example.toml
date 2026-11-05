@@ -1,0 +1,5 @@
+# app name and defaults; every field is optional
+name = "my-app"
+port = 3000
+# domain = "my-app.example.com"
+# dockerfile = "Dockerfile"
