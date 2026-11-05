@@ -122,9 +122,6 @@ async fn forward(st: &AppState, mut req: Request<Body>, port: u16) -> Response<B
         let h = out.headers_mut().unwrap();
         for (k, v) in parts.headers.iter() {
             let name = k.as_str();
-            if name == "host" {
-                continue;
-            }
             if !upgrade && HOP_BY_HOP.contains(&name) {
                 continue;
             }

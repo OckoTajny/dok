@@ -217,7 +217,7 @@ impl Db {
         let c = self.conn();
         let log = c
             .query_row(
-                "SELECT log FROM deploys WHERE app = ?1 ORDER BY created_at DESC LIMIT 1",
+                "SELECT log FROM deploys WHERE app = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 params![app],
                 |r| r.get::<_, String>(0),
             )

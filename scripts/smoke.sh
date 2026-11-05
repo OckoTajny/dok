@@ -25,7 +25,14 @@ curl -fsS "$DOK_SERVER/api/v1/health" | grep -q '"ok":true'
 body=$(curl -fsS -H 'Host: hello.127.0.0.1' "http://127.0.0.1:$PORT/")
 echo "$body" | grep -q 'hello from dok'
 
-"$BIN" domain hello hello.test >/dev/null
+# domain case/trailing dot is normalised
+"$BIN" push examples/hello --app hello --domain 'Hello.Test.' >/dev/null
 curl -fsS -H 'Host: hello.test' "http://127.0.0.1:$PORT/" | grep -q 'hello from dok'
+
+# unknown app returns 404 instead of a fake success
+if "$BIN" domain no-such-app x.test >/dev/null 2>&1; then
+  echo "expected 404 for unknown app" >&2
+  exit 1
+fi
 
 echo "smoke: OK"

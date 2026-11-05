@@ -39,20 +39,28 @@ pub fn extract_tarball(archive: &Path, dest: &Path) -> Result<()> {
     let canonical_dest = dest.canonicalize()?;
     for entry in ar.entries()? {
         let mut entry = entry?;
+        let etype = entry.header().entry_type();
+        if etype.is_pax_global_extensions() || etype.is_pax_local_extensions() {
+            continue;
+        }
+        if !etype.is_file() && !etype.is_dir() {
+            bail!(
+                "archive contains a symlink or special file ({}), refusing to extract",
+                entry.path()?.display()
+            );
+        }
         let path = entry.path()?.into_owned();
         if path.components().any(|c| {
             matches!(
                 c,
-                std::path::Component::ParentDir | std::path::Component::RootDir
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
             )
         }) {
             bail!("unsafe path in archive: {}", path.display());
         }
-        let out = canonical_dest.join(&path);
-        if !out.starts_with(&canonical_dest) {
-            bail!("unsafe path in archive: {}", path.display());
-        }
-        entry.unpack(&out)?;
+        entry.unpack_in(&canonical_dest)?;
     }
     Ok(())
 }
@@ -74,11 +82,6 @@ fn exposed_port(dir: &Path, dockerfile: &str) -> Option<u16> {
         }
     }
     None
-}
-
-fn pick_port() -> Result<u16> {
-    let l = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-    Ok(l.local_addr()?.port())
 }
 
 pub async fn docker_available() -> bool {
@@ -111,21 +114,36 @@ pub async fn deploy_dir(
     port_hint: Option<u16>,
     domain_hint: Option<String>,
 ) -> Result<DeployOutcome> {
+    // One deploy per app at a time, across processes (the git hook runs its own).
+    let _lock = st.lock_deploy(app).await?;
     let deploy_id = uuid::Uuid::new_v4().simple().to_string();
     st.db.add_deploy(&deploy_id, app, "running")?;
+    let mut guard = DeployGuard {
+        st,
+        app,
+        id: deploy_id.clone(),
+        done: false,
+    };
 
     let prev = st.db.get_app(app)?;
     let conf = read_dok_toml(dir);
-    let chosen_domain = domain_hint.clone().or_else(|| conf.domain.clone());
+    let chosen_domain = match domain_hint.clone().or_else(|| conf.domain.clone()) {
+        Some(d) => {
+            let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
+            if !crate::api::valid_host(&d) {
+                bail!("invalid domain: {d}");
+            }
+            Some(d)
+        }
+        None => None,
+    };
     let dockerfile = conf.dockerfile.clone().unwrap_or_else(|| "Dockerfile".into());
     let has_dockerfile = dir.join(&dockerfile).is_file();
     let mut log = String::new();
 
     let (kind, host_port, container_port) = if has_dockerfile {
         if !docker_available().await {
-            let msg = "docker is not available on this host".to_string();
-            st.db.finish_deploy(&deploy_id, "failed", &msg)?;
-            bail!(msg);
+            bail!("docker is not available on this host");
         }
         let container_port = port_hint
             .or(conf.port)
@@ -133,9 +151,9 @@ pub async fn deploy_dir(
             .unwrap_or(3000);
 
         let tag = format!("dok/{app}:{deploy_id}");
-        log.push_str(&format!("$ docker build -t {tag} .\n"));
+        log.push_str(&format!("$ docker build -f {dockerfile} -t {tag} .\n"));
         let out = Command::new("docker")
-            .args(["build", "-t", &tag, "."])
+            .args(["build", "-f", &dockerfile, "-t", &tag, "."])
             .current_dir(dir)
             .output()
             .await
@@ -144,13 +162,13 @@ pub async fn deploy_dir(
         log.push_str(&String::from_utf8_lossy(&out.stderr));
         if !out.status.success() {
             st.db.finish_deploy(&deploy_id, "failed", &log)?;
+            guard.done = true;
             st.db.set_status(app, "failed")?;
             bail!("docker build failed (see `dok logs {app}`)");
         }
 
         // Start the replacement first; the old container keeps serving until the
-        // new one is running and the DB points at it.
-        let host_port = pick_port()?;
+        // new one is running and the DB points at it. Let Docker pick the port.
         let temp_name = format!("dok-{app}-{}", &deploy_id[..8]);
         let mut cmd = Command::new("docker");
         cmd.args([
@@ -163,7 +181,7 @@ pub async fn deploy_dir(
             "-l",
             &format!("dok.app={app}"),
             "-p",
-            &format!("127.0.0.1:{host_port}:{container_port}"),
+            &format!("127.0.0.1::{container_port}"),
         ]);
         for (k, v) in st.db.env(app)? {
             cmd.args(["-e", &format!("{k}={v}")]);
@@ -173,23 +191,23 @@ pub async fn deploy_dir(
         log.push_str(&String::from_utf8_lossy(&out.stdout));
         log.push_str(&String::from_utf8_lossy(&out.stderr));
         if !out.status.success() {
-            let _ = Command::new("docker")
-                .args(["rm", "-f", &temp_name])
-                .output()
-                .await;
+            remove_container(&temp_name).await;
             st.db.finish_deploy(&deploy_id, "failed", &log)?;
+            guard.done = true;
             st.db.set_status(app, "failed")?;
             bail!("docker run failed (see `dok logs {app}`)");
         }
+        let host_port = match mapped_port(&temp_name, container_port).await {
+            Some(p) => p,
+            None => {
+                remove_container(&temp_name).await;
+                bail!("docker did not report a host port");
+            }
+        };
         ("docker", Some(host_port), Some(container_port))
     } else {
         ("static", None, None)
     };
-
-    let url = chosen_domain
-        .clone()
-        .map(|d| format!("https://{d}"))
-        .unwrap_or_else(|| st.public_url.clone());
 
     let row = crate::db::App {
         name: app.to_string(),
@@ -226,6 +244,19 @@ pub async fn deploy_dir(
     }
 
     st.db.finish_deploy(&deploy_id, "ok", &log)?;
+    guard.done = true;
+
+    let url = st
+        .db
+        .get_app(app)?
+        .and_then(|a| a.domain)
+        .map(|d| format!("{}://{d}", st.scheme))
+        .or_else(|| {
+            st.base_domain
+                .as_ref()
+                .map(|b| format!("{}://{app}.{b}", st.scheme))
+        })
+        .unwrap_or_else(|| st.public_url.clone());
 
     Ok(DeployOutcome {
         app: app.to_string(),
@@ -234,6 +265,46 @@ pub async fn deploy_dir(
         url,
         host_port,
     })
+}
+
+struct DeployGuard<'a> {
+    st: &'a AppState,
+    app: &'a str,
+    id: String,
+    done: bool,
+}
+
+impl Drop for DeployGuard<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = self
+                .st
+                .db
+                .finish_deploy(&self.id, "failed", "deploy aborted before completion");
+            let _ = self.st.db.set_status(self.app, "failed");
+        }
+    }
+}
+
+async fn remove_container(name: &str) {
+    let _ = Command::new("docker")
+        .args(["rm", "-f", name])
+        .output()
+        .await;
+}
+
+async fn mapped_port(name: &str, container_port: u16) -> Option<u16> {
+    let out = Command::new("docker")
+        .args(["port", name, &format!("{container_port}/tcp")])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .find_map(|l| l.rsplit(':').next()?.trim().parse::<u16>().ok())
 }
 
 /// Copy a directory into `<data>/builds/<app>/<deploy_id>` and return it.
@@ -280,6 +351,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(exposed_port(&dir, "Dockerfile"), Some(8080));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rejects_symlink_entries() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("dok-tar-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("evil.tar.gz");
+        {
+            let f = std::fs::File::create(&archive).unwrap();
+            let enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+            let mut b = tar::Builder::new(enc);
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Symlink);
+            h.set_size(0);
+            h.set_mode(0o777);
+            h.set_cksum();
+            b.append_link(&mut h, "evil", "/etc/passwd").unwrap();
+            b.into_inner().unwrap().flush().unwrap();
+        }
+        let out = dir.join("out");
+        assert!(super::extract_tarball(&archive, &out).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn extracts_regular_files() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("dok-tar-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let archive = dir.join("ok.tar.gz");
+        {
+            let f = std::fs::File::create(&archive).unwrap();
+            let enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+            let mut b = tar::Builder::new(enc);
+            let data = b"hello";
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            b.append_data(&mut h, "index.html", &data[..]).unwrap();
+            b.into_inner().unwrap().flush().unwrap();
+        }
+        let out = dir.join("out");
+        super::extract_tarball(&archive, &out).unwrap();
+        assert_eq!(std::fs::read(out.join("index.html")).unwrap(), b"hello");
         std::fs::remove_dir_all(&dir).ok();
     }
 

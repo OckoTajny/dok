@@ -20,8 +20,6 @@ pub struct AppState {
     pub public_url: String,
     /// Scheme clients use to reach us.
     pub scheme: String,
-    /// Hosts allowed to call the management API.
-    pub api_hosts: Vec<String>,
     /// Seconds to wait for upstream response headers.
     pub upstream_timeout: u64,
     /// Passkey dashboard, when configured.
@@ -40,15 +38,6 @@ impl AppState {
             .as_ref()
             .map(|u| u.scheme().to_string())
             .unwrap_or_else(|| "http".into());
-        let mut api_hosts = vec![
-            "localhost".to_string(),
-            "127.0.0.1".to_string(),
-            "[::1]".to_string(),
-        ];
-        if let Some(h) = parsed.as_ref().and_then(|u| u.host_str()) {
-            api_hosts.push(h.to_string());
-        }
-
         Self {
             db,
             data,
@@ -56,7 +45,6 @@ impl AppState {
             base_domain,
             public_url,
             scheme,
-            api_hosts,
             upstream_timeout: 60,
             auth: None,
         }
@@ -65,6 +53,25 @@ impl AppState {
     pub fn with_auth(mut self, auth: Option<Arc<crate::auth::AuthState>>) -> Self {
         self.auth = auth;
         self
+    }
+
+    /// Cross-process per-app deploy lock (flock on `<data>/locks/<app>.lock`).
+    pub async fn lock_deploy(&self, app: &str) -> anyhow::Result<std::fs::File> {
+        use fs2::FileExt;
+        let path = self.data.join("locks").join(format!("{app}.lock"));
+        tokio::task::spawn_blocking(move || -> anyhow::Result<std::fs::File> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(&path)?;
+            file.lock_exclusive()?;
+            Ok(file)
+        })
+        .await?
     }
 
     pub fn builds_dir(&self) -> PathBuf {

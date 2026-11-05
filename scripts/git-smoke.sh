@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# git push deploy: create a bare repo, push a commit, verify the site changed.
+# git push deploy: git-init a brand-new app, push to main, verify the site.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,19 +24,16 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 
-"$BIN" push examples/hello --app "$APP" >/dev/null
-curl -fsS -H "Host: $APP.127.0.0.1" "http://127.0.0.1:$PORT/" | grep -q 'hello from dok'
-
+# No prior `dok push`: git-init must create the app.
 "$BIN" git-init "$APP" >/dev/null
-BARE=$(ls -d "$DATA"/repos/"$APP".git)
+BARE="$DATA/repos/$APP.git"
 
-git clone -q "$BARE" "$WORK/clone"
+git clone -q "$BARE" "$WORK/clone" 2>/dev/null || git clone -q "$BARE" "$WORK/clone"
 cd "$WORK/clone"
-git -c user.name=smoke -c user.email=smoke@example.com commit -q --allow-empty -m init
 echo '<h1>pushed via git</h1>' > index.html
 git add index.html
-git -c user.name=smoke -c user.email=smoke@example.com commit -q -m "change page"
-git push -q origin HEAD:master 2>/dev/null || git push -q origin HEAD:main 2>/dev/null || git push -q origin HEAD
+git -c user.name=smoke -c user.email=smoke@example.com commit -q -m "first commit"
+git push -q origin HEAD:main
 cd - >/dev/null
 
 body=""

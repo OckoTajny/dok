@@ -165,11 +165,14 @@ fn register_start(st: &AppState, auth: &AuthState, authed: bool) -> Response<Bod
         .start_passkey_registration(user, "dok", "dok admin", exclude)
     {
         Ok((ccr, state)) => {
-            let id = Uuid::new_v4().simple().to_string();
-            auth.pending_reg
-                .lock()
-                .unwrap()
-                .insert(id.clone(), (state, crate::db::now() + 300));
+                let id = Uuid::new_v4().simple().to_string();
+            let now = crate::db::now();
+            let mut pending = auth.pending_reg.lock().unwrap();
+            pending.retain(|_, (_, exp)| *exp > now);
+            if pending.len() > 64 {
+                pending.clear();
+            }
+            pending.insert(id.clone(), (state, now + 300));
             let mut v = serde_json::to_value(ccr).unwrap_or_default();
             v["id"] = json!(id);
             Json(v).into_response()
@@ -194,8 +197,10 @@ async fn register_finish(st: &AppState, auth: &AuthState, req: Request<Body>) ->
         Err(e) => return bad(&format!("bad credential: {e}")),
     };
     let state = {
+        let now = crate::db::now();
         let mut p = auth.pending_reg.lock().unwrap();
-        p.remove(&body.id).map(|(s, _)| s)
+        p.remove(&body.id)
+            .and_then(|(s, exp)| if exp > now { Some(s) } else { None })
     };
     let Some(state) = state else {
         return bad("registration expired");
@@ -222,10 +227,13 @@ fn login_start(st: &AppState, auth: &AuthState) -> Response<Body> {
     match auth.web.start_passkey_authentication(&keys) {
         Ok((rcr, state)) => {
             let id = Uuid::new_v4().simple().to_string();
-            auth.pending_auth
-                .lock()
-                .unwrap()
-                .insert(id.clone(), (state, crate::db::now() + 300));
+            let now = crate::db::now();
+            let mut pending = auth.pending_auth.lock().unwrap();
+            pending.retain(|_, (_, exp)| *exp > now);
+            if pending.len() > 64 {
+                pending.clear();
+            }
+            pending.insert(id.clone(), (state, now + 300));
             let mut v = serde_json::to_value(rcr).unwrap_or_default();
             v["id"] = json!(id);
             Json(v).into_response()
@@ -244,8 +252,10 @@ async fn login_finish(st: &AppState, auth: &AuthState, req: Request<Body>) -> Re
         Err(e) => return bad(&format!("bad credential: {e}")),
     };
     let state = {
+        let now = crate::db::now();
         let mut p = auth.pending_auth.lock().unwrap();
-        p.remove(&body.id).map(|(s, _)| s)
+        p.remove(&body.id)
+            .and_then(|(s, exp)| if exp > now { Some(s) } else { None })
     };
     let Some(state) = state else {
         return bad("login expired");

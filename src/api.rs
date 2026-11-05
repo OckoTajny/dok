@@ -29,10 +29,6 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response {
 
     let path = req.uri().path().to_string();
     if path == "/api" || path.starts_with("/api/") {
-        let host = proxy::host_of(&req);
-        if !st.api_hosts.iter().any(|h| h == &host) {
-            return (StatusCode::NOT_FOUND, "not found\n").into_response();
-        }
         return match api_routes(st).oneshot(req).await {
             Ok(r) => r,
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal\n").into_response(),
@@ -105,7 +101,13 @@ async fn get_app(State(st): State<AppState>, Path(app): Path<String>) -> Respons
 }
 
 async fn delete_app(State(st): State<AppState>, Path(app): Path<String>) -> Response {
+    match st.db.get_app(&app) {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such app\n").into_response(),
+        Err(e) => return internal(e),
+    }
     deploy::stop_container(&app).await;
+    let _ = tokio::fs::remove_dir_all(st.builds_dir().join(&app)).await;
     match st.db.delete_app(&app) {
         Ok(_) => Json(json!({"deleted": app})).into_response(),
         Err(e) => internal(e),
@@ -189,6 +191,11 @@ async fn put_env(
     Path(app): Path<String>,
     Json(vars): Json<HashMap<String, String>>,
 ) -> Response {
+    match st.db.get_app(&app) {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such app\n").into_response(),
+        Err(e) => return internal(e),
+    }
     let kv: Vec<(String, String)> = vars.into_iter().collect();
     match st.db.put_env(&app, &kv) {
         Ok(_) => Json(json!({"ok": true, "keys": st.db.env(&app).unwrap_or_default()
@@ -217,6 +224,9 @@ async fn set_domain(
     if !valid_host(&b.domain) {
         return (StatusCode::BAD_REQUEST, "invalid domain\n").into_response();
     }
+    if !matches!(st.db.get_app(&app), Ok(Some(_))) {
+        return (StatusCode::NOT_FOUND, "no such app\n").into_response();
+    }
     let domain = b.domain.trim_end_matches('.').to_ascii_lowercase();
     match st.db.set_domain(&app, &domain) {
         Ok(_) => Json(json!({"ok": true, "domain": domain})).into_response(),
@@ -234,6 +244,9 @@ async fn set_repo(
     Path(app): Path<String>,
     Json(b): Json<RepoBody>,
 ) -> Response {
+    if !matches!(st.db.get_app(&app), Ok(Some(_))) {
+        return (StatusCode::NOT_FOUND, "no such app\n").into_response();
+    }
     match st.db.set_repo(&app, &b.repo) {
         Ok(_) => Json(json!({"ok": true, "repo": b.repo})).into_response(),
         Err(e) => internal(e),
@@ -241,8 +254,28 @@ async fn set_repo(
 }
 
 async fn git_init(State(st): State<AppState>, Path(app): Path<String>) -> Response {
-    if !matches!(st.db.get_app(&app), Ok(Some(_))) {
-        return (StatusCode::NOT_FOUND, "no such app\n").into_response();
+    if !valid_name(&app) {
+        return (StatusCode::BAD_REQUEST, "invalid app name\n").into_response();
+    }
+    match st.db.get_app(&app) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let row = crate::db::App {
+                name: app.clone(),
+                kind: "docker".into(),
+                host_port: None,
+                container_port: None,
+                domain: None,
+                status: "new".into(),
+                dir: None,
+                repo: None,
+                updated_at: crate::db::now(),
+            };
+            if let Err(e) = st.db.upsert_app(&row) {
+                return internal(e);
+            }
+        }
+        Err(e) => return internal(e),
     }
     match init_bare_repo(&st, &app) {
         Ok((path, hook)) => {
@@ -267,7 +300,7 @@ fn init_bare_repo(st: &AppState, app: &str) -> anyhow::Result<(String, String)> 
     }
     if !dir.exists() {
         let out = std::process::Command::new("git")
-            .args(["init", "--bare", "--quiet"])
+            .args(["init", "--bare", "--quiet", "-b", "main"])
             .arg(&dir)
             .output()?;
         if !out.status.success() {
@@ -280,7 +313,7 @@ fn init_bare_repo(st: &AppState, app: &str) -> anyhow::Result<(String, String)> 
         std::fs::create_dir_all(parent)?;
     }
     let hook_body = format!(
-        "#!/bin/sh\nexec '{}' deploy-git '{}' --data '{}' >> '{}' 2>&1\n",
+        "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_QUARANTINE_PATH\nexec '{}' deploy-git '{}' --data '{}' >> '{}' 2>&1\n",
         exe.display(),
         app,
         st.data.display(),
@@ -366,10 +399,24 @@ pub async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<Deploy
     let out = tokio::process::Command::new("git")
         .args(["clone", "--depth", "1", &repo])
         .arg(&dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .output()
         .await?;
     if !out.status.success() {
         anyhow::bail!("git clone failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let head = tokio::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(&dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .await?;
+    if !head.status.success() {
+        anyhow::bail!("repo has no commits yet; push a branch first");
     }
     deploy::deploy_dir(st, app, &dir, None, None).await
 }
@@ -383,7 +430,7 @@ fn valid_name(s: &str) -> bool {
         && !s.ends_with('-')
 }
 
-fn valid_host(s: &str) -> bool {
+pub(crate) fn valid_host(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 253
         && s.chars()

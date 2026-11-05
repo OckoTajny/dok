@@ -287,7 +287,7 @@ fn push(args: PushArgs) -> Result<()> {
         })
         .or_else(|| dir.file_name().map(|n| n.to_string_lossy().to_lowercase()))
         .context("cannot infer app name; use --app")?;
-    let app = app.replace('_', "-");
+    let app = slug(&app)?;
 
     let tmp = std::env::temp_dir().join(format!("dok-{}.tar.gz", uuid::Uuid::new_v4().simple()));
     pack(&dir, &tmp)?;
@@ -316,11 +316,35 @@ fn push(args: PushArgs) -> Result<()> {
     handle(resp?)
 }
 
+fn slug(raw: &str) -> Result<String> {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in raw.to_ascii_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() || out.len() > 63 {
+        bail!("cannot derive app name from {raw:?}; use --app");
+    }
+    Ok(out)
+}
+
 fn pack(dir: &Path, out: &Path) -> Result<()> {
     let f = std::fs::File::create(out)?;
     let enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
     let mut tb = tar::Builder::new(enc);
-    let mut walk = WalkBuilder::new(dir).standard_filters(true).build();
+    let mut walk = WalkBuilder::new(dir)
+        .standard_filters(true)
+        .hidden(false)
+        .build();
     let mut count = 0usize;
     while let Some(item) = walk.next() {
         let entry = item?;
