@@ -20,27 +20,37 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let db = Db::open(&data.join("dok.db"))?;
     init_token(&db, &data, args.token.as_deref())?;
 
-    let scheme = if args.acme_domain.is_empty() {
-        "http"
-    } else {
+    // Behind Traefik/Caddy TLS termination, --dashboard-origin tells us the
+    // scheme clients actually use.
+    let tls_terminated = args
+        .dashboard_origin
+        .as_deref()
+        .map(|o| o.starts_with("https://"))
+        .unwrap_or(false);
+    let scheme = if !args.acme_domain.is_empty() || tls_terminated {
         "https"
+    } else {
+        "http"
     };
-    let public_url = match scheme {
-        "https" => format!(
-            "https://{}",
-            args.base_domain
-                .clone()
-                .or_else(|| args.acme_domain.first().cloned())
-                .unwrap_or_else(|| "localhost".into())
-        ),
-        _ => {
-            let host = if args.public_host == "0.0.0.0" {
-                "localhost".to_string()
-            } else {
-                args.public_host.clone()
-            };
-            format!("http://{host}:{}", args.http_port)
-        }
+    let public_url = match &args.dashboard_origin {
+        Some(o) => o.trim_end_matches('/').to_string(),
+        None => match scheme {
+            "https" => format!(
+                "https://{}",
+                args.base_domain
+                    .clone()
+                    .or_else(|| args.acme_domain.first().cloned())
+                    .unwrap_or_else(|| "localhost".into())
+            ),
+            _ => {
+                let host = if args.public_host == "0.0.0.0" {
+                    "localhost".to_string()
+                } else {
+                    args.public_host.clone()
+                };
+                format!("http://{host}:{}", args.http_port)
+            }
+        },
     };
 
     let origin = args
