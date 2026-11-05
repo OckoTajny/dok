@@ -49,6 +49,7 @@ fn api_routes(st: AppState) -> Router {
         .route("/api/v1/apps/{app}", get(get_app).delete(delete_app))
         .route("/api/v1/apps/{app}/deploy", post(deploy_upload))
         .route("/api/v1/apps/{app}/logs", get(logs))
+        .route("/api/v1/apps/{app}/logs/stream", get(logs_stream))
         .route("/api/v1/apps/{app}/deploys", get(list_deploys))
         .route("/api/v1/apps/{app}/rollback/{deploy}", post(rollback))
         .route("/api/v1/apps/{app}/env", put(put_env).get(get_env))
@@ -200,6 +201,81 @@ async fn logs(State(st): State<AppState>, Path(app): Path<String>) -> Response {
         "no container (static app)".to_string()
     };
     Json(json!({"build": build.unwrap_or_default(), "runtime": runtime})).into_response()
+}
+
+async fn logs_stream(State(st): State<AppState>, Path(app): Path<String>) -> Response {
+    let kind = st
+        .db
+        .get_app(&app)
+        .ok()
+        .flatten()
+        .map(|a| a.kind)
+        .unwrap_or_default();
+    if kind != "docker" {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(axum::body::Body::from("no container (static app)\n"))
+            .unwrap();
+    }
+    if !crate::deploy::docker_available().await {
+        return (StatusCode::SERVICE_UNAVAILABLE, "docker unavailable\n").into_response();
+    }
+
+    let name = deploy::container_name(&app);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
+    tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+        let mut child = match std::process::Command::new("docker")
+            .args(["logs", "-f", "--tail", "100", &name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.blocking_send(Err(e));
+                return;
+            }
+        };
+        let stderr = child.stderr.take();
+        let err_tx = tx.clone();
+        if let Some(err) = stderr {
+            std::thread::spawn(move || {
+                for line in BufReader::new(err).lines().map_while(Result::ok) {
+                    if err_tx
+                        .blocking_send(Ok(bytes::Bytes::from(format!("{line}\n"))))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+        if let Some(out) = child.stdout.take() {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if tx
+                    .blocking_send(Ok(bytes::Bytes::from(format!("{line}\n"))))
+                    .is_err()
+                {
+                    let _ = child.kill();
+                    break;
+                }
+            }
+        }
+        let _ = child.wait();
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("x-accel-buffering", "no")
+        .body(axum::body::Body::from_stream(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+        .unwrap()
 }
 
 async fn list_deploys(State(st): State<AppState>, Path(app): Path<String>) -> Response {

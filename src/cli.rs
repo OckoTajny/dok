@@ -23,8 +23,12 @@ pub enum Cmd {
     Push(PushArgs),
     /// List apps.
     Apps,
-    /// Show build and runtime logs.
-    Logs { app: String },
+    /// Show build and runtime logs (-f to follow).
+    Logs {
+        app: String,
+        #[arg(short, long)]
+        follow: bool,
+    },
     /// Set environment variables (KEY=VALUE ...).
     Env {
         app: String,
@@ -190,8 +194,20 @@ pub fn run(cmd: Cmd) -> Result<()> {
             handle(resp)
         }
         Cmd::Push(args) => push(args),
-        Cmd::Logs { app } => {
+        Cmd::Logs { app, follow } => {
             let cfg = load_config()?;
+            if follow {
+                let mut resp = client()?
+                    .get(format!("{}/api/v1/apps/{app}/logs/stream", base(&cfg)))
+                    .bearer_auth(&cfg.token)
+                    .send()?;
+                if !resp.status().is_success() {
+                    return handle(resp);
+                }
+                let mut out = std::io::stdout();
+                std::io::copy(&mut resp, &mut out)?;
+                return Ok(());
+            }
             let resp = client()?
                 .get(format!("{}/api/v1/apps/{app}/logs", base(&cfg)))
                 .bearer_auth(&cfg.token)

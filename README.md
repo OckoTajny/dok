@@ -22,15 +22,22 @@ Tiny self-hosted deploy platform in one Rust binary. Think "Vercel/Coolify, but 
 On the server:
 
 ```bash
-dok serve --http-port 8080 --base-domain example.com
-# prints an initial token on first start
+./install.sh                       # binary + systemd user service + token
+# or: DOMAIN=dok.example.com BASE_DOMAIN=apps.example.com ./install.sh
 ```
 
-On your laptop:
+The installer prints the initial token. On your laptop:
 
 ```bash
-dok login http://server:8080 <token>
-dok push ./my-app --app my-app --domain my-app.example.com
+dok login https://dok.example.com <token>
+dok push ./my-app --app my-app
+```
+
+If the machine may sleep, install the keep-awake unit too:
+
+```bash
+sudo install -m644 deploy/dok-keepawake.service /etc/systemd/system/
+sudo systemctl enable --now dok-keepawake.service
 ```
 
 ## CLI
@@ -133,8 +140,8 @@ Sessions live in memory, so a server restart logs you out (the passkey stays).
 - [x] `git push dok main` via bare repos + `post-receive`
 - [x] zero-downtime switch (new container first), per-app memory/CPU limits
 - [x] rollback, retention, daily DB backups, persistent sessions
-- [ ] `dok logs -f`
-- [ ] one-command install script
+- [x] `dok logs -f`
+- [x] one-command install script
 
 ## License
 

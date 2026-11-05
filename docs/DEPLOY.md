@@ -14,6 +14,20 @@
 
 ## Install on a machine
 
+```bash
+DOMAIN=dok.example.com BASE_DOMAIN=apps.example.com EDGE=ku-bot ./install.sh
+```
+
+`EDGE` is optional; it installs the router-sync units that copy
+`dok-apps.yaml` to a Traefik host over ssh.
+
+Keep-awake (so the machine does not suspend and take the sites down):
+
+```bash
+sudo install -m644 deploy/dok-keepawake.service /etc/systemd/system/
+sudo systemctl enable --now dok-keepawake.service
+```
+
 ## Binary
 
 ```bash
