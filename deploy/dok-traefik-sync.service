@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync dok routers to the edge Traefik
+After=dok.service
+Wants=dok.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/bin/dok-traefik-sync
