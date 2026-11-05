@@ -676,8 +676,10 @@ impl Db {
     ) -> Result<Vec<(String, String, i64, i64, Option<i64>, Option<String>)>> {
         let c = self.conn();
         let mut st = c.prepare(
-            "SELECT token, role, created_at, expires_at, used_at, invited_by FROM invites
-             WHERE team_id = ?1 ORDER BY created_at DESC, rowid DESC",
+            "SELECT i.token, i.role, i.created_at, i.expires_at, i.used_at,
+                    COALESCE(u.name, u.email)
+             FROM invites i LEFT JOIN users u ON u.id = i.invited_by
+             WHERE i.team_id = ?1 ORDER BY i.created_at DESC, i.rowid DESC",
         )?;
         let rows = st.query_map(params![team_id], |r| {
             Ok((

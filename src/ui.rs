@@ -578,6 +578,22 @@ fn confirm_click(msg: &str) -> String {
 
 fn age(ts: i64) -> String {
     let d = crate::db::now() - ts;
+    if d < 0 {
+        let ahead = -d;
+        return if ahead < 90 {
+            "in a minute".into()
+        } else if ahead < 3600 {
+            format!("in {} min", ahead / 60)
+        } else if ahead < 7200 {
+            "in 1 hour".into()
+        } else if ahead < 86400 {
+            format!("in {} hours", ahead / 3600)
+        } else if ahead < 172800 {
+            "in 1 day".into()
+        } else {
+            format!("in {} days", ahead / 86400)
+        };
+    }
     if d < 45 {
         "just now".into()
     } else if d < 90 {
@@ -1439,7 +1455,7 @@ liveCtl=null;b.textContent='Live stream';}}\
 <div class=card><div class=muted small>Deployments</div><div class=name>{total}</div><div class=\"muted small\">{prod_n} production · {preview_n} preview</div></div>\
 <div class=card><div class=muted small>Domains</div><div class=name>{domain_n}</div><div class=\"muted small\">custom + primary</div></div>\
 <div class=card><div class=muted small>Environment keys</div><div class=name>{env_total}</div><div class=\"muted small\">across all environments</div></div>\
-<div class=card><div class=muted small>Runtime</div><div class=name>{runtime}</div><div class=\"muted small\">{kind}</div></div></div>\
+<div class=card><div class=muted small>Runtime</div><div class=name>{runtime}</div><div class=\"muted small\">{runtime_note}</div></div></div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>Deploy</th><th>Env</th><th>Status</th><th>Deployed</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>",
                 redeploy = redeploy,
                 rows = rows,
@@ -1449,7 +1465,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                 domain_n = domain_n,
                 env_total = env_total,
                 runtime = runtime,
-                kind = esc(&app.kind)
+                runtime_note = if app.kind == "docker" { "docker stats" } else { "served from disk" }
             ));
         }
     }
@@ -2645,5 +2661,6 @@ mod tests {
         assert_eq!(age(now - 120), "2 min ago");
         assert_eq!(age(now - 7200), "2 hours ago");
         assert_eq!(age(now - 3 * 86400), "3 days ago");
+        assert_eq!(age(now + 7 * 86400), "in 7 days");
     }
 }
