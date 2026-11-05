@@ -45,6 +45,8 @@ dok domain <app> <host>          route a domain
 dok git <app> <repo-url>         repo used by webhooks / redeploy
 dok git-init <app>               make a bare repo, print the git remote
 dok redeploy <app>               clone + deploy from the repo
+dok deploys <app>                recent deploy ids and status
+dok rollback <app> <deploy-id>   redeploy an earlier build
 dok rm <app>                     stop container, delete app
 ```
 
@@ -55,7 +57,12 @@ name = "my-app"
 port = 3000
 domain = "my-app.example.com"
 # dockerfile = "Dockerfile"
+memory_mb = 512      # docker --memory
+cpus = 1.0           # docker --cpus
 ```
+
+The last three builds per app are kept for rollback; older build trees and the
+previous image tag are removed on the next successful deploy.
 
 ## Deploy modes
 
@@ -103,7 +110,9 @@ dok serve [--data DIR] [--http-port 8080] [--base-domain example.com]
   ACME domain list is built at startup.
 
 Everything lives in the data dir (`~/.local/share/dok` by default):
-`dok.db`, `builds/`, `acme/`, `initial-token`.
+`dok.db`, `builds/`, `acme/`, `logs/`, `locks/`, `backups/`, `initial-token`.
+A consistent database snapshot is written to `backups/` at startup and every
+24 h (`--backup-keep`, default 7, `0` disables).
 
 ## Dashboard and passkeys
 
@@ -111,7 +120,9 @@ Open the server in a browser (`--dashboard-origin https://dok.example.com`).
 On first visit you register a passkey; that becomes the admin login. Any
 WebAuthn provider works, including Proton Pass, iCloud Keychain, Google
 Password Manager and hardware keys. No passwords, no tokens in the browser.
-The dashboard lists apps, their status and domains.
+The dashboard lists apps, their status and domains, and has **redeploy**,
+**logs** and **rollback** buttons. Sessions are stored in SQLite, so a service
+restart does not log you out; dashboard actions are CSRF-protected.
 
 Sessions live in memory, so a server restart logs you out (the passkey stays).
 
@@ -120,9 +131,10 @@ Sessions live in memory, so a server restart logs you out (the passkey stays).
 - [x] push, docker, static, proxy, ACME, webhook, CLI
 - [x] passkey dashboard (Proton Pass passkeys)
 - [x] `git push dok main` via bare repos + `post-receive`
-- [ ] zero-downtime switch, per-app resource limits
+- [x] zero-downtime switch (new container first), per-app memory/CPU limits
+- [x] rollback, retention, daily DB backups, persistent sessions
 - [ ] `dok logs -f`
-- [ ] arm64 build + one-command install
+- [ ] one-command install script
 
 ## License
 

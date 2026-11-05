@@ -82,6 +82,17 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     st.sync_traefik();
 
+    if args.backup_keep > 0 {
+        let st_backup = st.clone();
+        let keep = args.backup_keep;
+        tokio::spawn(async move {
+            loop {
+                backup_db(&st_backup, keep);
+                tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+            }
+        });
+    }
+
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.http_port));
     tracing::info!("listening on {addr}, public url {public_url}");
 
@@ -162,6 +173,33 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     let _ = tokio::join!(http, https);
     Ok(())
+}
+
+fn backup_db(st: &AppState, keep: usize) {
+    let dir = st.data.join("backups");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let name = format!("dok-{}.db", crate::db::now());
+    let path = dir.join(&name);
+    if let Err(e) = st.db.backup_to(&path) {
+        tracing::warn!("backup failed: {e}");
+        return;
+    }
+    tracing::info!("backup written to {}", path.display());
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "db").unwrap_or(false))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    while files.len() > keep {
+        let old = files.remove(0);
+        let _ = std::fs::remove_file(old);
+    }
 }
 
 fn init_token(db: &Db, data: &std::path::Path, given: Option<&str>) -> Result<()> {

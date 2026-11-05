@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BIN=${BIN:-target/debug/dok}
-PORT=${PORT:-18081}
+PORT=${PORT:-18089}
 APPNAME=${APPNAME:-hello-docker}
 DATA=$(mktemp -d)
 APP=$(mktemp -d)

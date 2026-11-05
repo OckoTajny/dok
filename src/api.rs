@@ -49,6 +49,8 @@ fn api_routes(st: AppState) -> Router {
         .route("/api/v1/apps/{app}", get(get_app).delete(delete_app))
         .route("/api/v1/apps/{app}/deploy", post(deploy_upload))
         .route("/api/v1/apps/{app}/logs", get(logs))
+        .route("/api/v1/apps/{app}/deploys", get(list_deploys))
+        .route("/api/v1/apps/{app}/rollback/{deploy}", post(rollback))
         .route("/api/v1/apps/{app}/env", put(put_env).get(get_env))
         .route("/api/v1/apps/{app}/domain", post(set_domain))
         .route("/api/v1/apps/{app}/repo", post(set_repo))
@@ -185,8 +187,40 @@ async fn save_body(req: Request, path: &PathBuf) -> anyhow::Result<()> {
 
 async fn logs(State(st): State<AppState>, Path(app): Path<String>) -> Response {
     let build = st.db.last_deploy_log(&app).unwrap_or_default();
-    let runtime = deploy::container_logs(&app, 200).await;
+    let kind = st
+        .db
+        .get_app(&app)
+        .ok()
+        .flatten()
+        .map(|a| a.kind)
+        .unwrap_or_default();
+    let runtime = if kind == "docker" {
+        deploy::container_logs(&app, 200).await
+    } else {
+        "no container (static app)".to_string()
+    };
     Json(json!({"build": build.unwrap_or_default(), "runtime": runtime})).into_response()
+}
+
+async fn list_deploys(State(st): State<AppState>, Path(app): Path<String>) -> Response {
+    match st.db.deploys(&app, 20) {
+        Ok(d) => Json(json!({"deploys": d})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+async fn rollback(
+    State(st): State<AppState>,
+    Path((app, deploy)): Path<(String, String)>,
+) -> Response {
+    match deploy::rollback(&st, &app, &deploy).await {
+        Ok(out) => Json(out).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 async fn put_env(
@@ -269,6 +303,9 @@ async fn git_init(State(st): State<AppState>, Path(app): Path<String>) -> Respon
             let row = crate::db::App {
                 name: app.clone(),
                 kind: "docker".into(),
+                image: None,
+                memory_mb: None,
+                cpus: None,
                 host_port: None,
                 container_port: None,
                 domain: None,

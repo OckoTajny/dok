@@ -37,6 +37,10 @@ pub enum Cmd {
     Git { app: String, repo: String },
     /// Redeploy from the configured repo.
     Redeploy { app: String },
+    /// List recent deploys (id, status, age).
+    Deploys { app: String },
+    /// Roll back to an earlier deploy id.
+    Rollback { app: String, deploy: String },
     /// Create a bare repo on the server and print the git remote.
     GitInit { app: String },
     /// Internal: deploy a pushed git repo (called by the post-receive hook).
@@ -66,6 +70,9 @@ pub struct ServeArgs {
     /// Public origin for the passkey dashboard, e.g. https://dok.example.com.
     #[arg(long, env = "DOK_DASHBOARD_ORIGIN")]
     pub dashboard_origin: Option<String>,
+    /// Number of daily database backups to keep (0 disables).
+    #[arg(long, env = "DOK_BACKUP_KEEP", default_value_t = 7)]
+    pub backup_keep: usize,
     /// Traefik file-provider directory; dok writes per-app routers there.
     #[arg(long, env = "DOK_TRAEFIK_DIR")]
     pub traefik_dir: Option<PathBuf>,
@@ -240,6 +247,25 @@ pub fn run(cmd: Cmd) -> Result<()> {
             handle(resp)
         }
         Cmd::DeployGit { .. } => unreachable!("deploy-git is async"),
+        Cmd::Deploys { app } => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .get(format!("{}/api/v1/apps/{app}/deploys", base(&cfg)))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            handle(resp)
+        }
+        Cmd::Rollback { app, deploy } => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .post(format!(
+                    "{}/api/v1/apps/{app}/rollback/{deploy}",
+                    base(&cfg)
+                ))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            handle(resp)
+        }
         Cmd::Redeploy { app } => {
             let cfg = load_config()?;
             let resp = client()?

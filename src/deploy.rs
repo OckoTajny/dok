@@ -11,6 +11,8 @@ pub struct DokToml {
     pub port: Option<u16>,
     pub domain: Option<String>,
     pub dockerfile: Option<String>,
+    pub memory_mb: Option<i64>,
+    pub cpus: Option<f64>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -117,7 +119,8 @@ pub async fn deploy_dir(
     // One deploy per app at a time, across processes (the git hook runs its own).
     let _lock = st.lock_deploy(app).await?;
     let deploy_id = uuid::Uuid::new_v4().simple().to_string();
-    st.db.add_deploy(&deploy_id, app, "running")?;
+    st.db
+        .add_deploy(&deploy_id, app, "running", Some(&dir.to_string_lossy()))?;
     let mut guard = DeployGuard {
         st,
         app,
@@ -138,6 +141,8 @@ pub async fn deploy_dir(
         None => None,
     };
     let dockerfile = conf.dockerfile.clone().unwrap_or_else(|| "Dockerfile".into());
+    let memory_mb = conf.memory_mb.unwrap_or(512).max(32);
+    let cpus = conf.cpus.unwrap_or(1.0);
     let has_dockerfile = dir.join(&dockerfile).is_file();
     let mut log = String::new();
 
@@ -153,7 +158,7 @@ pub async fn deploy_dir(
         let tag = format!("dok/{app}:{deploy_id}");
         log.push_str(&format!("$ docker build -f {dockerfile} -t {tag} .\n"));
         let out = Command::new("docker")
-            .args(["build", "-f", &dockerfile, "-t", &tag, "."])
+            .args(["build", "-f", &dockerfile, "-t", &tag, "--label", &format!("dok.app={app}"), "."])
             .current_dir(dir)
             .output()
             .await
@@ -182,6 +187,10 @@ pub async fn deploy_dir(
             &format!("dok.app={app}"),
             "-p",
             &format!("127.0.0.1::{container_port}"),
+            "--memory",
+            &format!("{}m", memory_mb),
+            "--cpus",
+            &format!("{cpus}"),
         ]);
         for (k, v) in st.db.env(app)? {
             cmd.args(["-e", &format!("{k}={v}")]);
@@ -212,6 +221,13 @@ pub async fn deploy_dir(
     let row = crate::db::App {
         name: app.to_string(),
         kind: kind.to_string(),
+        image: if kind == "docker" {
+            Some(format!("dok/{app}:{deploy_id}"))
+        } else {
+            None
+        },
+        memory_mb: Some(memory_mb),
+        cpus: Some(cpus),
         host_port,
         container_port,
         domain: chosen_domain,
@@ -236,13 +252,18 @@ pub async fn deploy_dir(
         stop_container(app).await;
     }
 
-    // Drop the previous build tree.
-    if let Some(old) = prev.and_then(|p| p.dir) {
-        let old = PathBuf::from(old);
-        if old != dir && old.starts_with(st.builds_dir()) {
-            let _ = tokio::fs::remove_dir_all(&old).await;
+    // Drop the previous image and build tree, keep the last few for rollback.
+    if let Some(prev) = &prev {
+        if kind == "docker" {
+            if let Some(old_image) = &prev.image {
+                if old_image != &format!("dok/{app}:{deploy_id}") {
+                    let _ = Command::new("docker").args(["rmi", old_image]).output().await;
+                }
+            }
         }
     }
+    let _ = st.db.prune_deploys(app, 3);
+    cleanup_builds(st, app).await;
 
     st.db.finish_deploy(&deploy_id, "ok", &log)?;
     guard.done = true;
@@ -285,6 +306,45 @@ impl Drop for DeployGuard<'_> {
             let _ = self.st.db.set_status(self.app, "failed");
         }
     }
+}
+
+/// Keep only the build trees referenced by the last three deploys.
+async fn cleanup_builds(st: &AppState, app: &str) {
+    use std::collections::HashSet;
+    let keep: HashSet<String> = st
+        .db
+        .deploys(app, 3)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|d| d.dir)
+        .collect();
+    let root = st.builds_dir().join(app);
+    let Ok(mut rd) = tokio::fs::read_dir(&root).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let p = entry.path();
+        if !keep.contains(&p.to_string_lossy().to_string()) {
+            let _ = tokio::fs::remove_dir_all(&p).await;
+        }
+    }
+}
+
+/// Redeploy an earlier build (dashboard rollback).
+pub async fn rollback(
+    st: &AppState,
+    app: &str,
+    deploy_id: &str,
+) -> Result<DeployOutcome> {
+    let dir = st
+        .db
+        .deploy_dir_for(app, deploy_id)?
+        .ok_or_else(|| anyhow::anyhow!("no build for deploy {deploy_id}"))?;
+    let path = std::path::PathBuf::from(&dir);
+    if !path.is_dir() {
+        bail!("build for that deploy is gone (only the last 3 are kept)");
+    }
+    deploy_dir(st, app, &path, None, None).await
 }
 
 async fn remove_container(name: &str) {
