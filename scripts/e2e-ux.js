@@ -111,6 +111,18 @@ const { chromium } = require("playwright");
     fail("invalid invite did not fail immediately");
   if (await page.locator("#go").count()) fail("invalid invite still renders the passkey form");
 
+  // ---- proxy and settings forms save with feedback ----------------------
+  await page.goto(url + "/dashboard/project/uxapp/proxy");
+  if (!(await page.locator("#proxy-headers").count())) fail("proxy form missing");
+  await page.click('button:has-text("Save proxy settings")');
+  await page.waitForFunction(() => document.body.innerText.includes("Proxy settings saved"));
+  await page.goto(url + "/dashboard/project/uxapp/settings");
+  body = await page.textContent("body");
+  if (!body.includes("Danger zone")) fail("danger zone missing");
+  if (!body.includes("Removes 1 deployments")) fail("delete confirmation summary missing: " + body.slice(0, 400));
+  await page.click('button:has-text("Save settings")');
+  await page.waitForFunction(() => document.body.innerText.includes("Settings saved."));
+
   // ---- certificate renewal goes through the same path as the API ------
   await page.goto(url + "/dashboard/project/uxapp/domains");
   await page.locator('form[action="/dashboard/certificates/renew"] button').first().click();
