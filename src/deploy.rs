@@ -281,7 +281,10 @@ pub async fn deploy_dir(
         .framework
         .clone()
         .or_else(|| prev.as_ref().and_then(|p| p.framework.clone()));
-    let mut dockerfile = conf.dockerfile.clone().unwrap_or_else(|| "Dockerfile".into());
+    let mut dockerfile = conf
+        .dockerfile
+        .clone()
+        .unwrap_or_else(|| "Dockerfile".into());
     let mut has_dockerfile = dir.join(&dockerfile).is_file();
     let mut framework = framework_hint.clone().unwrap_or_default();
     if conf.dockerfile.is_some() && !has_dockerfile {
@@ -367,10 +370,7 @@ pub async fn deploy_dir(
             &format!("{cpus}"),
         ]);
         // Pass secrets through a 0600 file, never through the process argv.
-        let env_file = st
-            .data
-            .join("tmp")
-            .join(format!("env-{deploy_id}.env"));
+        let env_file = st.data.join("tmp").join(format!("env-{deploy_id}.env"));
         if let Some(parent) = env_file.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
@@ -409,7 +409,12 @@ pub async fn deploy_dir(
                 bail!("docker did not report a host port");
             }
         };
-        ("docker", Some(host_port), Some(container_port), Some(temp_name))
+        (
+            "docker",
+            Some(host_port),
+            Some(container_port),
+            Some(temp_name),
+        )
     } else {
         ("static", None, None, None)
     };
@@ -435,7 +440,11 @@ pub async fn deploy_dir(
             dir: Some(dir.to_string_lossy().to_string()),
             repo: None,
             production_deploy: Some(deploy_id.clone()),
-            framework: if framework.is_empty() { None } else { Some(framework.clone()) },
+            framework: if framework.is_empty() {
+                None
+            } else {
+                Some(framework.clone())
+            },
             updated_at: crate::db::now(),
         };
         st.db.upsert_app(&row)?;
@@ -455,7 +464,11 @@ pub async fn deploy_dir(
             dir: None,
             repo: None,
             production_deploy: None,
-            framework: if framework.is_empty() { None } else { Some(framework.clone()) },
+            framework: if framework.is_empty() {
+                None
+            } else {
+                Some(framework.clone())
+            },
             updated_at: crate::db::now(),
         };
         st.db.upsert_app(&row)?;
@@ -510,13 +523,7 @@ pub async fn deploy_dir(
             })
             .unwrap_or_else(|| st.public_url.clone())
     } else if let Some(base) = &st.base_domain {
-        format!(
-            "{}://{}-{}.{}",
-            st.scheme,
-            app,
-            &deploy_id[..8],
-            base
-        )
+        format!("{}://{}-{}.{}", st.scheme, app, &deploy_id[..8], base)
     } else {
         match host_port {
             Some(p) => format!("http://127.0.0.1:{p}"),
@@ -552,10 +559,10 @@ struct DeployGuard<'a> {
 impl Drop for DeployGuard<'_> {
     fn drop(&mut self) {
         if !self.done {
-            let _ = self
-                .st
-                .db
-                .finish_deploy(&self.id, "failed", "deploy aborted before completion");
+            let _ =
+                self.st
+                    .db
+                    .finish_deploy(&self.id, "failed", "deploy aborted before completion");
             if self.env == "production" {
                 let _ = self.st.db.set_status(self.app, "failed");
             }
@@ -589,7 +596,10 @@ async fn cleanup_removed(removed: &[crate::db::Deploy]) {
     for d in removed {
         if let Some(name) = &d.container {
             if name.contains("-preview-") {
-                let _ = Command::new("docker").args(["rm", "-f", name]).output().await;
+                let _ = Command::new("docker")
+                    .args(["rm", "-f", name])
+                    .output()
+                    .await;
             }
         }
         if d.env == "preview" {
@@ -629,7 +639,10 @@ pub async fn promote(
         .get_app(app)?
         .ok_or_else(|| anyhow::anyhow!("no such project"))?;
     let conf = read_dok_toml(&path);
-    let dockerfile = conf.dockerfile.clone().unwrap_or_else(|| "Dockerfile".into());
+    let dockerfile = conf
+        .dockerfile
+        .clone()
+        .unwrap_or_else(|| "Dockerfile".into());
     let container_port = prev
         .container_port
         .or(conf.port)
@@ -697,8 +710,11 @@ pub async fn promote(
             };
             st.db.upsert_app(&row)?;
             st.db.set_production(app, &new_id)?;
-            st.db
-                .set_deploy_routing(&new_id, Some(&container_name(app, "production")), Some(host_port))?;
+            st.db.set_deploy_routing(
+                &new_id,
+                Some(&container_name(app, "production")),
+                Some(host_port),
+            )?;
             st.sync_traefik();
             let removed = st.db.prune_deploys_env(app, "production", 10)?;
             cleanup_removed(&removed).await;
@@ -757,10 +773,7 @@ async fn run_image(
     name: &str,
     deploy_id: &str,
 ) -> Result<u16> {
-    let env_file = st
-        .data
-        .join("tmp")
-        .join(format!("env-{deploy_id}.env"));
+    let env_file = st.data.join("tmp").join(format!("env-{deploy_id}.env"));
     if let Some(parent) = env_file.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
@@ -803,7 +816,10 @@ async fn run_image(
     let out = output.context("run docker run")?;
     if !out.status.success() {
         remove_container(name).await;
-        bail!("docker run failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "docker run failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     mapped_port(name, container_port)
         .await
@@ -849,11 +865,7 @@ pub fn new_build_dir(st: &AppState, app: &str) -> Result<PathBuf> {
 
 /// Real CPU/memory for a container. Returns nulls (plus a note) when Docker
 /// stats are unavailable instead of inventing numbers.
-pub async fn container_stats(
-    app: &str,
-    env: &str,
-    container: Option<&str>,
-) -> serde_json::Value {
+pub async fn container_stats(app: &str, env: &str, container: Option<&str>) -> serde_json::Value {
     let name = container
         .map(str::to_string)
         .unwrap_or_else(|| container_name(app, env));
@@ -888,12 +900,7 @@ pub async fn container_stats(
     }
 }
 
-pub async fn container_logs(
-    app: &str,
-    env: &str,
-    container: Option<&str>,
-    tail: u32,
-) -> String {
+pub async fn container_logs(app: &str, env: &str, container: Option<&str>, tail: u32) -> String {
     let name = container
         .map(str::to_string)
         .unwrap_or_else(|| container_name(app, env));
@@ -998,7 +1005,10 @@ mod tests {
         std::fs::remove_file(dir.join("package.json")).unwrap();
         std::fs::write(dir.join("go.mod"), "module x").unwrap();
         assert_eq!(detect_build(&dir, None).unwrap().framework, "go");
-        assert_eq!(detect_build(&dir, Some("static")).unwrap().framework, "static");
+        assert_eq!(
+            detect_build(&dir, Some("static")).unwrap().framework,
+            "static"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

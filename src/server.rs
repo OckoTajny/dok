@@ -197,18 +197,14 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let http = tokio::spawn(async move {
         if edge {
             let resolver = http_resolver;
-            let app = axum::Router::new().fallback(
-                move |req: axum::http::Request<axum::body::Body>| {
+            let app =
+                axum::Router::new().fallback(move |req: axum::http::Request<axum::body::Body>| {
                     let resolver = resolver.clone();
                     async move {
                         let path = req.uri().path().to_string();
-                        if let Some(token) =
-                            path.strip_prefix("/.well-known/acme-challenge/")
-                        {
-                            let current = resolver
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .clone();
+                        if let Some(token) = path.strip_prefix("/.well-known/acme-challenge/") {
+                            let current =
+                                resolver.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             if let Some(r) = current {
                                 if let Some(body) = r.get_http_01_key_auth(token) {
                                     return axum::response::Response::builder()
@@ -235,8 +231,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                             .body(axum::body::Body::empty())
                             .unwrap()
                     }
-                },
-            );
+                });
             if let Err(e) = axum::serve(http_listener, app).await {
                 tracing::error!("edge http server stopped: {e}");
             }
@@ -310,8 +305,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     .directory_lets_encrypt(acme_prod)
                     .state();
                 let acceptor = acme.axum_acceptor(acme.default_rustls_config());
-                *shared_resolver.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(acme.resolver());
+                *shared_resolver.lock().unwrap_or_else(|e| e.into_inner()) = Some(acme.resolver());
                 let cert_st = supervisor_st.clone();
                 let cert_hosts = hosts.clone();
                 let cert_dir = acme_dir.clone();
@@ -326,12 +320,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                                     rustls_acme::EventOk::DeployedNewCert
                                         | rustls_acme::EventOk::DeployedCachedCert
                                 ) {
-                                    record_cert_status(
-                                        &cert_st,
-                                        &cert_hosts,
-                                        &cert_dir,
-                                        None,
-                                    );
+                                    record_cert_status(&cert_st, &cert_hosts, &cert_dir, None);
                                 }
                             }
                             Err(err) => {
@@ -386,11 +375,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     Ok(())
 }
 
-fn desired_hosts(
-    st: &AppState,
-    extra: &[String],
-    base: &Option<String>,
-) -> Vec<String> {
+fn desired_hosts(st: &AppState, extra: &[String], base: &Option<String>) -> Vec<String> {
     let mut hosts: Vec<String> = extra.to_vec();
     for a in st.db.list_apps().unwrap_or_default() {
         if let Some(d) = a.domain {
@@ -421,7 +406,9 @@ fn desired_hosts(
 }
 
 fn clear_cert_cache(dir: &std::path::Path) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in rd.flatten() {
         let name = entry.file_name();
         if name.to_string_lossy().starts_with("cached_cert_") {
@@ -467,8 +454,8 @@ fn record_cert_status(
             .as_ref()
             .and_then(|v| v.get("expires"))
             .and_then(|v| v.as_i64());
-        let healthy = prev_status == "issued"
-            && prev_expiry.map(|e| e > now + 7 * 86400).unwrap_or(false);
+        let healthy =
+            prev_status == "issued" && prev_expiry.map(|e| e > now + 7 * 86400).unwrap_or(false);
         let (status, expires) = match (expiry, error) {
             (Some(exp), _) => {
                 let status = if exp - now < 14 * 86400 {
@@ -497,7 +484,9 @@ fn record_cert_status(
 /// Remove partial uploads and build leftovers older than a day.
 fn sweep_tmp(data: &std::path::Path) {
     let dir = data.join("tmp");
-    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
     let now = std::time::SystemTime::now();
     for entry in rd.flatten() {
         let path = entry.path();
@@ -659,15 +648,24 @@ fn normalize_origin(
         Some(r) => {
             let r = r.trim().trim_end_matches('/');
             if r.contains("://") {
-                let u = url::Url::parse(r).map_err(|e| format!("invalid --dashboard-origin {r}: {e}"))?;
+                let u = url::Url::parse(r)
+                    .map_err(|e| format!("invalid --dashboard-origin {r}: {e}"))?;
                 let host = u
                     .host_str()
                     .ok_or_else(|| format!("invalid --dashboard-origin {r}: missing host"))?;
-                let host = if is_ip(host) { "localhost".to_string() } else { host.to_string() };
+                let host = if is_ip(host) {
+                    "localhost".to_string()
+                } else {
+                    host.to_string()
+                };
                 let port = u.port().or_else(|| {
                     // Local origins without a port use the port dok listens on.
                     if (host == "localhost" || host == "[::1]") && u.scheme() == scheme {
-                        Some(if scheme == "https" { tls_port } else { http_port })
+                        Some(if scheme == "https" {
+                            tls_port
+                        } else {
+                            http_port
+                        })
                     } else {
                         None
                     }
@@ -675,7 +673,11 @@ fn normalize_origin(
                 (u.scheme().to_string(), host, port)
             } else {
                 let (host, port) = split_authority(r);
-                let host = if is_ip(&host) { "localhost".to_string() } else { host };
+                let host = if is_ip(&host) {
+                    "localhost".to_string()
+                } else {
+                    host
+                };
                 (scheme.to_string(), host, port)
             }
         }
@@ -685,14 +687,22 @@ fn normalize_origin(
                 host = "localhost".into();
             }
             let (host, port) = split_authority(&host);
-            let host = if is_ip(&host) { "localhost".to_string() } else { host };
+            let host = if is_ip(&host) {
+                "localhost".to_string()
+            } else {
+                host
+            };
             (scheme.to_string(), host, port)
         }
     };
     if authority.is_empty() {
         return Err("invalid --dashboard-origin: missing host".into());
     }
-    let port = explicit_port.unwrap_or(if scheme == "https" { tls_port } else { http_port });
+    let port = explicit_port.unwrap_or(if scheme == "https" {
+        tls_port
+    } else {
+        http_port
+    });
     Ok(build_origin(&scheme, &authority, port))
 }
 
@@ -728,7 +738,10 @@ mod tests {
         assert_eq!(origin(None, "[::1]"), "http://localhost:8080");
         // Ports are never appended twice.
         assert_eq!(origin(None, "localhost:9000"), "http://localhost:9000");
-        assert_eq!(origin(Some("localhost:9000"), "127.0.0.1"), "http://localhost:9000");
+        assert_eq!(
+            origin(Some("localhost:9000"), "127.0.0.1"),
+            "http://localhost:9000"
+        );
         assert_eq!(
             origin(Some("http://127.0.0.1:7000"), "127.0.0.1"),
             "http://localhost:7000"
@@ -749,8 +762,17 @@ mod tests {
 
     #[test]
     fn public_url_gets_one_port() {
-        assert_eq!(ensure_port("http://127.0.0.1", 8080, "http"), "http://127.0.0.1:8080");
-        assert_eq!(ensure_port("http://127.0.0.1:9000", 8080, "http"), "http://127.0.0.1:9000");
-        assert_eq!(ensure_port("https://dok.example.com", 8080, "http"), "https://dok.example.com");
+        assert_eq!(
+            ensure_port("http://127.0.0.1", 8080, "http"),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            ensure_port("http://127.0.0.1:9000", 8080, "http"),
+            "http://127.0.0.1:9000"
+        );
+        assert_eq!(
+            ensure_port("https://dok.example.com", 8080, "http"),
+            "https://dok.example.com"
+        );
     }
 }

@@ -80,13 +80,25 @@ pub async fn serve_app(
     }
     if let Some(r) = basic_auth_challenge(&req, &settings) {
         // Only failed attempts count towards the limiter.
-        if !st.rate.allow(&format!("basic:{}", ip.as_deref().unwrap_or("unknown")), 10, 60) {
+        if !st.rate.allow(
+            &format!("basic:{}", ip.as_deref().unwrap_or("unknown")),
+            10,
+            60,
+        ) {
             let limited = Response::builder()
                 .status(StatusCode::TOO_MANY_REQUESTS)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
                 .body(Body::from("dok: too many authentication attempts\n"))
                 .unwrap();
-            log_request(&st, &app.name, &method, &path, &limited, started, ip.as_deref());
+            log_request(
+                &st,
+                &app.name,
+                &method,
+                &path,
+                &limited,
+                started,
+                ip.as_deref(),
+            );
             return with_request_id(apply_headers(limited, &settings), request_id);
         }
         log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
@@ -140,13 +152,22 @@ pub async fn serve_app(
 
     let kind = deploy
         .as_ref()
-        .map(|d| if d.image.is_some() { "docker" } else { "static" })
+        .map(|d| {
+            if d.image.is_some() {
+                "docker"
+            } else {
+                "static"
+            }
+        })
         .unwrap_or(app.kind.as_str());
     let dir_override = deploy.as_ref().and_then(|d| d.dir.clone());
     let port_override = deploy.as_ref().and_then(|d| d.host_port);
     let resp = match kind {
         "static" => {
-            let dir = dir_override.clone().or_else(|| app.dir.clone()).unwrap_or_default();
+            let dir = dir_override
+                .clone()
+                .or_else(|| app.dir.clone())
+                .unwrap_or_default();
             let method = req.method().clone();
             let path = req.uri().path().to_string();
             let inm = req
@@ -193,7 +214,15 @@ pub async fn serve_app(
             ),
         },
     };
-    log_request(&st, &app.name, &method, &path, &resp, started, ip.as_deref());
+    log_request(
+        &st,
+        &app.name,
+        &method,
+        &path,
+        &resp,
+        started,
+        ip.as_deref(),
+    );
     with_request_id(apply_headers(resp, &settings), request_id)
 }
 
@@ -250,10 +279,8 @@ fn redirect_for(
             .and_then(|v| v.to_str().ok())
             .map(|v| v.eq_ignore_ascii_case("https"))
             .unwrap_or(false);
-    let local = host == "localhost"
-        || host == "127.0.0.1"
-        || host == "[::1]"
-        || host.starts_with("127.");
+    let local =
+        host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host.starts_with("127.");
     if settings.force_https && !https && !forwarded_https && !local {
         let pq = req
             .uri()
@@ -270,7 +297,11 @@ fn redirect_for(
         _ => None,
     };
     target.map(|t| {
-        let scheme = if https || forwarded_https { "https" } else { "http" };
+        let scheme = if https || forwarded_https {
+            "https"
+        } else {
+            "http"
+        };
         let pq = req
             .uri()
             .path_and_query()
@@ -305,7 +336,10 @@ fn basic_auth_challenge(
         .and_then(|v| v.strip_prefix("Basic "))
         .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
         .and_then(|b| String::from_utf8(b).ok())
-        .and_then(|s| s.split_once(':').map(|(u, p)| (u.to_string(), p.to_string())))
+        .and_then(|s| {
+            s.split_once(':')
+                .map(|(u, p)| (u.to_string(), p.to_string()))
+        })
         .map(|(u, p)| ct_eq(u.as_bytes(), user.as_bytes()) && crate::db::verify_password(hash, &p))
         .unwrap_or(false);
     if ok {
@@ -453,10 +487,9 @@ async fn forward(
             .map(|c| c.0.ip().to_string());
         match (parts.headers.get("x-forwarded-for"), peer) {
             (Some(prev), Some(ip)) => {
-                if let Ok(v) = HeaderValue::from_str(&format!(
-                    "{}, {ip}",
-                    prev.to_str().unwrap_or("")
-                )) {
+                if let Ok(v) =
+                    HeaderValue::from_str(&format!("{}, {ip}", prev.to_str().unwrap_or("")))
+                {
                     h.insert("x-forwarded-for", v);
                 }
             }
@@ -467,7 +500,10 @@ async fn forward(
             }
             _ => {}
         }
-        h.insert("x-forwarded-proto", HeaderValue::from_str(&st.scheme).unwrap());
+        h.insert(
+            "x-forwarded-proto",
+            HeaderValue::from_str(&st.scheme).unwrap(),
+        );
     }
 
     let client: &Client<_, Body> = &st.client;
@@ -527,17 +563,16 @@ async fn forward(
             h.append(k.clone(), v.clone());
         }
     }
-    b.body(Body::new(body))
-        .unwrap_or_else(|_| {
-            crate::ui::branded_error(
-                StatusCode::BAD_GATEWAY,
-                "Bad gateway",
-                Some(app),
-                "The upstream response was invalid.",
-                last_good_at(st, app),
-                request_id,
-            )
-        })
+    b.body(Body::new(body)).unwrap_or_else(|_| {
+        crate::ui::branded_error(
+            StatusCode::BAD_GATEWAY,
+            "Bad gateway",
+            Some(app),
+            "The upstream response was invalid.",
+            last_good_at(st, app),
+            request_id,
+        )
+    })
 }
 
 fn hidden_path(url_path: &str) -> bool {
@@ -638,8 +673,8 @@ async fn serve_static(
     }
 
     let mime = mime_guess::from_path(&canonical).first_or_octet_stream();
-    let is_html = mime.type_() == mime_guess::mime::TEXT
-        && mime.subtype() == mime_guess::mime::HTML;
+    let is_html =
+        mime.type_() == mime_guess::mime::TEXT && mime.subtype() == mime_guess::mime::HTML;
     let cache = if is_html {
         "no-cache"
     } else {

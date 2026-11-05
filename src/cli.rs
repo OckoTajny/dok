@@ -68,7 +68,11 @@ pub enum Cmd {
     GitInit { app: String },
     /// Internal: deploy a pushed git repo (called by the post-receive hook).
     #[command(hide = true)]
-    DeployGit { app: String, #[arg(long)] data: String },
+    DeployGit {
+        app: String,
+        #[arg(long)]
+        data: String,
+    },
     /// Delete an app and stop its container.
     Rm { app: String },
     /// Show the user and teams behind the saved token.
@@ -193,15 +197,16 @@ fn config_path() -> Result<PathBuf> {
 }
 
 fn load_config() -> Result<Config> {
-    if let (Ok(server), Ok(token)) = (
-        std::env::var("DOK_SERVER"),
-        std::env::var("DOK_TOKEN"),
-    ) {
+    if let (Ok(server), Ok(token)) = (std::env::var("DOK_SERVER"), std::env::var("DOK_TOKEN")) {
         return Ok(Config { server, token });
     }
     let p = config_path()?;
-    let s = std::fs::read_to_string(&p)
-        .with_context(|| format!("no config at {}; run `dok login <url> <token>`", p.display()))?;
+    let s = std::fs::read_to_string(&p).with_context(|| {
+        format!(
+            "no config at {}; run `dok login <url> <token>`",
+            p.display()
+        )
+    })?;
     Ok(toml::from_str(&s)?)
 }
 
@@ -396,10 +401,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 map.insert(k.to_string(), serde_json::Value::String(val.to_string()));
             }
             let resp = client()?
-                .put(format!(
-                    "{}/api/v1/projects/{app}/env/{env}",
-                    base(&cfg)
-                ))
+                .put(format!("{}/api/v1/projects/{app}/env/{env}", base(&cfg)))
                 .bearer_auth(&cfg.token)
                 .json(&map)
                 .send()?;
@@ -419,10 +421,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
             match cmd {
                 DomainsCmd::List { app } => {
                     let resp = client()?
-                        .get(format!(
-                            "{}/api/v1/projects/{app}/domains",
-                            base(&cfg)
-                        ))
+                        .get(format!("{}/api/v1/projects/{app}/domains", base(&cfg)))
                         .bearer_auth(&cfg.token)
                         .send()?;
                     handle(resp)
@@ -514,10 +513,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
         Cmd::Deploys { app } => {
             let cfg = load_config()?;
             let resp = client()?
-                .get(format!(
-                    "{}/api/v1/projects/{app}/deployments",
-                    base(&cfg)
-                ))
+                .get(format!("{}/api/v1/projects/{app}/deployments", base(&cfg)))
                 .bearer_auth(&cfg.token)
                 .send()?;
             handle(resp)
@@ -683,10 +679,12 @@ fn pack(dir: &Path, out: &Path) -> Result<()> {
         if path == dir || entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        if path
-            .components()
-            .any(|c| matches!(c.as_os_str().to_str(), Some(".git" | "node_modules" | "target" | ".venv" | "__pycache__")))
-        {
+        if path.components().any(|c| {
+            matches!(
+                c.as_os_str().to_str(),
+                Some(".git" | "node_modules" | "target" | ".venv" | "__pycache__")
+            )
+        }) {
             continue;
         }
         let rel = path.strip_prefix(dir)?;

@@ -364,10 +364,7 @@ fn error_body(
 ) -> String {
     let mut meta = String::new();
     if let Some(app) = app {
-        meta.push_str(&format!(
-            "<div>Project <strong>{}</strong></div>",
-            esc(app)
-        ));
+        meta.push_str(&format!("<div>Project <strong>{}</strong></div>", esc(app)));
     }
     if let Some(ts) = last_good {
         meta.push_str(&format!(
@@ -378,7 +375,10 @@ fn error_body(
     } else if app.is_some() {
         meta.push_str("<div>No successful production deploy yet.</div>");
     }
-    meta.push_str(&format!("<div>Request id <code>{}</code></div>", esc(request_id)));
+    meta.push_str(&format!(
+        "<div>Request id <code>{}</code></div>",
+        esc(request_id)
+    ));
     let back = back
         .map(|b| format!("<p><a class=btn href=\"{}\">Back</a></p>", esc(b)))
         .unwrap_or_default();
@@ -402,7 +402,10 @@ pub fn branded_error(
     last_good: Option<i64>,
     request_id: &str,
 ) -> Response<Body> {
-    let retry = if matches!(status, StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT) {
+    let retry = if matches!(
+        status,
+        StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT
+    ) {
         "<p><a class=btn href=\"javascript:location.reload()\">Try again</a></p>"
     } else {
         ""
@@ -418,7 +421,14 @@ pub fn branded_error(
     );
     let resp = page_html(
         status,
-        page(title, &format!("{}{}", body.replace("</main>", &format!("{retry}</main>")), "")),
+        page(
+            title,
+            &format!(
+                "{}{}",
+                body.replace("</main>", &format!("{retry}</main>")),
+                ""
+            ),
+        ),
     );
     let mut resp = resp;
     resp.headers_mut().insert(
@@ -471,7 +481,15 @@ fn unprocessable(msg: &str, back: &str) -> Response<Body> {
         StatusCode::UNPROCESSABLE_ENTITY,
         page(
             "Check the form",
-            &error_body("422", "Check the form", &esc(msg), None, None, "-", Some(back)),
+            &error_body(
+                "422",
+                "Check the form",
+                &esc(msg),
+                None,
+                None,
+                "-",
+                Some(back),
+            ),
         ),
     )
 }
@@ -558,7 +576,8 @@ pub(crate) fn redirect_flash(to: &str, ok: bool, msg: &str) -> Response<Body> {
 }
 
 fn with_flash_cleared(mut resp: Response<Body>) -> Response<Body> {
-    if let Ok(v) = header::HeaderValue::from_str("dok_flash=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+    if let Ok(v) =
+        header::HeaderValue::from_str("dok_flash=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
     {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
@@ -833,7 +852,10 @@ fn render_dashboard(
 ) -> Response<Body> {
     let (teams, selected, apps) = team_and_apps(&st.db, user, q);
     let csrf = csrf_input(session);
-    let team_slug = selected.as_ref().map(|t| t.slug.clone()).unwrap_or_default();
+    let team_slug = selected
+        .as_ref()
+        .map(|t| t.slug.clone())
+        .unwrap_or_default();
 
     let mut cards = String::new();
     for a in &apps {
@@ -850,7 +872,10 @@ fn render_dashboard(
             });
         let host = url
             .as_deref()
-            .map(|u| u.trim_start_matches("https://").trim_start_matches("http://"))
+            .map(|u| {
+                u.trim_start_matches("https://")
+                    .trim_start_matches("http://")
+            })
             .unwrap_or("not routed yet");
         let host_html = url
             .as_deref()
@@ -975,7 +1000,11 @@ fn tabs(app: &str, active: &str) -> String {
             if id == active { "on" } else { "" },
             esc(app),
             id,
-            if id == active { " aria-current=page" } else { "" },
+            if id == active {
+                " aria-current=page"
+            } else {
+                ""
+            },
             label
         ));
     }
@@ -1070,17 +1099,17 @@ async fn render_project(
                     .unwrap_or_default(),
             };
             let kind = selected
-                .map(|d| if d.image.is_some() { "docker" } else { "static" })
+                .map(|d| {
+                    if d.image.is_some() {
+                        "docker"
+                    } else {
+                        "static"
+                    }
+                })
                 .unwrap_or(app.kind.as_str());
             let container = selected.and_then(|d| d.container.clone());
             let runtime = if kind == "docker" {
-                crate::deploy::container_logs(
-                    &app.name,
-                    &env,
-                    container.as_deref(),
-                    200,
-                )
-                .await
+                crate::deploy::container_logs(&app.name, &env, container.as_deref(), 200).await
             } else {
                 String::new()
             };
@@ -1098,7 +1127,11 @@ async fn render_project(
                     d.status,
                     d.created_at,
                     id = esc(&d.id),
-                    sel = if selected.map(|x| x.id == d.id).unwrap_or(false) { " selected" } else { "" }
+                    sel = if selected.map(|x| x.id == d.id).unwrap_or(false) {
+                        " selected"
+                    } else {
+                        ""
+                    }
                 ));
             }
             let mut access = String::new();
@@ -1190,9 +1223,11 @@ liveCtl=null;b.textContent='Live stream';}}\
                     text.push_str(&format!("{k}={}\n", if *secret { "" } else { v.as_str() }));
                 }
                 let current = if !can {
-                    "<span class=muted>••••••••</span> <span class=\"badge\">read-only</span>".to_string()
+                    "<span class=muted>••••••••</span> <span class=\"badge\">read-only</span>"
+                        .to_string()
                 } else if *secret {
-                    "<span class=muted>••••••••</span> <span class=\"badge\">secret</span>".to_string()
+                    "<span class=muted>••••••••</span> <span class=\"badge\">secret</span>"
+                        .to_string()
                 } else {
                     format!("<code>{}</code>", esc(v))
                 };
@@ -1407,7 +1442,11 @@ liveCtl=null;b.textContent='Live stream';}}\
                         csrf
                     ));
                 }
-                if can && d.env == "production" && d.status == "ok" && app.production_deploy.as_deref() != Some(d.id.as_str()) {
+                if can
+                    && d.env == "production"
+                    && d.status == "ok"
+                    && app.production_deploy.as_deref() != Some(d.id.as_str())
+                {
                     actions.push_str(&format!(
                         "<form class=inline method=post action=\"/dashboard/rollback/{}/{}\" {confirm}>{csrf}<button class=\"btn link\">Roll back here</button></form>",
                         esc(&app.name),
@@ -1433,7 +1472,9 @@ liveCtl=null;b.textContent='Live stream';}}\
                     meta.push_str(&format!(
                         "<br><a class=small href=\"{}\" target=_blank rel=noreferrer>{}</a>",
                         esc(url),
-                        esc(url.trim_start_matches("https://").trim_start_matches("http://"))
+                        esc(url
+                            .trim_start_matches("https://")
+                            .trim_start_matches("http://"))
                     ));
                 }
                 rows.push_str(&format!(
@@ -1458,10 +1499,10 @@ liveCtl=null;b.textContent='Live stream';}}\
             } else {
                 String::new()
             };
-            let (total, prod_n, preview_n) = st
-                .db
-                .deploy_counts(&app.name)
-                .unwrap_or((deploys.len() as i64, 0, 0));
+            let (total, prod_n, preview_n) =
+                st.db
+                    .deploy_counts(&app.name)
+                    .unwrap_or((deploys.len() as i64, 0, 0));
             let additional_domains = st.db.domains_for(&app.name).unwrap_or_default();
             let domain_n = additional_domains.len()
                 + usize::from(
@@ -1643,7 +1684,11 @@ fn render_team(
         } else {
             "<span class=\"badge ok\">active</span>".to_string()
         };
-        let link = esc(&format!("{}/join/{}", st.public_url.trim_end_matches('/'), token));
+        let link = esc(&format!(
+            "{}/join/{}",
+            st.public_url.trim_end_matches('/'),
+            token
+        ));
         let copy = if used.is_none() && *expires > now {
             format!(
                 "<button class=\"btn link\" type=button onclick=\"copyText('{link}',this)\">Copy link</button>"
@@ -1786,7 +1831,10 @@ fn create_project(
     user: &User,
     form: &HashMap<String, String>,
 ) -> Result<(), Response<Body>> {
-    let name = form.get("name").map(|s| s.trim().to_string()).unwrap_or_default();
+    let name = form
+        .get("name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     if !crate::api::valid_name(&name) {
         return Err(unprocessable(
             "Project names must be lowercase letters, digits and dashes (max 63 characters).",
@@ -1913,25 +1961,38 @@ pub async fn handle(
                 .unwrap_or_else(|| "production".into());
             let kind = deploy
                 .as_ref()
-                .map(|d| if d.image.is_some() { "docker" } else { "static" })
+                .map(|d| {
+                    if d.image.is_some() {
+                        "docker"
+                    } else {
+                        "static"
+                    }
+                })
                 .unwrap_or(app.kind.as_str());
             let container = deploy.as_ref().and_then(|d| d.container.clone());
             return Some(
-                crate::api::log_stream_response(
-                    st,
-                    &app.name,
-                    &env,
-                    kind,
-                    container.as_deref(),
-                )
-                .await,
+                crate::api::log_stream_response(st, &app.name, &env, kind, container.as_deref())
+                    .await,
             );
         }
         if path == "/dashboard" || path == "/dashboard/" {
-            return Some(render_dashboard(st, &user, &session, &query, flash.as_ref()));
+            return Some(render_dashboard(
+                st,
+                &user,
+                &session,
+                &query,
+                flash.as_ref(),
+            ));
         }
         if path == "/dashboard/team" {
-            return Some(render_team(st, &user, &session, &query, None, flash.as_ref()));
+            return Some(render_team(
+                st,
+                &user,
+                &session,
+                &query,
+                None,
+                flash.as_ref(),
+            ));
         }
         let rest = path.trim_start_matches("/dashboard/");
         let mut parts = rest.splitn(2, '/');
@@ -1965,9 +2026,20 @@ pub async fn handle(
     }
 
     if method != Method::POST {
-        return Some(page_html(
+        return Some(status_html(
             StatusCode::METHOD_NOT_ALLOWED,
-            page("Method not allowed", "<div class=wrap><h1>Method not allowed</h1></div>"),
+            page(
+                "Method not allowed",
+                &error_body(
+                    "405",
+                    "Method not allowed",
+                    "Use the form on the dashboard instead of sending this request directly.",
+                    None,
+                    None,
+                    "-",
+                    Some("/dashboard"),
+                ),
+            ),
         ));
     }
 
@@ -1998,7 +2070,10 @@ pub async fn handle(
     }
 
     if rest == "team/create" {
-        let name = form.get("name").map(|s| s.trim().to_string()).unwrap_or_default();
+        let name = form
+            .get("name")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
         if name.is_empty() || name.len() > 60 {
             return Some(unprocessable(
                 "Team names are 1–60 characters.",
@@ -2049,7 +2124,14 @@ pub async fn handle(
             Ok(token) => {
                 let mut ctx = query.clone();
                 ctx.insert("team".into(), team.slug.clone());
-                Some(render_team(st, &user, &session, &ctx, Some(token), flash.as_ref()))
+                Some(render_team(
+                    st,
+                    &user,
+                    &session,
+                    &ctx,
+                    Some(token),
+                    flash.as_ref(),
+                ))
             }
             Err(e) => Some(server_error(&e.to_string())),
         };
@@ -2106,7 +2188,8 @@ pub async fn handle(
                     &back,
                 ));
             }
-            if target_role.as_deref() == Some("owner") && st.db.owner_count(&team.id).unwrap_or(0) <= 1
+            if target_role.as_deref() == Some("owner")
+                && st.db.owner_count(&team.id).unwrap_or(0) <= 1
             {
                 return Some(unprocessable(
                     "This is the last owner. Promote someone else to owner first.",
@@ -2140,7 +2223,11 @@ pub async fn handle(
         }
         return match st.db.update_member_role(&team.id, &target, &role) {
             Ok(0) => Some(unprocessable("That person is not a member.", &back)),
-            Ok(_) => Some(redirect_flash(&back, true, &format!("Role changed to {role}."))),
+            Ok(_) => Some(redirect_flash(
+                &back,
+                true,
+                &format!("Role changed to {role}."),
+            )),
             Err(e) => Some(server_error(&e.to_string())),
         };
     }
@@ -2149,7 +2236,10 @@ pub async fn handle(
         let host = form.get("host").cloned().unwrap_or_default();
         let app_name = form.get("app").cloned().unwrap_or_default();
         let Some(app) = project_for(&st.db, &user, &app_name) else {
-            return Some(unprocessable("Project not found in your teams.", "/dashboard"));
+            return Some(unprocessable(
+                "Project not found in your teams.",
+                "/dashboard",
+            ));
         };
         if !can_write(&st.db, &user, &app) {
             return Some(forbidden("you need owner or admin rights for this project"));
@@ -2248,7 +2338,9 @@ pub async fn handle(
                 for (k, _, _) in &vars {
                     if !valid_env_key(k) {
                         return Some(unprocessable(
-                            &format!("{k} is not a valid variable name (letters, digits and _ only)."),
+                            &format!(
+                                "{k} is not a valid variable name (letters, digits and _ only)."
+                            ),
                             &back,
                         ));
                     }
@@ -2270,10 +2362,16 @@ pub async fn handle(
                 return Some(redirect_flash(
                     &back,
                     true,
-                    &format!("Saved {} variable(s) for {env}. They apply on the next deploy.", merged.len()),
+                    &format!(
+                        "Saved {} variable(s) for {env}. They apply on the next deploy.",
+                        merged.len()
+                    ),
                 ));
             }
-            let key = form.get("key").map(|s| s.trim().to_string()).unwrap_or_default();
+            let key = form
+                .get("key")
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
             if !valid_env_key(&key) {
                 return Some(unprocessable(
                     "Variable names use letters, digits and _ and cannot start with a digit.",
@@ -2288,7 +2386,10 @@ pub async fn handle(
             } else {
                 value
             };
-            if let Err(e) = st.db.put_env(&app.name, &env, &[(key.clone(), value, secret)]) {
+            if let Err(e) = st
+                .db
+                .put_env(&app.name, &env, &[(key.clone(), value, secret)])
+            {
                 return Some(server_error(&e.to_string()));
             }
             Some(redirect_flash(
@@ -2320,7 +2421,11 @@ pub async fn handle(
                     true,
                     &format!(
                         "{host} removed{}.",
-                        if primary { " (primary domain cleared)" } else { "" }
+                        if primary {
+                            " (primary domain cleared)"
+                        } else {
+                            ""
+                        }
                     ),
                 ));
             }
@@ -2500,7 +2605,9 @@ mod tests {
     fn flash_cookies_roundtrip() {
         let raw = "ok|Project my-app created. 100%";
         assert_eq!(dec_cookie(&enc_cookie(raw)).unwrap(), raw);
-        assert!(enc_cookie(raw).bytes().all(|b| b.is_ascii_graphic() && b != b';'));
+        assert!(enc_cookie(raw)
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && b != b';'));
     }
 
     #[tokio::test]
@@ -2518,7 +2625,9 @@ mod tests {
             r.headers().get(axum::http::header::CACHE_CONTROL).unwrap(),
             "no-store"
         );
-        let body = axum::body::to_bytes(r.into_body(), 128 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), 128 * 1024)
+            .await
+            .unwrap();
         let page = String::from_utf8_lossy(&body);
         assert!(page.contains("my-app"));
         assert!(page.contains("abc123"));
@@ -2553,7 +2662,8 @@ mod tests {
         let data = std::env::temp_dir().join(format!("dok-ui-env-data-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data).unwrap();
         let st = crate::state::AppState::new(db.clone(), data, None, "http://localhost".into());
-        let auth = crate::auth::AuthState::new(url::Url::parse("http://localhost").unwrap()).unwrap();
+        let auth =
+            crate::auth::AuthState::new(url::Url::parse("http://localhost").unwrap()).unwrap();
         let session = || crate::auth::Session {
             user: u.clone(),
             csrf: "good".into(),
@@ -2583,11 +2693,18 @@ mod tests {
         .unwrap();
         assert_eq!(r.status(), axum::http::StatusCode::SEE_OTHER);
 
-        let r = super::handle(&st, &auth, get(), Some(session())).await.unwrap();
-        let body = axum::body::to_bytes(r.into_body(), 512 * 1024).await.unwrap();
+        let r = super::handle(&st, &auth, get(), Some(session()))
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(r.into_body(), 512 * 1024)
+            .await
+            .unwrap();
         let page = String::from_utf8_lossy(&body);
         assert!(!page.contains("s3cret"), "secret leaked into the page");
-        assert!(page.contains("TOKEN="), "secret key missing from bulk editor");
+        assert!(
+            page.contains("TOKEN="),
+            "secret key missing from bulk editor"
+        );
 
         // `KEY=` in the bulk editor keeps the stored secret value.
         let r = super::handle(
@@ -2632,7 +2749,9 @@ mod tests {
         let r = super::handle(&st, &auth, get(), Some(viewer_session()))
             .await
             .unwrap();
-        let body = axum::body::to_bytes(r.into_body(), 512 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), 512 * 1024)
+            .await
+            .unwrap();
         let page = String::from_utf8_lossy(&body);
         assert!(!page.contains("s3cret"), "viewer saw a value");
         assert!(!page.contains("<code>1</code>"), "viewer saw a value");
@@ -2668,7 +2787,8 @@ mod tests {
         let data = std::env::temp_dir().join(format!("dok-ui-data-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data).unwrap();
         let st = crate::state::AppState::new(db, data, None, "http://localhost".into());
-        let auth = crate::auth::AuthState::new(url::Url::parse("http://localhost").unwrap()).unwrap();
+        let auth =
+            crate::auth::AuthState::new(url::Url::parse("http://localhost").unwrap()).unwrap();
         let make = |csrf: &str| {
             axum::http::Request::builder()
                 .method(axum::http::Method::POST)

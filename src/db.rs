@@ -138,7 +138,11 @@ pub fn verify_password(stored: &str, password: &str) -> bool {
                 == 0;
     }
     PasswordHash::new(stored)
-        .map(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())
+        .map(|h| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &h)
+                .is_ok()
+        })
         .unwrap_or(false)
 }
 
@@ -360,7 +364,8 @@ impl Db {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut conn =
+            Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // The server and the post-receive hook open the same file from two
@@ -436,18 +441,16 @@ impl Db {
         if n != 1 {
             return Ok(None);
         }
-        Ok(c.query_row(
-            "SELECT id, email, name FROM users LIMIT 1",
-            [],
-            |r| {
+        Ok(
+            c.query_row("SELECT id, email, name FROM users LIMIT 1", [], |r| {
                 Ok(User {
                     id: r.get(0)?,
                     email: r.get(1)?,
                     name: r.get(2)?,
                 })
-            },
+            })
+            .optional()?,
         )
-        .optional()?)
     }
 
     pub fn user_by_email(&self, email: &str) -> Result<Option<User>> {
@@ -486,12 +489,7 @@ impl Db {
         for k in keys {
             tx.execute(
                 "INSERT INTO passkeys (id, user_id, data, created_at) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    uuid::Uuid::new_v4().simple().to_string(),
-                    user_id,
-                    k,
-                    now()
-                ],
+                params![uuid::Uuid::new_v4().simple().to_string(), user_id, k, now()],
             )?;
         }
         tx.commit()?;
@@ -859,7 +857,10 @@ impl Db {
             .into_iter();
         let c = self.conn();
         for table in ["env", "env_vars", "domains", "deploys", "access_log"] {
-            c.execute(&format!("DELETE FROM {table} WHERE app = ?1"), params![name])?;
+            c.execute(
+                &format!("DELETE FROM {table} WHERE app = ?1"),
+                params![name],
+            )?;
         }
         c.execute(
             "DELETE FROM settings WHERE key = ?1",
@@ -879,8 +880,9 @@ impl Db {
 
     pub fn env(&self, app: &str, env: &str) -> Result<Vec<(String, String, bool)>> {
         let c = self.conn();
-        let mut st =
-            c.prepare("SELECT key, value, secret FROM env_vars WHERE app = ?1 AND env = ?2 ORDER BY key")?;
+        let mut st = c.prepare(
+            "SELECT key, value, secret FROM env_vars WHERE app = ?1 AND env = ?2 ORDER BY key",
+        )?;
         let rows = st.query_map(params![app, env], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0))
         })?;
@@ -1281,14 +1283,11 @@ impl Db {
 
     #[allow(dead_code)]
     pub fn token_exists(&self, hash: &str) -> Result<bool> {
-        Ok(self
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM tokens WHERE hash = ?1",
-                params![hash],
-                |r| r.get::<_, i64>(0),
-            )?
-            > 0)
+        Ok(self.conn().query_row(
+            "SELECT COUNT(*) FROM tokens WHERE hash = ?1",
+            params![hash],
+            |r| r.get::<_, i64>(0),
+        )? > 0)
     }
 
     #[allow(dead_code)]
@@ -1530,7 +1529,12 @@ mod tests {
         }
         let removed = db.prune_deploys_env("app", "preview", 10).unwrap();
         assert_eq!(removed.len(), 2);
-        assert_eq!(db.deploys_env("app", Some("production"), 100).unwrap().len(), 3);
+        assert_eq!(
+            db.deploys_env("app", Some("production"), 100)
+                .unwrap()
+                .len(),
+            3
+        );
         let all = db.deploys("app", 100).unwrap();
         assert!(all.iter().any(|d| d.id == "production-deploy-2"));
         assert!(db.deploy("app", "production-deploy-2").unwrap().is_some());
@@ -1603,7 +1607,10 @@ mod tests {
         db.put_env(
             "app",
             "preview",
-            &[("A".into(), "2".into(), false), ("B".into(), "3".into(), false)],
+            &[
+                ("A".into(), "2".into(), false),
+                ("B".into(), "3".into(), false),
+            ],
         )
         .unwrap();
         let prod = db.env_resolved("app", "production").unwrap();

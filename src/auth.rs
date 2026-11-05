@@ -129,7 +129,9 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
     if (path.starts_with("/auth/setup")
         || path.starts_with("/auth/login")
         || path.starts_with("/auth/join"))
-        && !st.rate.allow(&format!("auth:{}", client_ip(st, &req)), 10, 60)
+        && !st
+            .rate
+            .allow(&format!("auth:{}", client_ip(st, &req)), 10, 60)
     {
         return Some((StatusCode::TOO_MANY_REQUESTS, "too many attempts\n").into_response());
     }
@@ -157,9 +159,12 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
                         &session.csrf,
                     ))
                 }
-                (Ok(Some((team, role, inviter))), None) => {
-                    Some(crate::ui::page_join(&token, &team, &role, inviter.as_deref()))
-                }
+                (Ok(Some((team, role, inviter))), None) => Some(crate::ui::page_join(
+                    &token,
+                    &team,
+                    &role,
+                    inviter.as_deref(),
+                )),
                 _ => Some(crate::ui::page_join_invalid()),
             }
         }
@@ -409,7 +414,11 @@ fn login_start(st: &AppState, auth: &AuthState) -> Response<Body> {
             let mut p = auth.pending_auth.lock().unwrap();
             p.retain(|_, (_, exp)| *exp > now);
             if p.len() >= 64 {
-                if let Some(k) = p.iter().min_by_key(|(_, (_, exp))| *exp).map(|(k, _)| k.clone()) {
+                if let Some(k) = p
+                    .iter()
+                    .min_by_key(|(_, (_, exp))| *exp)
+                    .map(|(k, _)| k.clone())
+                {
                     p.remove(&k);
                 }
             }
@@ -516,8 +525,10 @@ async fn read_json<T: for<'de> Deserialize<'de>>(req: Request<Body>) -> Result<T
 
 fn with_cookie(auth: &AuthState, session: String, body: Value) -> Response<Body> {
     let mut r = Json(body).into_response();
-    r.headers_mut()
-        .insert(header::SET_COOKIE, auth.cookie_header(&session, SESSION_TTL));
+    r.headers_mut().insert(
+        header::SET_COOKIE,
+        auth.cookie_header(&session, SESSION_TTL),
+    );
     r
 }
 
@@ -602,7 +613,9 @@ mod tests {
             .method("POST")
             .uri("/auth/setup/start")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"email":"second@example.com","name":"Second"}"#))
+            .body(Body::from(
+                r#"{"email":"second@example.com","name":"Second"}"#,
+            ))
             .unwrap();
         let resp = setup_start(&st, &auth, req).await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -611,6 +624,9 @@ mod tests {
 
     #[test]
     fn escapes_html() {
-        assert_eq!(esc("<a href=\"x\">&'</a>"), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;");
+        assert_eq!(
+            esc("<a href=\"x\">&'</a>"),
+            "&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;"
+        );
     }
 }

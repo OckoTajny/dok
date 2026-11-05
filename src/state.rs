@@ -89,7 +89,10 @@ impl AppState {
         self.dashboard_origin_host = origin.map(|o| {
             url::Url::parse(&o)
                 .ok()
-                .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_ascii_lowercase()))
+                .and_then(|u| {
+                    u.host_str()
+                        .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+                })
                 .unwrap_or_default()
         });
         self
@@ -183,9 +186,10 @@ impl AppState {
 
     /// Hostname that serves the dashboard/API; never routed to an app.
     pub fn dashboard_host(&self) -> Option<String> {
-        url::Url::parse(&self.public_url)
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_ascii_lowercase()))
+        url::Url::parse(&self.public_url).ok().and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+        })
     }
 
     /// True when `host` belongs to the control plane, not to user projects.

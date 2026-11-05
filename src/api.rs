@@ -94,7 +94,10 @@ fn api_routes(st: AppState) -> Router {
         .route("/api/v1/projects/{app}/metrics", get(metrics))
         .route("/api/v1/projects/{app}/redeploy", post(redeploy))
         .route("/api/v1/projects/{app}/access-log", get(access_log))
-        .route("/api/v1/projects/{app}/proxy", get(get_proxy).put(put_proxy))
+        .route(
+            "/api/v1/projects/{app}/proxy",
+            get(get_proxy).put(put_proxy),
+        )
         .route("/api/v1/whoami", get(whoami))
         .route(
             "/api/v1/projects/{app}/env/{env}/{key}",
@@ -108,7 +111,10 @@ fn api_routes(st: AppState) -> Router {
         .route("/api/v1/projects/{app}/logs/stream", get(logs_stream))
         // Old app API, kept as aliases.
         .route("/api/v1/apps", get(list_projects))
-        .route("/api/v1/apps/{app}", get(get_project).delete(delete_project))
+        .route(
+            "/api/v1/apps/{app}",
+            get(get_project).delete(delete_project),
+        )
         .route("/api/v1/apps/{app}/deploy", post(deploy_upload_named))
         .route("/api/v1/apps/{app}/logs", get(logs))
         .route("/api/v1/apps/{app}/logs/stream", get(logs_stream))
@@ -116,17 +122,17 @@ fn api_routes(st: AppState) -> Router {
         .route("/api/v1/apps/{app}/deployments", get(list_deployments))
         .route("/api/v1/apps/{app}/rollback/{deploy}", post(rollback))
         .route("/api/v1/apps/{app}/promote/{deploy}", post(promote))
-        .route("/api/v1/apps/{app}/env", put(put_env_root).get(get_env_root))
+        .route(
+            "/api/v1/apps/{app}/env",
+            put(put_env_root).get(get_env_root),
+        )
         .route("/api/v1/apps/{app}/domain", post(set_domain))
         .route("/api/v1/apps/{app}/repo", post(set_repo))
         .route("/api/v1/apps/{app}/git-init", post(git_init))
         .route("/api/v1/apps/{app}/redeploy", post(redeploy))
         // Certificates, teams, and the spec upload endpoint.
         .route("/api/v1/certificates", get(list_certificates))
-        .route(
-            "/api/v1/certificates/{host}/renew",
-            post(renew_certificate),
-        )
+        .route("/api/v1/certificates/{host}/renew", post(renew_certificate))
         .route("/api/v1/teams", get(list_teams).post(create_team_api))
         .route("/api/v1/teams/{team}/members", get(list_members))
         .route(
@@ -201,12 +207,16 @@ fn domain_conflict(st: &AppState, app: &str, host: &str) -> Result<(), Response>
     }
     if let Ok(Some(other)) = st.db.domain_owner(host) {
         if other != app {
-            return Err((StatusCode::CONFLICT, "domain belongs to another project\n").into_response());
+            return Err(
+                (StatusCode::CONFLICT, "domain belongs to another project\n").into_response(),
+            );
         }
     }
     if let Ok(Some(other)) = st.db.app_domain_owner(host) {
         if other != app {
-            return Err((StatusCode::CONFLICT, "domain belongs to another project\n").into_response());
+            return Err(
+                (StatusCode::CONFLICT, "domain belongs to another project\n").into_response(),
+            );
         }
     }
     Ok(())
@@ -280,7 +290,10 @@ fn author_of(st: &AppState, caller: &Caller) -> Option<String> {
     st.db.user(&caller.user).ok().flatten().map(|u| u.email)
 }
 
-async fn list_projects(State(st): State<AppState>, Extension(caller): Extension<Caller>) -> Response {
+async fn list_projects(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
     let mut apps = Vec::new();
     for team in st.db.teams_for(&caller.user).unwrap_or_default() {
         apps.extend(st.db.apps_for_team(&team.id).unwrap_or_default());
@@ -515,17 +528,7 @@ async fn upload(
     }
 
     let author = author_of(&st, &caller);
-    match deploy::deploy_dir(
-        &st,
-        &app,
-        &dir,
-        q.port,
-        q.domain,
-        env,
-        author.as_deref(),
-    )
-    .await
-    {
+    match deploy::deploy_dir(&st, &app, &dir, q.port, q.domain, env, author.as_deref()).await {
         Ok(out) => Json(out).into_response(),
         Err(e) => {
             if env == "production" {
@@ -586,7 +589,13 @@ async fn logs(
     };
     let kind = selected
         .as_ref()
-        .map(|d| if d.image.is_some() { "docker" } else { "static" })
+        .map(|d| {
+            if d.image.is_some() {
+                "docker"
+            } else {
+                "static"
+            }
+        })
         .unwrap_or(a.kind.as_str());
     let container = selected.as_ref().and_then(|d| d.container.clone());
     let runtime = if kind == "docker" {
@@ -771,13 +780,25 @@ async fn put_env_root(
     Path(app): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    put_env(State(st), Extension(caller), Path((app, "production".into())), Json(body)).await
+    put_env(
+        State(st),
+        Extension(caller),
+        Path((app, "production".into())),
+        Json(body),
+    )
+    .await
 }
 
 fn parse_env_body(body: Value) -> Result<(HashMap<String, String>, bool), &'static str> {
     let (vars, replace) = if body.get("vars").is_some() {
-        let replace = body.get("replace").and_then(Value::as_bool).unwrap_or(false);
-        (body.get("vars").cloned().unwrap_or_else(|| json!({})), replace)
+        let replace = body
+            .get("replace")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        (
+            body.get("vars").cloned().unwrap_or_else(|| json!({})),
+            replace,
+        )
     } else {
         (body, false)
     };
@@ -889,7 +910,12 @@ async fn get_env_root(
     Extension(caller): Extension<Caller>,
     Path(app): Path<String>,
 ) -> Response {
-    get_env(State(st), Extension(caller), Path((app, "production".into()))).await
+    get_env(
+        State(st),
+        Extension(caller),
+        Path((app, "production".into())),
+    )
+    .await
 }
 
 async fn whoami(State(st): State<AppState>, Extension(caller): Extension<Caller>) -> Response {
@@ -941,7 +967,11 @@ async fn get_webhook(
     if let Err(r) = require_write(&st, &caller, &a) {
         return r;
     }
-    let secret = st.db.get_setting(&format!("webhook_secret:{app}")).ok().flatten();
+    let secret = st
+        .db
+        .get_setting(&format!("webhook_secret:{app}"))
+        .ok()
+        .flatten();
     let branch = st
         .db
         .get_setting(&format!("webhook_branch:{app}"))
@@ -980,9 +1010,7 @@ async fn put_webhook(
         {
             return bad("invalid branch name");
         }
-        let _ = st
-            .db
-            .set_setting(&format!("webhook_branch:{app}"), branch);
+        let _ = st.db.set_setting(&format!("webhook_branch:{app}"), branch);
     }
     Json(json!({"ok": true})).into_response()
 }
@@ -1089,7 +1117,8 @@ async fn remove_domain(
         return r;
     }
     let additional = st.db.remove_domain(&app, &host).unwrap_or(0);
-    let primary = a.domain.as_deref() == Some(host.trim_end_matches('.').to_ascii_lowercase().as_str());
+    let primary =
+        a.domain.as_deref() == Some(host.trim_end_matches('.').to_ascii_lowercase().as_str());
     if primary {
         if let Err(e) = st.db.clear_domain(&app) {
             return internal(e);
@@ -1134,15 +1163,21 @@ async fn metrics(
         Err(r) => return r,
     };
     let all = st.db.deploys(&app, 20).unwrap_or_default();
-    let (total, production, preview) = st
-        .db
-        .deploy_counts(&app)
-        .unwrap_or((all.len() as i64, 0, 0));
-    let latest = all.first().map(|d| {
-        json!({"id": d.id, "status": d.status, "env": d.env, "created_at": d.created_at})
-    });
+    let (total, production, preview) =
+        st.db
+            .deploy_counts(&app)
+            .unwrap_or((all.len() as i64, 0, 0));
+    let latest = all
+        .first()
+        .map(|d| json!({"id": d.id, "status": d.status, "env": d.env, "created_at": d.created_at}));
     let mut domains = st.db.domains_for(&app).unwrap_or_default().len();
-    if a.domain.is_some() && !a.domain.as_ref().map(|d| st.db.domains_for(&app).unwrap_or_default().contains(d)).unwrap_or(false) {
+    if a.domain.is_some()
+        && !a
+            .domain
+            .as_ref()
+            .map(|d| st.db.domains_for(&app).unwrap_or_default().contains(d))
+            .unwrap_or(false)
+    {
         domains += 1;
     }
     let stats = deploy::container_stats(&app, "production", None).await;
@@ -1218,7 +1253,12 @@ async fn put_proxy(
     if let Some(pw) = b.basic_auth_password.as_deref().filter(|p| !p.is_empty()) {
         b.settings.basic_auth_hash = Some(crate::db::hash_password(pw));
     }
-    if b.settings.basic_auth_user.as_deref().unwrap_or("").is_empty() {
+    if b.settings
+        .basic_auth_user
+        .as_deref()
+        .unwrap_or("")
+        .is_empty()
+    {
         b.settings.basic_auth_user = None;
         b.settings.basic_auth_hash = None;
     }
@@ -1321,10 +1361,8 @@ async fn renew_certificate(
         return not_found();
     }
     match request_cert_renewal(&st, &host) {
-        Ok(status) => {
-            Json(json!({"ok": true, "host": host, "status": status, "renewing": true}))
-                .into_response()
-        }
+        Ok(status) => Json(json!({"ok": true, "host": host, "status": status, "renewing": true}))
+            .into_response(),
         Err(e) => internal(e),
     }
 }
@@ -1441,9 +1479,7 @@ async fn list_members(
         .members(&t.id)
         .unwrap_or_default()
         .into_iter()
-        .map(|(u, role)| {
-            json!({"id": u.id, "email": u.email, "name": u.name, "role": role})
-        })
+        .map(|(u, role)| json!({"id": u.id, "email": u.email, "name": u.name, "role": role}))
         .collect();
     Json(json!({"members": members})).into_response()
 }
@@ -1549,18 +1585,20 @@ async fn list_invites(
         .invites_for(&t.id)
         .unwrap_or_default()
         .into_iter()
-        .map(|(token, role, created_at, expires_at, used_at, invited_by)| {
-            json!({
-                "token": token,
-                "role": role,
-                "created_at": created_at,
-                "expires_at": expires_at,
-                "used": used_at.is_some(),
-                "expired": expires_at <= now,
-                "invited_by": invited_by,
-                "link": format!("{}/join/{token}", st.public_url.trim_end_matches('/')),
-            })
-        })
+        .map(
+            |(token, role, created_at, expires_at, used_at, invited_by)| {
+                json!({
+                    "token": token,
+                    "role": role,
+                    "created_at": created_at,
+                    "expires_at": expires_at,
+                    "used": used_at.is_some(),
+                    "expired": expires_at <= now,
+                    "invited_by": invited_by,
+                    "link": format!("{}/join/{token}", st.public_url.trim_end_matches('/')),
+                })
+            },
+        )
         .collect();
     Json(json!({"invites": invites})).into_response()
 }
@@ -1604,9 +1642,13 @@ async fn create_invite(
     Path(team): Path<String>,
     Json(b): Json<InviteBody>,
 ) -> Response {
-    let team = match st.db.team(&team).ok().flatten().or_else(|| {
-        st.db.team_by_slug(&team).ok().flatten()
-    }) {
+    let team = match st
+        .db
+        .team(&team)
+        .ok()
+        .flatten()
+        .or_else(|| st.db.team_by_slug(&team).ok().flatten())
+    {
         Some(t) => t,
         None => return not_found(),
     };
@@ -1621,7 +1663,10 @@ async fn create_invite(
     if !crate::db::can_grant(actor_role.as_deref(), &role) {
         return (StatusCode::FORBIDDEN, "you cannot grant that role\n").into_response();
     }
-    match st.db.create_invite(&team.id, &role, 7 * 86400, Some(&caller.user)) {
+    match st
+        .db
+        .create_invite(&team.id, &role, 7 * 86400, Some(&caller.user))
+    {
         Ok(token) => Json(json!({
             "token": token,
             "link": format!("{}/join/{token}", st.public_url.trim_end_matches('/')),
@@ -1780,7 +1825,9 @@ async fn github_hook(
         .get_setting(&format!("webhook_secret:{app}"))
         .ok()
         .flatten();
-    let global = std::env::var("DOK_HOOK_SECRET").ok().filter(|s| !s.is_empty());
+    let global = std::env::var("DOK_HOOK_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
     match project_secret.as_deref() {
         Some(secret) => {
             use hmac::{Hmac, Mac};
@@ -1790,15 +1837,16 @@ async fn github_hook(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
             let Some(hex) = sig.strip_prefix("sha256=") else {
-                return (StatusCode::UNAUTHORIZED, "missing X-Hub-Signature-256\n")
-                    .into_response();
+                return (StatusCode::UNAUTHORIZED, "missing X-Hub-Signature-256\n").into_response();
             };
             let Some(expected) = decode_hex(hex) else {
                 return (StatusCode::UNAUTHORIZED, "bad signature\n").into_response();
             };
             let mut mac = match Hmac::<Sha256>::new_from_slice(secret.as_bytes()) {
                 Ok(m) => m,
-                Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "bad secret\n").into_response(),
+                Err(_) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "bad secret\n").into_response()
+                }
             };
             mac.update(&body);
             if mac.verify_slice(&expected).is_err() {
@@ -2147,7 +2195,11 @@ async fn reject_private_repo_dns(repo: &str) -> anyhow::Result<()> {
     if host.parse::<std::net::IpAddr>().is_ok() {
         return Ok(());
     }
-    let port = if repo.trim_start().to_ascii_lowercase().starts_with("https://") {
+    let port = if repo
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("https://")
+    {
         443
     } else {
         22
@@ -2225,14 +2277,18 @@ mod tests {
         assert!(!super::valid_repo_url("/tmp/repo"));
         // SSRF targets
         assert!(!super::valid_repo_url("https://127.0.0.1/a.git"));
-        assert!(!super::valid_repo_url("https://169.254.169.254/latest/meta-data"));
+        assert!(!super::valid_repo_url(
+            "https://169.254.169.254/latest/meta-data"
+        ));
         assert!(!super::valid_repo_url("https://10.0.0.5/a.git"));
         assert!(!super::valid_repo_url("https://192.168.1.10/a.git"));
         assert!(!super::valid_repo_url("ssh://git@[::1]/a.git"));
         assert!(!super::valid_repo_url("ssh://git@10.0.0.5/a.git"));
         assert!(!super::valid_repo_url("https://user:pw@192.168.0.2/a.git"));
         assert!(!super::valid_repo_url("git@localhost:a/b.git"));
-        assert!(!super::valid_repo_url("https://metadata.google.internal/a.git"));
+        assert!(!super::valid_repo_url(
+            "https://metadata.google.internal/a.git"
+        ));
         assert!(super::valid_repo_url("ssh://git@8.8.8.8/a.git"));
     }
 
@@ -2264,10 +2320,10 @@ mod tests {
 
     use crate::db::{App, Db};
     use crate::state::AppState;
-    use serde_json::{json, Value};
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode};
     use axum::response::Response;
+    use serde_json::{json, Value};
     use std::path::PathBuf;
     use tower::ServiceExt;
 
@@ -2336,7 +2392,10 @@ mod tests {
             b = b.header("content-type", "application/json");
         }
         let req = b
-            .body(body.map(|s| Body::from(s.to_string())).unwrap_or_else(Body::empty))
+            .body(
+                body.map(|s| Body::from(s.to_string()))
+                    .unwrap_or_else(Body::empty),
+            )
             .unwrap();
         api_routes(st.clone()).oneshot(req).await.unwrap()
     }
@@ -2349,11 +2408,12 @@ mod tests {
             .header("host", "foreign.test")
             .body(Body::empty())
             .unwrap();
-        let r = super::dispatch(axum::extract::State(st.clone()), foreign)
-            .await;
+        let r = super::dispatch(axum::extract::State(st.clone()), foreign).await;
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
         assert!(r.headers().get("x-request-id").is_some());
-        let body = axum::body::to_bytes(r.into_body(), 256 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), 256 * 1024)
+            .await
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(!text.contains("Projects"));
         assert!(!text.contains("Sign in"));
@@ -2366,7 +2426,9 @@ mod tests {
             .unwrap();
         let r = super::dispatch(axum::extract::State(st.clone()), control).await;
         assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body = axum::body::to_bytes(r.into_body(), 256 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), 256 * 1024)
+            .await
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("--dashboard-origin"));
         let _ = std::fs::remove_file(path);
@@ -2389,13 +2451,17 @@ mod tests {
                 .status(),
             StatusCode::UNAUTHORIZED
         );
-        st.db
-            .add_token(&hash("dead-token"), "dead", None)
-            .unwrap();
+        st.db.add_token(&hash("dead-token"), "dead", None).unwrap();
         assert_eq!(
-            call(&st, Some("dead-token"), Method::GET, "/api/v1/projects", None)
-                .await
-                .status(),
+            call(
+                &st,
+                Some("dead-token"),
+                Method::GET,
+                "/api/v1/projects",
+                None
+            )
+            .await
+            .status(),
             StatusCode::UNAUTHORIZED
         );
 
@@ -2403,8 +2469,16 @@ mod tests {
         for (method, uri, body) in [
             (Method::GET, "/api/v1/projects/app-b", None),
             (Method::DELETE, "/api/v1/projects/app-b", None),
-            (Method::PUT, "/api/v1/projects/app-b/env/production", Some("{}")),
-            (Method::POST, "/api/v1/projects/app-b/domains", Some("{\"domain\":\"x.test\"}")),
+            (
+                Method::PUT,
+                "/api/v1/projects/app-b/env/production",
+                Some("{}"),
+            ),
+            (
+                Method::POST,
+                "/api/v1/projects/app-b/domains",
+                Some("{\"domain\":\"x.test\"}"),
+            ),
             (Method::GET, "/api/v1/projects/app-b/proxy", None),
             (Method::PUT, "/api/v1/projects/app-b/proxy", Some("{}")),
             (Method::GET, "/api/v1/projects/app-b/metrics", None),
@@ -2419,15 +2493,29 @@ mod tests {
 
         // Members may read their team, never write.
         assert_eq!(
-            call(&st, Some(&tc_tok), Method::GET, "/api/v1/projects/app-a", None)
-                .await
-                .status(),
+            call(
+                &st,
+                Some(&tc_tok),
+                Method::GET,
+                "/api/v1/projects/app-a",
+                None
+            )
+            .await
+            .status(),
             StatusCode::OK
         );
         for (method, uri, body) in [
             (Method::DELETE, "/api/v1/projects/app-a", None),
-            (Method::PUT, "/api/v1/projects/app-a/env/production", Some("{}")),
-            (Method::POST, "/api/v1/projects/app-a/domains", Some("{\"domain\":\"x.test\"}")),
+            (
+                Method::PUT,
+                "/api/v1/projects/app-a/env/production",
+                Some("{}"),
+            ),
+            (
+                Method::POST,
+                "/api/v1/projects/app-a/domains",
+                Some("{\"domain\":\"x.test\"}"),
+            ),
             (Method::PUT, "/api/v1/projects/app-a/proxy", Some("{}")),
             (Method::POST, "/api/v1/projects/app-a/redeploy", None),
         ] {
@@ -2437,16 +2525,24 @@ mod tests {
 
         // Owner still sees their own project.
         assert_eq!(
-            call(&st, Some(&tb_tok), Method::GET, "/api/v1/projects/app-b", None)
-                .await
-                .status(),
+            call(
+                &st,
+                Some(&tb_tok),
+                Method::GET,
+                "/api/v1/projects/app-b",
+                None
+            )
+            .await
+            .status(),
             StatusCode::OK
         );
         let _ = std::fs::remove_file(path);
     }
 
     async fn body_json(r: Response) -> Value {
-        let b = axum::body::to_bytes(r.into_body(), 256 * 1024).await.unwrap();
+        let b = axum::body::to_bytes(r.into_body(), 256 * 1024)
+            .await
+            .unwrap();
         serde_json::from_slice(&b).unwrap_or_else(|_| json!({}))
     }
 
@@ -2551,7 +2647,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-
     #[tokio::test]
     async fn primary_domain_is_listed_and_removed() {
         let (st, path) = state();
@@ -2566,17 +2661,23 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::OK);
-        let body = body_json(call(
-            &st,
-            Some(&token),
-            Method::GET,
-            "/api/v1/projects/domapp/domains",
-            None,
+        let body = body_json(
+            call(
+                &st,
+                Some(&token),
+                Method::GET,
+                "/api/v1/projects/domapp/domains",
+                None,
+            )
+            .await,
         )
-        .await)
         .await;
         assert_eq!(body["primary"], "primary.test");
-        assert!(body["domains"].as_array().unwrap().iter().any(|d| d == "primary.test"));
+        assert!(body["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d == "primary.test"));
 
         let r = call(
             &st,
@@ -2587,17 +2688,23 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::OK);
-        let body = body_json(call(
-            &st,
-            Some(&token),
-            Method::GET,
-            "/api/v1/projects/domapp/domains",
-            None,
+        let body = body_json(
+            call(
+                &st,
+                Some(&token),
+                Method::GET,
+                "/api/v1/projects/domapp/domains",
+                None,
+            )
+            .await,
         )
-        .await)
         .await;
         assert!(body["primary"].is_null());
-        assert!(!body["domains"].as_array().unwrap().iter().any(|d| d == "primary.test"));
+        assert!(!body["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d == "primary.test"));
         let _ = std::fs::remove_file(path);
     }
 
@@ -2615,13 +2722,9 @@ mod tests {
             .parse()
             .unwrap();
         assert!(now > 0);
-        let value: Value = serde_json::from_str(
-            &st.db
-                .get_setting("cert:cert.apps.test")
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
+        let value: Value =
+            serde_json::from_str(&st.db.get_setting("cert:cert.apps.test").unwrap().unwrap())
+                .unwrap();
         assert_eq!(value["status"], "renewing");
         let _ = std::fs::remove_file(path);
     }
