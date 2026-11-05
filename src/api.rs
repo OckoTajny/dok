@@ -1944,6 +1944,7 @@ pub async fn deploy_from_repo_branch(
     };
 
     if !local_repo {
+        reject_private_repo_dns(&repo).await?;
         let probe = git(&["ls-remote", "--heads", &repo]).output().await?;
         if !probe.status.success() {
             anyhow::bail!(
@@ -2045,30 +2046,64 @@ pub(crate) fn valid_repo_url(s: &str) -> bool {
     {
         return false;
     }
-    let host_path = if let Some(rest) = lower.strip_prefix("https://") {
-        rest
-    } else if let Some(rest) = lower.strip_prefix("ssh://") {
-        rest
-    } else if let Some(rest) = s.strip_prefix("git@") {
-        rest
-    } else {
-        return false;
-    };
-    let host = host_path
-        .rsplit('@')
-        .next()
-        .unwrap_or(host_path)
-        .split(['/', ':'])
-        .next()
-        .unwrap_or("");
-    if host.is_empty() || !(host.contains('.') || host == "localhost") {
+    if !(lower.starts_with("https://") || lower.starts_with("ssh://") || lower.starts_with("git@"))
+    {
         return false;
     }
-    repo_host_allowed(host)
+    let Some(host) = repo_host_of(&lower) else {
+        return false;
+    };
+    if !(host.contains('.') || host == "localhost") {
+        return false;
+    }
+    repo_host_allowed(&host)
+}
+
+pub(crate) fn repo_host_of(s: &str) -> Option<String> {
+    let lower = s.trim().to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("ssh://"))
+        .or_else(|| lower.strip_prefix("git@"))
+        .unwrap_or(&lower);
+    let hostport = rest.rsplit('@').next().unwrap_or(rest);
+    let host = if let Some(bracketed) = hostport.strip_prefix('[') {
+        bracketed.split(']').next().unwrap_or("")
+    } else {
+        hostport.split(['/', ':']).next().unwrap_or("")
+    };
+    let host = host.trim_end_matches('.');
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+fn ip_is_public(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || v4.octets()[0] == 0)
+        }
+        std::net::IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                || v6.is_multicast())
+        }
+    }
 }
 
 /// Reject obvious SSRF targets: bare private/loopback/link-local addresses and
-/// local/metadata names. Public hostnames are still resolved by git itself.
+/// local/metadata names. An explicit allowlist opts an internal host back in.
 fn repo_host_allowed(host: &str) -> bool {
     let host = host.trim_start_matches('[').trim_end_matches(']');
     // Operators with an internal git server can opt in explicitly:
@@ -2082,25 +2117,7 @@ fn repo_host_allowed(host: &str) -> bool {
         }
     }
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => {
-                !(v4.is_private()
-                    || v4.is_loopback()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_broadcast()
-                    || v4.is_documentation()
-                    || v4.is_multicast()
-                    || v4.octets()[0] == 0)
-            }
-            std::net::IpAddr::V6(v6) => {
-                !(v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_unique_local()
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-                    || v6.is_multicast())
-            }
-        };
+        return ip_is_public(ip);
     }
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     !(host == "localhost"
@@ -2109,6 +2126,40 @@ fn repo_host_allowed(host: &str) -> bool {
         || host.ends_with(".internal")
         || host == "metadata.google.internal"
         || host == "instance-data")
+}
+
+/// Resolve a public repo host before git connects, so a DNS name cannot point
+/// at the metadata service. Returns Ok when resolution is unavailable (git
+/// will report its own network error).
+async fn reject_private_repo_dns(repo: &str) -> anyhow::Result<()> {
+    let Some(host) = repo_host_of(repo) else {
+        return Ok(());
+    };
+    if let Ok(list) = std::env::var("DOK_REPO_ALLOW_HOSTS") {
+        if list
+            .split(',')
+            .map(|h| h.trim())
+            .any(|h| h.eq_ignore_ascii_case(&host))
+        {
+            return Ok(());
+        }
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(());
+    }
+    let port = if repo.trim_start().to_ascii_lowercase().starts_with("https://") {
+        443
+    } else {
+        22
+    };
+    if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), port)).await {
+        for addr in addrs {
+            if !ip_is_public(addr.ip()) {
+                anyhow::bail!("repo host {host} resolves to a private address");
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn valid_name(s: &str) -> bool {
