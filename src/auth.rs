@@ -133,8 +133,17 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
         ("GET", "/login") => Some(crate::ui::page_login()),
         ("GET", p) if p.starts_with("/join/") => {
             let token = p.trim_start_matches("/join/").to_string();
-            match st.db.invite_details(&token) {
-                Ok(Some((team, role, inviter))) => {
+            match (st.db.invite_details(&token), &session) {
+                (Ok(Some((team, role, inviter))), Some(session)) => {
+                    Some(crate::ui::page_join_signed_in(
+                        &token,
+                        &team,
+                        &role,
+                        inviter.as_deref(),
+                        &session.csrf,
+                    ))
+                }
+                (Ok(Some((team, role, inviter))), None) => {
                     Some(crate::ui::page_join(&token, &team, &role, inviter.as_deref()))
                 }
                 _ => Some(crate::ui::page_join_invalid()),
@@ -143,6 +152,7 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
         ("POST", "/auth/setup/start") => Some(setup_start(st, auth, req).await),
         ("POST", "/auth/setup/finish") => Some(register_finish(st, auth, req).await),
         ("POST", "/auth/join/start") => Some(join_start(st, auth, req).await),
+        ("POST", "/auth/join/accept") => Some(join_accept(st, req, session.as_ref()).await),
         ("POST", "/auth/login/start") => Some(login_start(st, auth)),
         ("POST", "/auth/login/finish") => Some(login_finish(st, auth, req).await),
         ("POST", "/auth/logout") => Some(logout(auth, &st.db, &req)),
@@ -199,6 +209,50 @@ async fn join_start(st: &AppState, auth: &AuthState, req: Request<Body>) -> Resp
         return bad("invite is invalid or expired");
     }
     register_start(st, auth, &b.email, &b.name, None, Some(b.token), None)
+}
+
+async fn join_accept(
+    st: &AppState,
+    req: Request<Body>,
+    session: Option<&Session>,
+) -> Response<Body> {
+    let Some(session) = session else {
+        return redirect("/");
+    };
+    let ip = client_ip(&req);
+    if !st.rate.allow(&format!("join:{ip}"), 10, 60) {
+        return (StatusCode::TOO_MANY_REQUESTS, "too many attempts\n").into_response();
+    }
+    let bytes = match axum::body::to_bytes(req.into_body(), 64 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return bad("body too large"),
+    };
+    let form: HashMap<String, String> =
+        match serde_urlencoded::from_bytes::<HashMap<String, String>>(&bytes) {
+            Ok(f) => f,
+            Err(_) => return bad("bad form body"),
+        };
+    if form.get("csrf").map(String::as_str) != Some(session.csrf.as_str()) {
+        return forbidden("invalid CSRF token");
+    }
+    let token = form.get("token").cloned().unwrap_or_default();
+    match st.db.use_invite(&token, &session.user.id) {
+        Ok(Some(team_id)) => {
+            let slug = st
+                .db
+                .team(&team_id)
+                .ok()
+                .flatten()
+                .map(|t| t.slug)
+                .unwrap_or_else(|| "personal".into());
+            crate::ui::redirect_flash(
+                &format!("/dashboard/team?team={slug}"),
+                true,
+                "You joined the team.",
+            )
+        }
+        _ => crate::ui::page_join_invalid(),
+    }
 }
 
 fn register_start(

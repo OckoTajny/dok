@@ -61,13 +61,19 @@ dok projects                     list projects
 dok projects create <name>       create an empty project
 dok projects rm <name>           delete a project
 dok logs <app> [--env E]         build + runtime logs (-f to follow)
-dok env <app> KEY=VALUE ...      set production env (applies on next deploy)
+dok env <app> [-e E] KEY=VALUE   set env (production/preview/development)
 dok env pull <app> [env]         print env as KEY=VALUE
 dok env rm <app> KEY [env]       remove one env key
 dok domain <app> <host>          route a domain
 dok domains list <app>           list project domains
 dok domains rm <app> <host>      remove a project domain
 dok whoami                       show the user and teams behind the token
+dok teams                        list teams
+dok team members <team>          list members and roles
+dok team invite <team> [--role]  create a seven-day invite link
+dok team invites <team>          list invite links
+dok team revoke <team> <token>   revoke an invite link
+dok stats <app>                  deploy/domain/runtime metrics
 dok open <app>                   print the public URL
 dok git <app> <repo-url>         repo used by webhooks / redeploy
 dok git-init <app>               make a bare repo, print remote + webhook secret
@@ -273,6 +279,49 @@ tokens see env key names with masked values; only owner/admin see values.
 
 Team roles: only owners may grant admin/owner; admins may invite members and
 viewers. Invites are single-use and expire after seven days.
+
+## Troubleshooting
+
+- **The dashboard says “not configured”**: pass a hostname WebAuthn can use,
+  e.g. `dok serve --dashboard-origin http://localhost:8080`. Bare IPs are
+  turned into `localhost` automatically; `host:port` is accepted as-is.
+- **Passkey registration fails with an origin error**: open the dashboard on
+  the same host as `--dashboard-origin` (usually `localhost`, not `127.0.0.1`).
+- **`Address already in use`**: another `dok serve` or a container owns the
+  port; change `--http-port` or stop the old process.
+- **Docker deploys fail with permission denied**: give the service user access
+  to `/var/run/docker.sock` (`deploy/docker-socket-acl.conf` shows the ACL
+  setup), then `systemctl --user restart dok`.
+- **Let's Encrypt staging certificate**: dok uses the staging directory unless
+  `--acme-prod` is set; staging certs are not trusted by browsers.
+- **A token stops working after setup**: tokens created before the first user
+  are inactive until the dashboard setup claims them; issue a new one with
+  `dok login` / `--token`.
+- **A preview URL 404s**: previews use `<app>-<deploy8>.<base_domain>` and need
+  DNS/wildcard coverage; production stays on the project domain.
+- **Restore a backup**: stop the service, copy `backups/dok-*.db` over
+  `dok.db`, remove stale `-wal`/`-shm` files, start the service. Migrations run
+  automatically on start.
+- **Upgrade**: re-run `./install.sh` (idempotent), or replace the binary and
+  `systemctl --user restart dok`. The SQLite schema is migrated in place; keep
+  a backup from `<data>/backups`.
+
+## Development and tests
+
+```bash
+cargo test                                   # unit + integration (authz, env secrecy, migrations)
+bash scripts/smoke.sh                        # push + proxy routing
+bash scripts/preview-smoke.sh                # preview URL and promote
+bash scripts/rollback-smoke.sh               # rollback with retained artifacts
+bash scripts/git-smoke.sh                    # git push and branch-specific redeploy
+bash scripts/auth-smoke.sh                   # passkey API edge cases
+bash scripts/docker-smoke.sh                 # Docker build/run (needs Docker)
+NODE_PATH=/tmp/dok-e2e/node_modules bash scripts/ux-smoke.sh   # Playwright UX e2e
+```
+
+The UX e2e uses Playwright with a virtual authenticator. Put its modules in
+`/tmp/dok-e2e` (`npm --prefix /tmp/dok-e2e install playwright`) and install the
+browser once (`npx --prefix /tmp/dok-e2e playwright install chromium`).
 
 ## Roadmap
 

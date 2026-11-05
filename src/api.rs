@@ -1032,8 +1032,20 @@ async fn list_domains(
     if let Err(r) = project_for(&st, &caller, &app) {
         return r;
     }
-    match st.db.domains_for(&app) {
-        Ok(d) => Json(json!({"domains": d})).into_response(),
+    match st.db.get_app(&app) {
+        Ok(Some(row)) => {
+            let mut domains = st.db.domains_for(&app).unwrap_or_default();
+            let primary = row.domain.clone();
+            if let Some(p) = &primary {
+                if !domains.contains(p) {
+                    domains.push(p.clone());
+                }
+            }
+            domains.sort();
+            domains.dedup();
+            Json(json!({"domains": domains, "primary": primary})).into_response()
+        }
+        Ok(None) => not_found(),
         Err(e) => internal(e),
     }
 }
@@ -1079,14 +1091,18 @@ async fn remove_domain(
     if let Err(r) = require_write(&st, &caller, &a) {
         return r;
     }
-    match st.db.remove_domain(&app, &host) {
-        Ok(0) => not_found(),
-        Ok(_) => {
-            st.sync_traefik();
-            Json(json!({"removed": host})).into_response()
+    let additional = st.db.remove_domain(&app, &host).unwrap_or(0);
+    let primary = a.domain.as_deref() == Some(host.trim_end_matches('.').to_ascii_lowercase().as_str());
+    if primary {
+        if let Err(e) = st.db.clear_domain(&app) {
+            return internal(e);
         }
-        Err(e) => internal(e),
     }
+    if additional == 0 && !primary {
+        return not_found();
+    }
+    st.sync_traefik();
+    Json(json!({"removed": host, "primary": primary})).into_response()
 }
 
 async fn set_repo(
@@ -1120,24 +1136,31 @@ async fn metrics(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let all = st.db.deploys(&app, 100).unwrap_or_default();
-    let production = all.iter().filter(|d| d.env == "production").count();
-    let preview = all.iter().filter(|d| d.env == "preview").count();
+    let all = st.db.deploys(&app, 20).unwrap_or_default();
+    let (total, production, preview) = st
+        .db
+        .deploy_counts(&app)
+        .unwrap_or((all.len() as i64, 0, 0));
     let latest = all.first().map(|d| {
         json!({"id": d.id, "status": d.status, "env": d.env, "created_at": d.created_at})
     });
+    let mut domains = st.db.domains_for(&app).unwrap_or_default().len();
+    if a.domain.is_some() && !a.domain.as_ref().map(|d| st.db.domains_for(&app).unwrap_or_default().contains(d)).unwrap_or(false) {
+        domains += 1;
+    }
     let stats = deploy::container_stats(&app, "production", None).await;
     Json(json!({
         "project": a.name,
         "status": a.status,
         "kind": a.kind,
         "production_deploy": a.production_deploy,
-        "deployments": {"total": all.len(), "production": production, "preview": preview},
+        "deployments": {"total": total, "production": production, "preview": preview},
         "latest": latest,
-        "domains": st.db.domains_for(&app).unwrap_or_default().len(),
+        "domains": domains,
         "env_keys": {
             "production": st.db.env(&app, "production").unwrap_or_default().len(),
             "preview": st.db.env(&app, "preview").unwrap_or_default().len(),
+            "development": st.db.env(&app, "development").unwrap_or_default().len(),
         },
         "runtime": stats,
     }))
@@ -1300,6 +1323,18 @@ async fn renew_certificate(
     } else {
         return not_found();
     }
+    match request_cert_renewal(&st, &host) {
+        Ok(status) => {
+            Json(json!({"ok": true, "host": host, "status": status, "renewing": true}))
+                .into_response()
+        }
+        Err(e) => internal(e),
+    }
+}
+
+/// Shared by the token API and the dashboard Renew button: marks the host and
+/// bumps the watchdog value the edge supervisor watches.
+pub fn request_cert_renewal(st: &AppState, host: &str) -> anyhow::Result<String> {
     let now = crate::db::now();
     let previous = st
         .db
@@ -1318,22 +1353,21 @@ async fn renew_certificate(
         .and_then(|v| v.as_i64());
     let healthy = matches!(prev_status, "issued" | "expiring")
         && prev_expiry.map(|e| e > now).unwrap_or(true);
-    let status = if healthy { prev_status } else { "renewing" };
+    let status = if healthy {
+        prev_status.to_string()
+    } else {
+        "renewing".to_string()
+    };
     let value = json!({
         "status": status,
         "requested_at": now,
         "renew_requested_at": now,
         "expires": prev_expiry,
     });
-    let _ = st.db.set_setting("cert_renew", &now.to_string());
-    match st
-        .db
-        .set_setting(&format!("cert:{host}"), &value.to_string())
-    {
-        Ok(_) => Json(json!({"ok": true, "host": host, "status": status, "renewing": true}))
-            .into_response(),
-        Err(e) => internal(e),
-    }
+    st.db.set_setting("cert_renew", &now.to_string())?;
+    st.db
+        .set_setting(&format!("cert:{host}"), &value.to_string())?;
+    Ok(status)
 }
 
 fn lookup_team(st: &AppState, name: &str) -> Result<crate::db::Team, Response> {
@@ -1816,7 +1850,11 @@ async fn github_hook(
         }
     }
 
-    let out = match deploy_from_repo(&st, &app).await {
+    let pushed_branch = r#ref.strip_prefix("refs/heads/").filter(|b| !b.is_empty());
+    let deploy_branch = pushed_branch
+        .map(str::to_string)
+        .or_else(|| branch_setting.clone());
+    let out = match deploy_from_repo_branch(&st, &app, deploy_branch.as_deref()).await {
         Ok(out) => out,
         Err(e) => {
             return (
@@ -1868,6 +1906,20 @@ fn constant_eq(a: &str, b: &str) -> bool {
 }
 
 pub async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<DeployOutcome> {
+    let branch = st
+        .db
+        .get_setting(&format!("webhook_branch:{app}"))
+        .ok()
+        .flatten()
+        .filter(|b| !b.is_empty());
+    deploy_from_repo_branch(st, app, branch.as_deref()).await
+}
+
+pub async fn deploy_from_repo_branch(
+    st: &AppState,
+    app: &str,
+    branch: Option<&str>,
+) -> anyhow::Result<DeployOutcome> {
     let row = st
         .db
         .get_app(app)?
@@ -1913,10 +1965,11 @@ pub async fn deploy_from_repo(st: &AppState, app: &str) -> anyhow::Result<Deploy
     }
 
     let dir = deploy::new_build_dir(st, app)?;
-    let out = git(&["clone", "--depth", "1", &repo])
-        .arg(&dir)
-        .output()
-        .await?;
+    let mut clone = git(&["clone", "--depth", "1"]);
+    if let Some(branch) = branch {
+        clone.args(["--branch", branch]);
+    }
+    let out = clone.arg(&repo).arg(&dir).output().await?;
     if !out.status.success() {
         anyhow::bail!("git clone failed: {}", String::from_utf8_lossy(&out.stderr));
     }
@@ -2360,6 +2413,81 @@ mod tests {
             .status(),
             StatusCode::NOT_FOUND
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+
+    #[tokio::test]
+    async fn primary_domain_is_listed_and_removed() {
+        let (st, path) = state();
+        let (_u, team, token) = seed(&st, "dora", "owner");
+        project(&st, "domapp", &team);
+        let r = call(
+            &st,
+            Some(&token),
+            Method::POST,
+            "/api/v1/apps/domapp/domain",
+            Some("{\"domain\":\"primary.test\"}"),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = body_json(call(
+            &st,
+            Some(&token),
+            Method::GET,
+            "/api/v1/projects/domapp/domains",
+            None,
+        )
+        .await)
+        .await;
+        assert_eq!(body["primary"], "primary.test");
+        assert!(body["domains"].as_array().unwrap().iter().any(|d| d == "primary.test"));
+
+        let r = call(
+            &st,
+            Some(&token),
+            Method::DELETE,
+            "/api/v1/projects/domapp/domains/primary.test",
+            None,
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = body_json(call(
+            &st,
+            Some(&token),
+            Method::GET,
+            "/api/v1/projects/domapp/domains",
+            None,
+        )
+        .await)
+        .await;
+        assert!(body["primary"].is_null());
+        assert!(!body["domains"].as_array().unwrap().iter().any(|d| d == "primary.test"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn certificate_renewal_marks_watchdog() {
+        let (st, path) = state();
+        let _ = seed(&st, "cert", "owner");
+        let status = super::request_cert_renewal(&st, "cert.apps.test").unwrap();
+        assert_eq!(status, "renewing");
+        let now: i64 = st
+            .db
+            .get_setting("cert_renew")
+            .unwrap()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(now > 0);
+        let value: Value = serde_json::from_str(
+            &st.db
+                .get_setting("cert:cert.apps.test")
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["status"], "renewing");
         let _ = std::fs::remove_file(path);
     }
 

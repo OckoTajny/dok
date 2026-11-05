@@ -95,11 +95,26 @@ const { chromium } = require("playwright");
   if (!body.includes("active")) fail("invite not listed as active");
   if (!(await page.locator('button:has-text("Revoke")').count())) fail("revoke button missing");
   if (!(await page.locator('button:has-text("Copy link")').count())) fail("copy invite button missing");
+  const invite = (body.match(/\/join\/[a-z0-9]+/) || [])[0];
+  if (!invite) fail("invite URL not found");
+  await page.goto(url + invite);
+  if (!(await page.textContent("body")).includes("Join E2E Team"))
+    fail("signed-in join page missing the team name");
+  await page.click('button:has-text("Join E2E Team")');
+  await page.waitForURL("**/dashboard/team**");
+  body = await page.textContent("body");
+  if (!body.includes("You joined the team.")) fail("signed-in invite accept did not flash");
+  if (!body.includes("used")) fail("accepted invite is not marked used");
 
   await page.goto(url + "/join/not-a-real-token");
   if (!(await page.textContent("body")).includes("not valid"))
     fail("invalid invite did not fail immediately");
   if (await page.locator("#go").count()) fail("invalid invite still renders the passkey form");
+
+  // ---- certificate renewal goes through the same path as the API ------
+  await page.goto(url + "/dashboard/project/uxapp/domains");
+  await page.locator('form[action="/dashboard/certificates/renew"] button').first().click();
+  await page.waitForFunction(() => document.body.innerText.includes("Certificate renewal requested"));
 
   // ---- mobile drawer and DOM order -------------------------------------
   await page.setViewportSize({ width: 390, height: 844 });

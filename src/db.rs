@@ -813,6 +813,13 @@ impl Db {
         Ok(())
     }
 
+    pub fn clear_domain(&self, name: &str) -> Result<usize> {
+        Ok(self.conn().execute(
+            "UPDATE apps SET domain = NULL, updated_at = ?2 WHERE name = ?1",
+            params![name, now()],
+        )?)
+    }
+
     pub fn set_repo(&self, name: &str, repo: &str) -> Result<()> {
         self.conn().execute(
             "UPDATE apps SET repo = ?2, updated_at = ?3 WHERE name = ?1",
@@ -1152,6 +1159,26 @@ impl Db {
             params![host, app, now()],
         )?;
         Ok(())
+    }
+
+    pub fn deploy_counts(&self, app: &str) -> Result<(i64, i64, i64)> {
+        let c = self.conn();
+        let total: i64 = c.query_row(
+            "SELECT COUNT(*) FROM deploys WHERE app = ?1",
+            params![app],
+            |r| r.get(0),
+        )?;
+        let production: i64 = c.query_row(
+            "SELECT COUNT(*) FROM deploys WHERE app = ?1 AND env = 'production'",
+            params![app],
+            |r| r.get(0),
+        )?;
+        let preview: i64 = c.query_row(
+            "SELECT COUNT(*) FROM deploys WHERE app = ?1 AND env = 'preview'",
+            params![app],
+            |r| r.get(0),
+        )?;
+        Ok((total, production, preview))
     }
 
     pub fn domains_for(&self, app: &str) -> Result<Vec<String>> {

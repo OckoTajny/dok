@@ -46,4 +46,28 @@ for _ in $(seq 1 40); do
 done
 echo "$body" | grep -q 'pushed via git'
 
+# A configured non-default branch is what redeploy clones and builds.
+cd "$WORK/clone"
+git checkout -q -b dev
+echo '<h1>branch build</h1>' > index.html
+git add index.html
+git -c user.name=smoke -c user.email=smoke@example.com commit -q -m "dev branch"
+git push -q origin dev
+cd - >/dev/null
+python3 - "$DATA" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1] + "/dok.db")
+db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ("webhook_branch:gitapp", "dev"))
+db.commit()
+PY
+DOK_SERVER="$DOK_SERVER" DOK_TOKEN="$DOK_TOKEN" "$BIN" redeploy "$APP" >/dev/null
+body=""
+for _ in $(seq 1 40); do
+  if body=$(curl -fsS -H "Host: $APP.127.0.0.1" "http://127.0.0.1:$PORT/" 2>/dev/null); then
+    echo "$body" | grep -q 'branch build' && break
+  fi
+  sleep 0.25
+done
+echo "$body" | grep -q 'branch build'
+
 echo "git smoke: OK"

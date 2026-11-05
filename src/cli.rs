@@ -41,6 +41,9 @@ pub enum Cmd {
         app: String,
         #[arg(value_name = "KEY=VALUE")]
         vars: Vec<String>,
+        /// Environment to write: production, preview or development.
+        #[arg(short, long, default_value = "production")]
+        env: String,
     },
     /// Point a domain at an app.
     Domain { app: String, host: String },
@@ -70,6 +73,15 @@ pub enum Cmd {
     Rm { app: String },
     /// Show the user and teams behind the saved token.
     Whoami,
+    /// List teams.
+    Teams,
+    /// Team members and invites.
+    Team {
+        #[command(subcommand)]
+        cmd: TeamCmd,
+    },
+    /// Show deploy, domain and runtime metrics for a project.
+    Stats { app: String },
 }
 
 #[derive(Subcommand)]
@@ -78,6 +90,22 @@ pub enum ProjectsCmd {
     Create { name: String },
     /// Delete a project and stop its containers.
     Rm { name: String },
+}
+
+#[derive(Subcommand)]
+pub enum TeamCmd {
+    /// List members of a team.
+    Members { team: String },
+    /// Create an invite link (default role: member).
+    Invite {
+        team: String,
+        #[arg(long, default_value = "member")]
+        role: String,
+    },
+    /// List invite links.
+    Invites { team: String },
+    /// Revoke an invite link.
+    Revoke { team: String, token: String },
 }
 
 #[derive(Subcommand)]
@@ -315,7 +343,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
             println!("== runtime ==\n{}", v["runtime"].as_str().unwrap_or(""));
             Ok(())
         }
-        Cmd::Env { app, vars } => {
+        Cmd::Env { app, vars, env } => {
             if app == "rm" {
                 let Some(target) = vars.first() else {
                     bail!("usage: dok env rm <app> <KEY> [env]");
@@ -344,7 +372,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
                     .get(format!(
                         "{}/api/v1/projects/{target}/env/{}",
                         base(&cfg),
-                        vars.get(1).map(String::as_str).unwrap_or("production")
+                        vars.get(1).map(String::as_str).unwrap_or(env.as_str())
                     ))
                     .bearer_auth(&cfg.token)
                     .send()?;
@@ -369,7 +397,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
             }
             let resp = client()?
                 .put(format!(
-                    "{}/api/v1/projects/{app}/env/production",
+                    "{}/api/v1/projects/{app}/env/{env}",
                     base(&cfg)
                 ))
                 .bearer_auth(&cfg.token)
@@ -415,6 +443,52 @@ pub fn run(cmd: Cmd) -> Result<()> {
             let cfg = load_config()?;
             let resp = client()?
                 .get(format!("{}/api/v1/whoami", base(&cfg)))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            handle(resp)
+        }
+        Cmd::Teams => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .get(format!("{}/api/v1/teams", base(&cfg)))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            handle(resp)
+        }
+        Cmd::Team { cmd } => {
+            let cfg = load_config()?;
+            let (method, path, body) = match cmd {
+                TeamCmd::Members { team } => ("GET", format!("/api/v1/teams/{team}/members"), None),
+                TeamCmd::Invite { team, role } => (
+                    "POST",
+                    format!("/api/v1/teams/{team}/invites"),
+                    Some(serde_json::json!({"role": role})),
+                ),
+                TeamCmd::Invites { team } => ("GET", format!("/api/v1/teams/{team}/invites"), None),
+                TeamCmd::Revoke { team, token } => (
+                    "DELETE",
+                    format!("/api/v1/teams/{team}/invites/{token}"),
+                    None,
+                ),
+            };
+            let req = match method {
+                "POST" => client()?
+                    .post(format!("{}{path}", base(&cfg)))
+                    .bearer_auth(&cfg.token)
+                    .json(&body.unwrap_or_default()),
+                "DELETE" => client()?
+                    .delete(format!("{}{path}", base(&cfg)))
+                    .bearer_auth(&cfg.token),
+                _ => client()?
+                    .get(format!("{}{path}", base(&cfg)))
+                    .bearer_auth(&cfg.token),
+            };
+            handle(req.send()?)
+        }
+        Cmd::Stats { app } => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .get(format!("{}/api/v1/projects/{app}/metrics", base(&cfg)))
                 .bearer_auth(&cfg.token)
                 .send()?;
             handle(resp)

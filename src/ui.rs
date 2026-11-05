@@ -59,6 +59,10 @@ h3{font-size:13px;margin:20px 0 8px;color:#bbb;font-weight:500}
 .btn.danger:hover{background:#170808;border-color:#7a2e2e}
 .btn.link{background:none;border:0;padding:2px 4px;color:#bbb;font-size:12px;min-height:0}
 .btn.link:hover{color:#fff;text-decoration:underline}
+.btn.link.danger{color:#ff7b72}
+.envitem{border:1px solid #222;border-radius:10px;padding:12px;margin:0 0 8px;background:#030303}
+.envitem .k{font-weight:600}
+.row > input:not([type=checkbox]):not([type=hidden]){width:auto;flex:1 1 220px}
 input,select,textarea{background:#0a0a0a;border:1px solid #333;color:#eee;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px;width:100%}
 input:focus,select:focus,textarea:focus{outline:none;border-color:#666}
 textarea{min-height:130px;resize:vertical}
@@ -98,8 +102,8 @@ pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;
  .menu{display:inline-flex}
  .layout{grid-template-columns:1fr;gap:12px;padding:18px 0 60px}
  main{grid-column:1;grid-row:1}
- aside{position:fixed;top:0;bottom:0;left:0;width:280px;max-width:86vw;background:#050505;border-right:1px solid #222;padding:18px 16px;z-index:60;transform:translateX(-102%);transition:transform .18s ease;overflow:auto}
- body.nav-open aside{transform:none}
+ aside{position:fixed;top:0;bottom:0;left:0;width:280px;max-width:86vw;background:#050505;border-right:1px solid #222;padding:18px 16px;z-index:60;transform:translateX(-102%);visibility:hidden;transition:transform .18s ease,visibility .18s;overflow:auto}
+ body.nav-open aside{transform:none;visibility:visible}
  .side .close{display:inline-flex;margin-bottom:10px}
  .scrim{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;border:0}
  body.nav-open .scrim{display:block}
@@ -245,7 +249,8 @@ pub fn page_join(token: &str, team: &str, role: &str, inviter: Option<&str>) -> 
         r#"{}<form onsubmit="join();return false"><input id=token type=hidden value="{}">
 <label for=email>Email</label><input id=email type=email autocomplete=username placeholder="you@example.com" required>
 <label for=name>Name</label><input id=name type=text autocomplete=name placeholder="Your name" required>
-<button id=go class="btn primary" type=submit style="width:100%;margin-top:16px">Join with a passkey</button></form>"#,
+<button id=go class="btn primary" type=submit style="width:100%;margin-top:16px">Join with a passkey</button></form>
+<p class="small muted" style="margin:14px 0 0">Already have an account? <a href="/">Sign in</a>, then open this link again.</p>"#,
         err_box(),
         esc(token)
     );
@@ -254,6 +259,33 @@ pub fn page_join(token: &str, team: &str, role: &str, inviter: Option<&str>) -> 
         &format!("{who} to join {team} as {role}."),
         &inner,
         &format!("{B64_JS}{JOIN_JS}"),
+    ))
+}
+
+pub fn page_join_signed_in(
+    token: &str,
+    team: &str,
+    role: &str,
+    inviter: Option<&str>,
+    csrf: &str,
+) -> Response<Body> {
+    let who = inviter
+        .map(|i| format!("{i} invited you"))
+        .unwrap_or_else(|| "You were invited".into());
+    let inner = format!(
+        r#"<form method=post action=/auth/join/accept>
+<input type=hidden name=token value="{token}"><input type=hidden name=csrf value="{csrf}">
+<button class="btn primary" type=submit style="width:100%">Join {team}</button></form>
+<p class="small muted" style="margin:14px 0 0">You are signed in. This adds {team} to your account.</p>"#,
+        token = esc(token),
+        csrf = esc(csrf),
+        team = esc(team)
+    );
+    html(auth_page(
+        "Join the team",
+        &format!("{who} to join {team} as {role}."),
+        &inner,
+        "",
     ))
 }
 
@@ -338,7 +370,7 @@ fn error_body(
     }
     meta.push_str(&format!("<div>Request id <code>{}</code></div>", esc(request_id)));
     let back = back
-        .map(|b| format!("<p><a class=btn href=\"{}\">Back to dashboard</a></p>", esc(b)))
+        .map(|b| format!("<p><a class=btn href=\"{}\">Back</a></p>", esc(b)))
         .unwrap_or_default();
     format!(
         "<main class=errpage><div class=brand>dok</div><div class=code>{code}</div>\
@@ -492,7 +524,7 @@ fn flash_banner(flash: Option<&Flash>) -> String {
     }
 }
 
-fn redirect_flash(to: &str, ok: bool, msg: &str) -> Response<Body> {
+pub(crate) fn redirect_flash(to: &str, ok: bool, msg: &str) -> Response<Body> {
     let msg: String = msg.chars().take(300).collect();
     let value = enc_cookie(&format!("{}|{msg}", if ok { "ok" } else { "err" }));
     Response::builder()
@@ -780,9 +812,8 @@ fn render_dashboard(
                 (
                     status_badge(&d.status),
                     format!(
-                        "{} {} <span class=muted>·</span> {} <span class=muted>·</span> <code>{}</code>{commit}",
+                        "{} <span class=muted>·</span> {} <span class=muted>·</span> <code>{}</code>{commit}",
                         env_badge(&d.env),
-                        status_badge(&d.status),
                         when(d.created_at),
                         esc(&short)
                     ),
@@ -1048,7 +1079,7 @@ async fn render_project(
 <button class=\"btn link\" type=button onclick=\"downloadLog('runtime-log','runtime.log')\">Download</button></div>{runtime_body}\
 <div class=\"muted small\" style=\"margin-top:10px\">Runtime: CPU {cpu} · memory {mem}{note}</div>\
 <h3 style=\"margin-top:24px\">Recent requests</h3>\
-<table><thead><tr><th>When</th><th>Request</th><th>Status</th><th>Latency</th><th>IP</th></tr></thead><tbody>{access}</tbody></table>\
+<div style=\"overflow:auto\"><table><thead><tr><th>When</th><th>Request</th><th>Status</th><th>Latency</th><th>IP</th></tr></thead><tbody>{access}</tbody></table></div>\
 <script>\
 var liveCtl=null;\
 function copyLog(id){{var el=document.getElementById(id);if(el)navigator.clipboard.writeText(el.textContent);}}\
@@ -1089,15 +1120,15 @@ liveCtl=null;b.textContent='Live stream';}}\
                 };
                 let check = if *secret { " checked" } else { "" };
                 rows.push_str(&format!(
-                    "<tr><td><code>{key}</code></td><td>{current}</td>\
-<td><form class=\"row env-row\" method=post action=\"/dashboard/env/{app}\">{csrf}\
+                    "<div class=envitem><div class=\"row between\"><code class=k>{key}</code><div class=small>{current}</div></div>\
+<form class=\"row env-row\" method=post action=\"/dashboard/env/{app}\" style=\"margin-top:8px\">{csrf}\
 <input type=hidden name=env value=\"{env}\"><input type=hidden name=key value=\"{key}\"><input type=hidden name=op value=set>\
 <label class=sr for=v-{key}>New value for {key}</label>\
-<input id=v-{key} name=value placeholder=\"New value (blank = keep)\" autocomplete=off style=\"max-width:240px\">\
+<input id=v-{key} name=value placeholder=\"New value (blank = keep)\" autocomplete=off>\
 <label class=toggle style=\"margin:0\"><input type=checkbox name=secret value=1{check}> Secret</label>\
 <button class=btn>Save</button>\
 <button class=\"btn link danger\" name=op value=delete formnovalidate onclick=\"return confirm('Remove {key} from {env}? The app keeps running with its current environment until the next deploy.')\">Remove</button>\
-</form></td></tr>",
+</form></div>",
                     key = esc(k),
                     current = current,
                     app = esc(&app.name),
@@ -1107,7 +1138,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                 ));
             }
             if rows.is_empty() {
-                rows.push_str("<tr><td colspan=3><div class=empty><strong>No variables in this environment</strong><div class=\"small\" style=\"margin-top:6px\">Add the first one below. Values are passed to the next deploy.</div></div></td></tr>");
+                rows.push_str("<div class=empty><strong>No variables in this environment</strong><div class=\"small\" style=\"margin-top:6px\">Add the first one below. Values are passed to the next deploy.</div></div>");
             }
             let mut switches = String::new();
             for e in ["production", "preview", "development"] {
@@ -1123,7 +1154,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Environment · {env}</h2><div class=row>{switches}</div></div>\
 <div class=\"muted small\" style=\"margin-bottom:12px\">Production values are inherited by preview and development; the more specific environment overrides them. Secret values are never sent back to the browser.</div>\
-<div style=\"overflow:auto\"><table><thead><tr><th>Key</th><th>Current value</th><th>Update</th></tr></thead><tbody>{rows}</tbody></table></div>\
+<div>{rows}</div>\
 <h2>Add a variable</h2><form id=env-add method=post action=\"/dashboard/env/{app}\" class=form>{csrf}\
 <input type=hidden name=env value=\"{env}\"><input type=hidden name=op value=set>\
 <label for=new-key>Key</label><input id=new-key name=key placeholder=\"DATABASE_URL\" pattern=\"[A-Za-z_][A-Za-z0-9_]*\" required>\
@@ -1145,14 +1176,23 @@ liveCtl=null;b.textContent='Live stream';}}\
             ));
         }
         "domains" => {
-            let domains = st.db.domains_for(&app.name).unwrap_or_default();
+            let mut domains = st.db.domains_for(&app.name).unwrap_or_default();
+            if let Some(primary) = &app.domain {
+                if !domains.contains(primary) {
+                    domains.push(primary.clone());
+                }
+            }
+            domains.sort();
+            domains.dedup();
             let mut rows = String::new();
             for d in &domains {
+                let primary = app.domain.as_deref() == Some(d.as_str());
                 rows.push_str(&format!(
-                    "<tr><td><code>{host}</code></td><td style=\"text-align:right\">\
+                    "<tr><td><code>{host}</code>{badge}</td><td style=\"text-align:right\">\
 <form class=inline method=post action=\"/dashboard/domains/{app}/remove\" {confirm}>{csrf}<input type=hidden name=host value=\"{host}\">\
 <button class=\"btn link danger\">Remove</button></form></td></tr>",
                     host = esc(d),
+                    badge = if primary { " <span class=\"badge env\">primary</span>" } else { "" },
                     app = esc(&app.name),
                     confirm = confirm(&format!(
                         "Remove {d} from {}? The app stays available on its default URL, but this domain will stop resolving to it.",
@@ -1323,7 +1363,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             };
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Deployments</h2><div>{redeploy}</div></div>\
-<table><thead><tr><th>Deploy</th><th>Env</th><th>Status</th><th>Age</th><th></th></tr></thead><tbody>{rows}</tbody></table>",
+<div style=\"overflow:auto\"><table><thead><tr><th>Deploy</th><th>Env</th><th>Status</th><th>Deployed</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>",
                 redeploy = redeploy,
                 rows = rows
             ));
@@ -1484,7 +1524,7 @@ fn render_team(
         ));
     }
     let invite_table = if invite_rows.is_empty() {
-        "<div class=empty><strong>No invite links</strong><div class=\"small\" style=\"margin-top:6px\">Create one below; it is valid for seven days and can be used once.</div></div>".to_string()
+        "<div class=empty><strong>No invite links</strong><div class=\"small\" style=\"margin-top:6px\">Create one above; it is valid for seven days and can be used once.</div></div>".to_string()
     } else {
         format!("<div style=\"overflow:auto\"><table><thead><tr><th>Invite</th><th>Role</th><th>Status</th><th>Created</th><th>Expires</th><th></th></tr></thead><tbody>{invite_rows}</tbody></table></div><p class=\"muted small\">Links are shown only as a prefix. The full link appears once when you create it.</p>")
     };
@@ -1961,19 +2001,14 @@ pub async fn handle(
         if !crate::api::valid_host(&host) {
             return Some(unprocessable("That does not look like a hostname.", &back));
         }
-        let value = serde_json::json!({
-            "status": "pending",
-            "requested_at": crate::db::now(),
-            "expires": null
-        });
-        if let Err(e) = st.db.set_setting(&format!("cert:{host}"), &value.to_string()) {
-            return Some(server_error(&e.to_string()));
-        }
-        return Some(redirect_flash(
-            &back,
-            true,
-            &format!("Certificate renewal requested for {host}. It can take a minute."),
-        ));
+        return match crate::api::request_cert_renewal(st, &host) {
+            Ok(_) => Some(redirect_flash(
+                &back,
+                true,
+                &format!("Certificate renewal requested for {host}. It can take a minute."),
+            )),
+            Err(e) => Some(server_error(&e.to_string())),
+        };
     }
 
     let mut parts = rest.splitn(3, '/');
@@ -2108,13 +2143,29 @@ pub async fn handle(
         "domains" => {
             let back = format!("/dashboard/project/{}/domains", app.name);
             if tail == "remove" {
-                let host = form.get("host").cloned().unwrap_or_default();
-                match st.db.remove_domain(&app.name, &host) {
-                    Ok(0) => return Some(unprocessable("Domain not found on this project.", &back)),
-                    Ok(_) => st.sync_traefik(),
-                    Err(e) => return Some(server_error(&e.to_string())),
+                let host = form
+                    .get("host")
+                    .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
+                    .unwrap_or_default();
+                let additional = st.db.remove_domain(&app.name, &host).unwrap_or(0);
+                let primary = app.domain.as_deref() == Some(host.as_str());
+                if primary {
+                    if let Err(e) = st.db.clear_domain(&app.name) {
+                        return Some(server_error(&e.to_string()));
+                    }
                 }
-                return Some(redirect_flash(&back, true, &format!("{host} removed.")));
+                if additional == 0 && !primary {
+                    return Some(unprocessable("Domain not found on this project.", &back));
+                }
+                st.sync_traefik();
+                return Some(redirect_flash(
+                    &back,
+                    true,
+                    &format!(
+                        "{host} removed{}.",
+                        if primary { " (primary domain cleared)" } else { "" }
+                    ),
+                ));
             }
             let host = form
                 .get("host")

@@ -45,4 +45,22 @@ grep -q 'Request id' /tmp/dok-ux-404.html
 rid=$(curl -s -D - -o /dev/null -H 'Host: uxapp.127.0.0.1' "$URL/missing.js" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-request-id"{print $2}')
 [ -n "$rid" ] || { echo "missing x-request-id header" >&2; exit 1; }
 
+# The dashboard Renew button must bump the same watchdog the edge supervisor reads.
+python3 - "$DATA" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1] + "/dok.db")
+row = db.execute("SELECT value FROM settings WHERE key='cert_renew'").fetchone()
+assert row and int(row[0]) > 0, "dashboard renew did not set cert_renew"
+PY
+
+# CLI parity for teams, metrics and primary domains.
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" teams | grep -q 'E2E Team'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" team members e2e-team | grep -q 'e2e@example.com'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" team invites e2e-team | grep -q '"role"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" stats uxapp | grep -q '"deployments"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domain uxapp uxapp.test >/dev/null
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains list uxapp | grep -q 'uxapp.test'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains rm uxapp uxapp.test | grep -q '"primary":true'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains list uxapp | grep -q 'uxapp.test' && { echo "primary domain not cleared" >&2; exit 1; }
+
 echo "ux: OK"

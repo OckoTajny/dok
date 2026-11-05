@@ -526,6 +526,9 @@ pub async fn deploy_dir(
 
     st.db
         .finish_deploy_meta(&deploy_id, "ok", &log, image.as_deref(), Some(&url))?;
+    if env == "production" {
+        st.db.set_status(app, "ok")?;
+    }
     guard.done = true;
 
     Ok(DeployOutcome {
@@ -717,6 +720,7 @@ pub async fn promote(
                 Some(&image),
                 Some(&url),
             )?;
+            st.db.set_status(app, "ok")?;
             guard.done = true;
             return Ok(DeployOutcome {
                 app: app.to_string(),
