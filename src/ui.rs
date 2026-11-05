@@ -392,21 +392,30 @@ pub fn branded_error(
     last_good: Option<i64>,
     request_id: &str,
 ) -> Response<Body> {
-    page_html(
+    let retry = if matches!(status, StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT) {
+        "<p><a class=btn href=\"javascript:location.reload()\">Try again</a></p>"
+    } else {
+        ""
+    };
+    let body = error_body(
+        status.as_str(),
+        title,
+        &esc(message),
+        app,
+        last_good,
+        request_id,
+        None,
+    );
+    let resp = page_html(
         status,
-        page(
-            title,
-            &error_body(
-                status.as_str(),
-                title,
-                &esc(message),
-                app,
-                last_good,
-                request_id,
-                None,
-            ),
-        ),
-    )
+        page(title, &format!("{}{}", body.replace("</main>", &format!("{retry}</main>")), "")),
+    );
+    let mut resp = resp;
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    resp
 }
 
 fn forbidden(msg: &str) -> Response<Body> {
@@ -550,10 +559,20 @@ fn status_html(status: StatusCode, body: String) -> Response<Body> {
     with_flash_cleared(page_html(status, body))
 }
 
-fn confirm(msg: &str) -> String {
+fn js_string(msg: &str) -> String {
+    let msg: String = msg.chars().filter(|c| *c != '\n' && *c != '\r').collect();
     let js = msg.replace('\\', "\\\\").replace('"', "\\\"");
-    let html = esc(&js);
-    format!("onsubmit='return confirm(\"{html}\")'")
+    format!("\"{}\"", esc(&js))
+}
+
+/// Confirm on form submit. The attribute is single-quoted and the JS string
+/// double-quoted so HTML entities cannot break out of the JavaScript context.
+fn confirm(msg: &str) -> String {
+    format!("onsubmit='return confirm({})'", js_string(msg))
+}
+
+fn confirm_click(msg: &str) -> String {
+    format!("onclick='return confirm({})'", js_string(msg))
 }
 
 fn age(ts: i64) -> String {
@@ -688,10 +707,11 @@ fn sidebar(
     }
     s.push_str(&format!(
         "<div class=side-title>Account</div><div class=muted style=\"padding:0 8px;margin-left:-8px;font-size:12px\">{}</div>\
-<a href=\"#\" onclick=\"fetch('/auth/logout',{{method:'POST'}}).then(()=>location.href='/');return false\">Sign out</a>",
-        esc(&user.email)
+<a href=\"#\" onclick=\"fetch('/auth/logout',{{method:'POST',headers:{{'x-csrf':'{csrf}'}}}}).then(()=>location.href='/');return false\">Sign out</a>",
+        esc(&user.email),
+        csrf = esc(csrf)
     ));
-    let _ = (st, csrf);
+    let _ = st;
     s.push_str("</aside>");
     s
 }
@@ -1112,29 +1132,45 @@ liveCtl=null;b.textContent='Live stream';}}\
             let mut text = String::new();
             for (k, v, secret) in &vars {
                 // Secrets are write-only: the textarea only ever sees `KEY=`.
-                text.push_str(&format!("{k}={}\n", if *secret { "" } else { v.as_str() }));
-                let current = if *secret {
+                // Members and viewers get the same masked values as the API.
+                if can {
+                    text.push_str(&format!("{k}={}\n", if *secret { "" } else { v.as_str() }));
+                }
+                let current = if !can {
+                    "<span class=muted>••••••••</span> <span class=\"badge\">read-only</span>".to_string()
+                } else if *secret {
                     "<span class=muted>••••••••</span> <span class=\"badge\">secret</span>".to_string()
                 } else {
                     format!("<code>{}</code>", esc(v))
                 };
                 let check = if *secret { " checked" } else { "" };
-                rows.push_str(&format!(
-                    "<div class=envitem><div class=\"row between\"><code class=k>{key}</code><div class=small>{current}</div></div>\
-<form class=\"row env-row\" method=post action=\"/dashboard/env/{app}\" style=\"margin-top:8px\">{csrf}\
+                let update = if can {
+                    format!(
+                        "<form class=\"row env-row\" method=post action=\"/dashboard/env/{app}\" style=\"margin-top:8px\">{csrf}\
 <input type=hidden name=env value=\"{env}\"><input type=hidden name=key value=\"{key}\"><input type=hidden name=op value=set>\
 <label class=sr for=v-{key}>New value for {key}</label>\
 <input id=v-{key} name=value placeholder=\"New value (blank = keep)\" autocomplete=off>\
 <label class=toggle style=\"margin:0\"><input type=checkbox name=secret value=1{check}> Secret</label>\
 <button class=btn>Save</button>\
-<button class=\"btn link danger\" name=op value=delete formnovalidate onclick=\"return confirm('Remove {key} from {env}? The app keeps running with its current environment until the next deploy.')\">Remove</button>\
-</form></div>",
+<button class=\"btn link danger\" name=op value=delete formnovalidate {confirm_remove}>Remove</button>\
+</form>",
+                        key = esc(k),
+                        app = esc(&app.name),
+                        csrf = csrf,
+                        env = esc(&env),
+                        check = check,
+                        confirm_remove = confirm_click(&format!(
+                            "Remove {k} from {env}? The app keeps running with its current environment until the next deploy."
+                        ))
+                    )
+                } else {
+                    String::new()
+                };
+                rows.push_str(&format!(
+                    "<div class=envitem><div class=\"row between\"><code class=k>{key}</code><div class=small>{current}</div></div>{update}</div>",
                     key = esc(k),
                     current = current,
-                    app = esc(&app.name),
-                    csrf = csrf,
-                    env = esc(&env),
-                    check = check
+                    update = update
                 ));
             }
             if rows.is_empty() {
@@ -1151,11 +1187,9 @@ liveCtl=null;b.textContent='Live stream';}}\
                     e
                 ));
             }
-            content.push_str(&format!(
-                "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Environment · {env}</h2><div class=row>{switches}</div></div>\
-<div class=\"muted small\" style=\"margin-bottom:12px\">Production values are inherited by preview and development; the more specific environment overrides them. Secret values are never sent back to the browser.</div>\
-<div>{rows}</div>\
-<h2>Add a variable</h2><form id=env-add method=post action=\"/dashboard/env/{app}\" class=form>{csrf}\
+            let editor = if can {
+                format!(
+                    "<h2>Add a variable</h2><form id=env-add method=post action=\"/dashboard/env/{app}\" class=form>{csrf}\
 <input type=hidden name=env value=\"{env}\"><input type=hidden name=op value=set>\
 <label for=new-key>Key</label><input id=new-key name=key placeholder=\"DATABASE_URL\" pattern=\"[A-Za-z_][A-Za-z0-9_]*\" required>\
 <label for=new-value>Value</label><input id=new-value name=value placeholder=\"postgres://...\" autocomplete=off>\
@@ -1167,12 +1201,22 @@ liveCtl=null;b.textContent='Live stream';}}\
 <label for=bulk>KEY=VALUE, one per line. <code>KEY=</code> keeps the current value; secret keys are shown blank and stay secret. Removing a key is done per row above.</label>\
 <textarea id=bulk name=vars>{text}</textarea>\
 <button class=\"btn primary\">Save values</button></form></details>",
+                    app = esc(&app.name),
+                    csrf = csrf,
+                    env = esc(&env),
+                    text = esc(&text)
+                )
+            } else {
+                "<div class=error>You have read-only access to this project. Values are hidden; ask an owner or admin to change them.</div>".to_string()
+            };
+            content.push_str(&format!(
+                "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Environment · {env}</h2><div class=row>{switches}</div></div>\
+<div class=\"muted small\" style=\"margin-bottom:12px\">Production values are inherited by preview and development; the more specific environment overrides them. Secret values are never sent back to the browser.</div>\
+<div>{rows}</div>{editor}",
                 env = esc(&env),
                 switches = switches,
                 rows = rows,
-                app = esc(&app.name),
-                csrf = csrf,
-                text = esc(&text)
+                editor = editor
             ));
         }
         "domains" => {
@@ -1361,11 +1405,49 @@ liveCtl=null;b.textContent='Live stream';}}\
             } else {
                 String::new()
             };
+            let (total, prod_n, preview_n) = st
+                .db
+                .deploy_counts(&app.name)
+                .unwrap_or((deploys.len() as i64, 0, 0));
+            let additional_domains = st.db.domains_for(&app.name).unwrap_or_default();
+            let domain_n = additional_domains.len()
+                + usize::from(
+                    app.domain
+                        .as_ref()
+                        .map(|d| !additional_domains.contains(d))
+                        .unwrap_or(false),
+                );
+            let env_total = ["production", "preview", "development"]
+                .iter()
+                .map(|e| st.db.env(&app.name, e).unwrap_or_default().len())
+                .sum::<usize>();
+            let runtime = if app.kind == "docker" {
+                let stats = crate::deploy::container_stats(&app.name, "production", None).await;
+                format!(
+                    "CPU {} · memory {}",
+                    esc(stats["cpu"].as_str().unwrap_or("n/a")),
+                    esc(stats["memory"].as_str().unwrap_or("n/a"))
+                )
+            } else {
+                "static files".to_string()
+            };
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Deployments</h2><div>{redeploy}</div></div>\
+<div class=\"grid\" style=\"margin:12px 0 20px\">\
+<div class=card><div class=muted small>Deployments</div><div class=name>{total}</div><div class=\"muted small\">{prod_n} production · {preview_n} preview</div></div>\
+<div class=card><div class=muted small>Domains</div><div class=name>{domain_n}</div><div class=\"muted small\">custom + primary</div></div>\
+<div class=card><div class=muted small>Environment keys</div><div class=name>{env_total}</div><div class=\"muted small\">across all environments</div></div>\
+<div class=card><div class=muted small>Runtime</div><div class=name>{runtime}</div><div class=\"muted small\">{kind}</div></div></div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>Deploy</th><th>Env</th><th>Status</th><th>Deployed</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>",
                 redeploy = redeploy,
-                rows = rows
+                rows = rows,
+                total = total,
+                prod_n = prod_n,
+                preview_n = preview_n,
+                domain_n = domain_n,
+                env_total = env_total,
+                runtime = runtime,
+                kind = esc(&app.kind)
             ));
         }
     }
@@ -1455,14 +1537,17 @@ fn render_team(
 <input type=hidden name=team value=\"{slug}\"><input type=hidden name=user value=\"{uid}\">\
 <label class=sr for=r-{uid}>Role for {name}</label><select id=r-{uid} name=role style=\"max-width:130px\">{opts}</select>\
 <button class=btn>Save</button>\
-<button class=\"btn link danger\" name=action value=remove formnovalidate onclick=\"return confirm('Remove {name} from {team}? They immediately lose access to this team\\'s projects, deploys and environment variables.')\">Remove</button>\
+<button class=\"btn link danger\" name=action value=remove formnovalidate {confirm_remove}>Remove</button>\
 </form>",
                 csrf = csrf,
                 slug = esc(&team.slug),
                 uid = esc(&u.id),
                 name = esc(&u.name),
-                team = esc(&team.name),
-                opts = opts
+                opts = opts,
+                confirm_remove = confirm_click(&format!(
+                    "Remove {} from {}? They immediately lose access to this team's projects, deploys and environment variables.",
+                    u.name, team.name
+                ))
             )
         } else {
             format!("<span class=badge>{}</span>", esc(role))
@@ -1487,7 +1572,7 @@ fn render_team(
         } else {
             "<span class=\"badge ok\">active</span>".to_string()
         };
-        let link = format!("{}/join/{}", st.public_url.trim_end_matches('/'), token);
+        let link = esc(&format!("{}/join/{}", st.public_url.trim_end_matches('/'), token));
         let copy = if used.is_none() && *expires > now {
             format!(
                 "<button class=\"btn link\" type=button onclick=\"navigator.clipboard.writeText('{link}')\">Copy link</button>"
@@ -1699,6 +1784,7 @@ fn create_project(
 }
 
 fn server_error(msg: &str) -> Response<Body> {
+    tracing::error!("dashboard error: {msg}");
     page_html(
         StatusCode::INTERNAL_SERVER_ERROR,
         page(
@@ -1706,7 +1792,7 @@ fn server_error(msg: &str) -> Response<Body> {
             &error_body(
                 "500",
                 "Something went wrong",
-                &esc(msg),
+                "The server hit an internal error. It has been logged; try again or check the service log.",
                 None,
                 None,
                 "-",
@@ -2329,10 +2415,44 @@ mod tests {
     }
 
     #[test]
+    fn confirm_escapes_javascript_context() {
+        let h = super::confirm_click("x')+fetch('/evil')//");
+        assert_eq!(h.matches('\'').count(), 2, "{h}");
+        assert!(h.contains("&#39;"));
+        let h = super::confirm_click("say \"hi\"");
+        assert!(h.contains("\\&quot;"), "{h}");
+        let h = super::confirm("line\nbreak");
+        assert!(!h.contains("\nline\n"));
+    }
+
+    #[test]
     fn flash_cookies_roundtrip() {
         let raw = "ok|Project my-app created. 100%";
         assert_eq!(dec_cookie(&enc_cookie(raw)).unwrap(), raw);
         assert!(enc_cookie(raw).bytes().all(|b| b.is_ascii_graphic() && b != b';'));
+    }
+
+    #[tokio::test]
+    async fn branded_error_has_context_and_no_store() {
+        let r = super::branded_error(
+            axum::http::StatusCode::BAD_GATEWAY,
+            "Bad gateway",
+            Some("my-app"),
+            "container is restarting",
+            Some(1_700_000_000),
+            "abc123",
+        );
+        assert_eq!(r.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            r.headers().get(axum::http::header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body = axum::body::to_bytes(r.into_body(), 128 * 1024).await.unwrap();
+        let page = String::from_utf8_lossy(&body);
+        assert!(page.contains("my-app"));
+        assert!(page.contains("abc123"));
+        assert!(page.contains("2023-11-14 22:13 UTC"));
+        assert!(page.contains("Try again"));
     }
 
     #[tokio::test]
@@ -2343,7 +2463,7 @@ mod tests {
         let t = db.create_team("Env", "env", &u.id).unwrap();
         db.upsert_app(&crate::db::App {
             name: "app".into(),
-            team_id: Some(t.id),
+            team_id: Some(t.id.clone()),
             kind: "static".into(),
             image: None,
             memory_mb: None,
@@ -2430,6 +2550,23 @@ mod tests {
         let token = vars.iter().find(|(k, _, _)| k == "TOKEN").unwrap();
         assert_eq!(token.1, "s3cret");
         assert!(!token.2);
+
+        // A viewer sees masked values and no editor, matching the API.
+        let viewer = db.create_user("viewer@example.com", "Viewer").unwrap();
+        db.add_member(&t.id, &viewer.id, "viewer").unwrap();
+        let viewer_session = || crate::auth::Session {
+            user: viewer.clone(),
+            csrf: "good".into(),
+        };
+        let r = super::handle(&st, &auth, get(), Some(viewer_session()))
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(r.into_body(), 512 * 1024).await.unwrap();
+        let page = String::from_utf8_lossy(&body);
+        assert!(!page.contains("s3cret"), "viewer saw a value");
+        assert!(!page.contains("<code>1</code>"), "viewer saw a value");
+        assert!(page.contains("read-only"));
+        assert!(!page.contains("id=env-add"), "viewer got the editor");
         let _ = std::fs::remove_file(path);
     }
 

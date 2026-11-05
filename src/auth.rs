@@ -83,11 +83,25 @@ pub struct Session {
     pub csrf: String,
 }
 
-fn client_ip(req: &Request<Body>) -> String {
-    req.extensions()
+fn client_ip(st: &AppState, req: &Request<Body>) -> String {
+    let peer = req
+        .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|c| c.0.ip().to_string())
-        .unwrap_or_else(|| "unknown".into())
+        .unwrap_or_else(|| "unknown".into());
+    if st.trusted_peer(&peer) {
+        if let Some(ip) = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|s| s.trim())
+            .filter(|s| s.parse::<std::net::IpAddr>().is_ok())
+        {
+            return ip.to_string();
+        }
+    }
+    peer
 }
 
 fn hash(s: &str) -> String {
@@ -115,7 +129,7 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
     if (path.starts_with("/auth/setup")
         || path.starts_with("/auth/login")
         || path.starts_with("/auth/join"))
-        && !st.rate.allow(&format!("auth:{}", client_ip(&req)), 10, 60)
+        && !st.rate.allow(&format!("auth:{}", client_ip(st, &req)), 10, 60)
     {
         return Some((StatusCode::TOO_MANY_REQUESTS, "too many attempts\n").into_response());
     }
@@ -155,7 +169,7 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
         ("POST", "/auth/join/accept") => Some(join_accept(st, req, session.as_ref()).await),
         ("POST", "/auth/login/start") => Some(login_start(st, auth)),
         ("POST", "/auth/login/finish") => Some(login_finish(st, auth, req).await),
-        ("POST", "/auth/logout") => Some(logout(auth, &st.db, &req)),
+        ("POST", "/auth/logout") => Some(logout(auth, &st.db, &req, session.as_ref())),
         ("GET", "/auth/status") => Some(
             Json(json!({
                 "authenticated": session.is_some(),
@@ -219,7 +233,7 @@ async fn join_accept(
     let Some(session) = session else {
         return redirect("/");
     };
-    let ip = client_ip(&req);
+    let ip = client_ip(st, &req);
     if !st.rate.allow(&format!("join:{ip}"), 10, 60) {
         return (StatusCode::TOO_MANY_REQUESTS, "too many attempts\n").into_response();
     }
@@ -468,7 +482,22 @@ fn save_keys(db: &Db, user_id: &str, keys: &[Passkey]) {
     let _ = db.replace_passkeys(user_id, &data);
 }
 
-fn logout(auth: &AuthState, db: &Db, req: &Request<Body>) -> Response<Body> {
+fn logout(
+    auth: &AuthState,
+    db: &Db,
+    req: &Request<Body>,
+    session: Option<&Session>,
+) -> Response<Body> {
+    if let Some(session) = session {
+        let csrf = req
+            .headers()
+            .get("x-csrf")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if csrf != session.csrf {
+            return forbidden("invalid CSRF token");
+        }
+    }
     if let Some(id) = cookie(req, COOKIE) {
         let _ = db.delete_session(&hash(&id));
     }

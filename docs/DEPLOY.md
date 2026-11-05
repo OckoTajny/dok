@@ -30,8 +30,8 @@ compression, max body, force HTTPS) apply in both modes and are edited from
 the project's **Proxy** tab or `GET/PUT /api/v1/projects/{app}/proxy`.
 Basic-auth passwords are argon2 hashes. If an external load balancer
 terminates TLS, add its CIDR with `--trusted-proxy 10.0.0.0/8` so
-`X-Forwarded-Proto` is honoured; loopback/private peers are trusted by
-default.
+`X-Forwarded-Proto` is honoured; only loopback is trusted by default, so add
+the Traefik/Docker network explicitly (for example `--trusted-proxy 100.64.0.0/10`).
 
 The dashboard host and `BASE_DOMAIN` apex are reserved and never proxied to
 apps. Custom domains cannot be added on `*.<base_domain>`. Preview deploys are

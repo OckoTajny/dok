@@ -228,8 +228,8 @@ Per-project proxy settings (custom headers, basic auth with argon2 hashes,
 www/apex redirect, static compression, max body size, force HTTPS) are
 available from the Proxy tab and the API. They are applied by the built-in
 proxy for every request. Framing/hop headers cannot be injected, and
-`X-Forwarded-Proto` is only trusted from loopback/private peers or
-`--trusted-proxy CIDR`.
+`X-Forwarded-Proto` is only trusted from loopback or an explicit
+`--trusted-proxy CIDR` (add your Docker/Traefik network there).
 
 The dashboard host and the `base_domain` apex are reserved. Projects are only
 routed on custom domains or `<app>.<base_domain>`, and a project with an
@@ -279,6 +279,12 @@ tokens see env key names with masked values; only owner/admin see values.
 
 Team roles: only owners may grant admin/owner; admins may invite members and
 viewers. Invites are single-use and expire after seven days.
+
+Git repository URLs are limited to public `https://`, `ssh://` or
+`git@host:path` remotes; loopback, private, link-local and cloud-metadata
+literals are refused so a project cannot turn into an SSRF probe. For an
+internal git server, opt in explicitly with
+`DOK_REPO_ALLOW_HOSTS=git.internal,10.0.0.5`.
 
 ## Troubleshooting
 

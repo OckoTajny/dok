@@ -111,9 +111,11 @@ impl AppState {
         let Ok(addr) = ip.parse::<std::net::IpAddr>() else {
             return false;
         };
+        // Only loopback is trusted by default. Docker/Traefik private ranges
+        // must be granted explicitly with --trusted-proxy.
         let builtin = match addr {
-            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
-            std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),
+            std::net::IpAddr::V4(v4) => v4.is_loopback(),
+            std::net::IpAddr::V6(v6) => v6.is_loopback(),
         };
         builtin || self.trusted_proxies.iter().any(|n| n.contains(&addr))
     }

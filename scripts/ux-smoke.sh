@@ -60,7 +60,10 @@ DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" team invites e2e-team | grep -q '
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" stats uxapp | grep -q '"deployments"'
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domain uxapp uxapp.test >/dev/null
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains list uxapp | grep -q 'uxapp.test'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains rm uxapp uxapp.test | grep -q '"primary":true'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains list uxapp | grep -q 'uxapp.test' && { echo "primary domain not cleared" >&2; exit 1; }
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains rm uxapp uxapp.test | grep -q '"primary": true'
+if DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains list uxapp | grep -q 'uxapp.test'; then
+  echo "primary domain not cleared" >&2
+  exit 1
+fi
 
 echo "ux: OK"

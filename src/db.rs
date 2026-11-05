@@ -363,8 +363,26 @@ impl Db {
         let mut conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.execute_batch(SCHEMA)?;
-        migrate(&mut conn)?;
+        // The server and the post-receive hook open the same file from two
+        // processes; take an inter-process lock so migrations run once.
+        let lock_path = path.with_extension("migrate.lock");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("open migration lock {}", lock_path.display()))?;
+        {
+            use fs2::FileExt;
+            lock.lock_exclusive()?;
+        }
+        let migrated = (|| -> Result<()> {
+            conn.execute_batch(SCHEMA)?;
+            migrate(&mut conn)?;
+            Ok(())
+        })();
+        let _ = fs2::FileExt::unlock(&lock);
+        migrated?;
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 

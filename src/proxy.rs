@@ -58,7 +58,7 @@ pub fn app_for(st: &AppState, req: &Request<Body>) -> Option<Route> {
 
 pub async fn serve_app(
     st: AppState,
-    req: Request<Body>,
+    mut req: Request<Body>,
     route: Route,
     request_id: &str,
 ) -> Response<Body> {
@@ -93,21 +93,48 @@ pub async fn serve_app(
         return with_request_id(apply_headers(r, &settings), request_id);
     }
     if let Some(max) = settings.max_body_mb {
+        let limit = max.saturating_mul(1024 * 1024);
         let too_big = req
             .headers()
             .get(header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
-            .map(|len| len > max.saturating_mul(1024 * 1024))
+            .map(|len| len > limit)
             .unwrap_or(false);
+        let has_body = !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS");
         if too_big {
-            let r = Response::builder()
-                .status(StatusCode::PAYLOAD_TOO_LARGE)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from("dok: request body too large\n"))
-                .unwrap();
+            let r = crate::ui::branded_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Payload too large",
+                Some(&app.name),
+                &format!("This project accepts requests up to {max} MB."),
+                last_good_at(&st, &app.name),
+                request_id,
+            );
             log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
             return with_request_id(apply_headers(r, &settings), request_id);
+        }
+        // Chunked uploads without a length are buffered up to the cap so the
+        // limit cannot be bypassed by omitting Content-Length.
+        if has_body {
+            let (parts, body) = req.into_parts();
+            match axum::body::to_bytes(body, limit as usize + 1).await {
+                Ok(b) if b.len() as u64 <= limit => {
+                    req = Request::from_parts(parts, Body::from(b));
+                }
+                _ => {
+                    let r = crate::ui::branded_error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Payload too large",
+                        Some(&app.name),
+                        &format!("This project accepts requests up to {max} MB."),
+                        last_good_at(&st, &app.name),
+                        request_id,
+                    );
+                    log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
+                    return with_request_id(apply_headers(r, &settings), request_id);
+                }
+            }
         }
     }
 
@@ -172,9 +199,7 @@ pub async fn serve_app(
 
 fn with_request_id(mut resp: Response<Body>, request_id: &str) -> Response<Body> {
     if let Ok(v) = HeaderValue::from_str(request_id) {
-        resp.headers_mut()
-            .entry("x-request-id")
-            .or_insert(v);
+        resp.headers_mut().insert("x-request-id", v);
     }
     resp
 }

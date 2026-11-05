@@ -213,9 +213,10 @@ fn domain_conflict(st: &AppState, app: &str, host: &str) -> Result<(), Response>
 }
 
 fn internal(e: anyhow::Error) -> Response {
+    tracing::error!("internal error: {e:#}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({"error": e.to_string()})),
+        Json(json!({"error": "internal error; see the server log"})),
     )
         .into_response()
 }
@@ -530,11 +531,7 @@ async fn upload(
             if env == "production" {
                 let _ = st.db.set_status(&app, "failed");
             }
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-                .into_response()
+            internal(e)
         }
     }
 }
@@ -1762,11 +1759,7 @@ async fn redeploy(
     }
     match deploy_from_repo(&st, &app).await {
         Ok(out) => Json(out).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => internal(e),
     }
 }
 
@@ -1856,13 +1849,7 @@ async fn github_hook(
         .or_else(|| branch_setting.clone());
     let out = match deploy_from_repo_branch(&st, &app, deploy_branch.as_deref()).await {
         Ok(out) => out,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-                .into_response()
-        }
+        Err(e) => return internal(e),
     };
     let sha = payload["after"]
         .as_str()
@@ -1931,7 +1918,9 @@ pub async fn deploy_from_repo_branch(
     let local_repo = std::path::Path::new(&repo).is_absolute()
         && std::path::Path::new(&repo).starts_with(st.data.join("repos"));
     if !local_repo && !valid_repo_url(&repo) {
-        anyhow::bail!("repo must be https://, ssh:// or git@host:path");
+        anyhow::bail!(
+            "repo must be a public https://, ssh:// or git@host:path (private/loopback hosts are refused)"
+        );
     }
     let file_policy = if local_repo {
         "protocol.file.allow=always"
@@ -2065,8 +2054,61 @@ pub(crate) fn valid_repo_url(s: &str) -> bool {
     } else {
         return false;
     };
-    let host = host_path.split(['/', ':']).next().unwrap_or("");
-    !host.is_empty() && host.contains('.') || host == "localhost"
+    let host = host_path
+        .rsplit('@')
+        .next()
+        .unwrap_or(host_path)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("");
+    if host.is_empty() || !(host.contains('.') || host == "localhost") {
+        return false;
+    }
+    repo_host_allowed(host)
+}
+
+/// Reject obvious SSRF targets: bare private/loopback/link-local addresses and
+/// local/metadata names. Public hostnames are still resolved by git itself.
+fn repo_host_allowed(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    // Operators with an internal git server can opt in explicitly:
+    // DOK_REPO_ALLOW_HOSTS=git.internal,10.0.0.5
+    if let Ok(list) = std::env::var("DOK_REPO_ALLOW_HOSTS") {
+        if !list.trim().is_empty() {
+            return list
+                .split(',')
+                .map(|h| h.trim().trim_start_matches('[').trim_end_matches(']'))
+                .any(|h| h.eq_ignore_ascii_case(host));
+        }
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                !(v4.is_private()
+                    || v4.is_loopback()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast()
+                    || v4.is_documentation()
+                    || v4.is_multicast()
+                    || v4.octets()[0] == 0)
+            }
+            std::net::IpAddr::V6(v6) => {
+                !(v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_unique_local()
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+                    || v6.is_multicast())
+            }
+        };
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    !(host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host == "metadata.google.internal"
+        || host == "instance-data")
 }
 
 pub(crate) fn valid_name(s: &str) -> bool {
@@ -2130,6 +2172,17 @@ mod tests {
         assert!(!super::valid_repo_url("--upload-pack=id"));
         assert!(!super::valid_repo_url("http://example.com/a.git"));
         assert!(!super::valid_repo_url("/tmp/repo"));
+        // SSRF targets
+        assert!(!super::valid_repo_url("https://127.0.0.1/a.git"));
+        assert!(!super::valid_repo_url("https://169.254.169.254/latest/meta-data"));
+        assert!(!super::valid_repo_url("https://10.0.0.5/a.git"));
+        assert!(!super::valid_repo_url("https://192.168.1.10/a.git"));
+        assert!(!super::valid_repo_url("ssh://git@[::1]/a.git"));
+        assert!(!super::valid_repo_url("ssh://git@10.0.0.5/a.git"));
+        assert!(!super::valid_repo_url("https://user:pw@192.168.0.2/a.git"));
+        assert!(!super::valid_repo_url("git@localhost:a/b.git"));
+        assert!(!super::valid_repo_url("https://metadata.google.internal/a.git"));
+        assert!(super::valid_repo_url("ssh://git@8.8.8.8/a.git"));
     }
 
     #[test]
@@ -2235,6 +2288,37 @@ mod tests {
             .body(body.map(|s| Body::from(s.to_string())).unwrap_or_else(Body::empty))
             .unwrap();
         api_routes(st.clone()).oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn control_plane_is_host_gated() {
+        let (st, path) = state();
+        let foreign = Request::builder()
+            .uri("/dashboard")
+            .header("host", "foreign.test")
+            .body(Body::empty())
+            .unwrap();
+        let r = super::dispatch(axum::extract::State(st.clone()), foreign)
+            .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        assert!(r.headers().get("x-request-id").is_some());
+        let body = axum::body::to_bytes(r.into_body(), 256 * 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(!text.contains("Projects"));
+        assert!(!text.contains("Sign in"));
+
+        // Control host with no passkey origin explains the flag instead of 404.
+        let control = Request::builder()
+            .uri("/")
+            .header("host", "dok.test")
+            .body(Body::empty())
+            .unwrap();
+        let r = super::dispatch(axum::extract::State(st.clone()), control).await;
+        assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(r.into_body(), 256 * 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("--dashboard-origin"));
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
