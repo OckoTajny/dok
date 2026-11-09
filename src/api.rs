@@ -1,9 +1,8 @@
 use crate::deploy::{self, DeployOutcome};
 use crate::proxy;
 use crate::state::AppState;
-use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -17,6 +16,7 @@ use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
 
 const MAX_UPLOAD: usize = 200 * 1024 * 1024;
+const MAX_WEBHOOK: usize = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Caller {
@@ -99,6 +99,8 @@ fn api_routes(st: AppState) -> Router {
             get(get_proxy).put(put_proxy),
         )
         .route("/api/v1/whoami", get(whoami))
+        .route("/api/v1/tokens", get(list_tokens).post(create_token))
+        .route("/api/v1/tokens/{hash}", delete(revoke_token))
         .route(
             "/api/v1/projects/{app}/env/{env}/{key}",
             delete(delete_env_key),
@@ -177,6 +179,9 @@ async fn require_token(State(st): State<AppState>, mut req: Request, next: Next)
     };
     match st.db.token_user(&hash_token(&token)) {
         Ok(Some(Some(user))) => {
+            if !st.rate.allow(&format!("api:{user}"), 600, 60) {
+                return (StatusCode::TOO_MANY_REQUESTS, "too many requests\n").into_response();
+            }
             req.extensions_mut().insert(Caller { user });
             next.run(req).await
         }
@@ -457,6 +462,13 @@ async fn upload(
     if !valid_name(&app) {
         return bad("invalid app name");
     }
+    if !st.rate.allow(&format!("deploy:{}", caller.user), 20, 60) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "deploy rate limit exceeded\n",
+        )
+            .into_response();
+    }
     let env = match normalize_env(q.env.as_deref().unwrap_or("production")) {
         Some(e) => e,
         None => return bad("env must be production or preview"),
@@ -522,8 +534,21 @@ async fn upload(
             framework: None,
             updated_at: crate::db::now(),
         };
-        if let Err(e) = st.db.upsert_app(&row) {
-            return internal(e);
+        match st.db.create_app_if_absent(&row) {
+            Ok(true) => {}
+            Ok(false) => {
+                // Another concurrent first push won the race; it must also be
+                // a project this caller is allowed to write to.
+                match st.db.get_app(&app) {
+                    Ok(Some(a)) => {
+                        if let Err(r) = require_write(&st, &caller, &a) {
+                            return r;
+                        }
+                    }
+                    _ => return internal(anyhow::anyhow!("project disappeared")),
+                }
+            }
+            Err(e) => return internal(e),
         }
     }
 
@@ -628,7 +653,7 @@ async fn logs_stream(
 
 /// Shared live container log stream for token API and session dashboard.
 pub async fn log_stream_response(
-    _st: &AppState,
+    st: &AppState,
     app: &str,
     env: &str,
     kind: &str,
@@ -644,11 +669,16 @@ pub async fn log_stream_response(
     if !crate::deploy::docker_available().await {
         return (StatusCode::SERVICE_UNAVAILABLE, "docker unavailable\n").into_response();
     }
+    let permit = match st.stream_gate.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::TOO_MANY_REQUESTS, "too many log streams\n").into_response(),
+    };
     let name = container
         .map(str::to_string)
         .unwrap_or_else(|| deploy::container_name(app, env));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         use std::io::{BufRead, BufReader};
         use std::process::Stdio;
         let mut child = match std::process::Command::new("docker")
@@ -789,7 +819,9 @@ async fn put_env_root(
     .await
 }
 
-fn parse_env_body(body: Value) -> Result<(HashMap<String, String>, bool), &'static str> {
+fn parse_env_body(
+    body: Value,
+) -> Result<(HashMap<String, (String, Option<bool>)>, bool), &'static str> {
     let (vars, replace) = if body.get("vars").is_some() {
         let replace = body
             .get("replace")
@@ -800,15 +832,32 @@ fn parse_env_body(body: Value) -> Result<(HashMap<String, String>, bool), &'stat
             replace,
         )
     } else {
-        (body, false)
+        (body.clone(), false)
     };
     let map = vars.as_object().ok_or("env body must be an object")?;
     let mut out = HashMap::new();
     for (k, v) in map {
-        let Some(v) = v.as_str() else {
-            return Err("env values must be strings");
+        let (value, secret) = match v {
+            Value::String(s) => (s.clone(), None),
+            Value::Object(o) => {
+                let value = o
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or("object env values need a string value field")?;
+                (value.to_string(), o.get("secret").and_then(Value::as_bool))
+            }
+            _ => return Err("env values must be strings or {value, secret} objects"),
         };
-        out.insert(k.clone(), v.to_string());
+        out.insert(k.clone(), (value, secret));
+    }
+    // `dok env --secret KEY=VALUE` and simple API clients can also send
+    // {"vars": {...}, "secrets": ["KEY"]}.
+    if let Some(secrets) = body.get("secrets").and_then(Value::as_array) {
+        for key in secrets.iter().filter_map(Value::as_str) {
+            if let Some((_, secret)) = out.get_mut(key) {
+                *secret = Some(true);
+            }
+        }
     }
     Ok((out, replace))
 }
@@ -817,7 +866,7 @@ fn put_env_impl(
     st: &AppState,
     app: &str,
     env: &str,
-    vars: HashMap<String, String>,
+    vars: HashMap<String, (String, Option<bool>)>,
     replace: bool,
 ) -> Response {
     let existing_rows = st.db.env(app, env).unwrap_or_default();
@@ -825,7 +874,10 @@ fn put_env_impl(
         .iter()
         .map(|(k, _, s)| (k.clone(), *s))
         .collect();
-    for (_, v) in &vars {
+    for (k, (v, _)) in &vars {
+        if !valid_env_key(k) {
+            return bad("env keys must be letters, digits and _, and cannot start with a digit");
+        }
         if v.len() > 64 * 1024 {
             return bad("env value too large");
         }
@@ -839,8 +891,8 @@ fn put_env_impl(
     }
     let kv: Vec<(String, String, bool)> = vars
         .into_iter()
-        .map(|(k, v)| {
-            let secret = existing.get(&k).copied().unwrap_or(false);
+        .map(|(k, (v, explicit))| {
+            let secret = explicit.unwrap_or_else(|| existing.get(&k).copied().unwrap_or(false));
             (k, v, secret)
         })
         .collect();
@@ -875,29 +927,53 @@ async fn get_env(
     let can_see_values = crate::db::can_write(role.as_deref());
     match st.db.env(&app, &env) {
         Ok(kv) => {
+            // Secret values are write-only even for owner/admin, and inherited
+            // production secrets stay masked in preview/development.
+            let specific: HashMap<String, bool> =
+                kv.iter().map(|(k, _, s)| (k.clone(), *s)).collect();
+            let production: HashMap<String, bool> = st
+                .db
+                .env(&app, "production")
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, _, s)| (k, s))
+                .collect();
+            let is_secret = |k: &str| {
+                specific
+                    .get(k)
+                    .or_else(|| production.get(k))
+                    .copied()
+                    .unwrap_or(false)
+            };
             let env_map: HashMap<String, String> = kv
                 .into_iter()
-                .map(|(k, v, _)| {
-                    let v = if can_see_values { v } else { "***".into() };
+                .map(|(k, v, secret)| {
+                    let v = if can_see_values && !secret {
+                        v
+                    } else {
+                        "***".into()
+                    };
                     (k, v)
                 })
                 .collect();
-            let resolved = if can_see_values {
-                st.db.env_resolved(&app, &env).unwrap_or_default()
-            } else {
-                st.db
-                    .env_resolved(&app, &env)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(k, _)| (k, "***".to_string()))
-                    .collect()
-            }
-            .into_iter()
-            .collect::<HashMap<_, _>>();
+            let resolved = st
+                .db
+                .env_resolved(&app, &env)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| {
+                    if can_see_values && !is_secret(&k) {
+                        (k, v)
+                    } else {
+                        (k, "***".to_string())
+                    }
+                })
+                .collect::<HashMap<_, _>>();
             Json(json!({
                 "env": env_map,
                 "resolved": resolved,
                 "values_visible": can_see_values,
+                "secrets_masked": true,
             }))
             .into_response()
         }
@@ -926,6 +1002,53 @@ async fn whoami(State(st): State<AppState>, Extension(caller): Extension<Caller>
         "teams": teams,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct TokenBody {
+    #[serde(default)]
+    name: String,
+}
+
+async fn list_tokens(State(st): State<AppState>, Extension(caller): Extension<Caller>) -> Response {
+    let tokens: Vec<Value> = st
+        .db
+        .tokens_for_user(&caller.user)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(hash, name, created_at)| json!({"id": hash, "name": name, "created_at": created_at}))
+        .collect();
+    Json(json!({"tokens": tokens})).into_response()
+}
+
+async fn create_token(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Json(b): Json<TokenBody>,
+) -> Response {
+    let name = b.name.trim();
+    let name = if name.is_empty() { "cli" } else { name };
+    match st.db.create_token_for_user(&caller.user, name) {
+        Ok(token) => Json(json!({
+            "token": token,
+            "name": name,
+            "login": format!("dok login {} {token}", st.public_url),
+        }))
+        .into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+async fn revoke_token(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path(hash): Path<String>,
+) -> Response {
+    match st.db.revoke_token_for_user(&caller.user, &hash) {
+        Ok(0) => not_found(),
+        Ok(_) => Json(json!({"revoked": hash})).into_response(),
+        Err(e) => internal(e),
+    }
 }
 
 async fn delete_env_key(
@@ -1262,14 +1385,21 @@ async fn put_proxy(
         b.settings.basic_auth_user = None;
         b.settings.basic_auth_hash = None;
     }
-    b.settings.headers.retain(|(k, v)| {
-        safe_header(k)
-            && k.len() <= 100
-            && !k.contains(['\r', '\n', ':'])
-            && v.len() <= 2000
-            && !v.contains(['\r', '\n'])
-    });
-    b.settings.headers.truncate(20);
+    if b.settings.headers.len() > 20 {
+        return bad("too many custom headers (max 20)");
+    }
+    for (k, v) in &b.settings.headers {
+        if !safe_header(k)
+            || k.len() > 100
+            || k.contains(['\r', '\n', ':'])
+            || v.len() > 2000
+            || v.contains(['\r', '\n'])
+            || HeaderName::from_bytes(k.as_bytes()).is_err()
+            || HeaderValue::from_str(v).is_err()
+        {
+            return bad(&format!("invalid or reserved header: {k}"));
+        }
+    }
     if let Some(mb) = b.settings.max_body_mb {
         b.settings.max_body_mb = Some(mb.min(512));
         if b.settings.max_body_mb == Some(0) {
@@ -1682,6 +1812,13 @@ async fn git_init(
     Extension(caller): Extension<Caller>,
     Path(app): Path<String>,
 ) -> Response {
+    if !st.rate.allow(&format!("deploy:{}", caller.user), 20, 60) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "deploy rate limit exceeded\n",
+        )
+            .into_response();
+    }
     if !valid_name(&app) {
         return bad("invalid app name");
     }
@@ -1771,7 +1908,7 @@ fn init_bare_repo(st: &AppState, app: &str) -> anyhow::Result<(String, String)> 
         std::fs::create_dir_all(parent)?;
     }
     let hook_body = format!(
-        "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_QUARANTINE_PATH\nexec '{}' deploy-git '{}' --data '{}' >> '{}' 2>&1\n",
+        "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_QUARANTINE_PATH\nref=\"\"\nwhile read -r _old _new name; do ref=\"$name\"; done\nexec '{}' deploy-git '{}' --data '{}' --ref \"$ref\" >> '{}' 2>&1\n",
         exe.display(),
         app,
         st.data.display(),
@@ -1795,6 +1932,13 @@ async fn redeploy(
     Extension(caller): Extension<Caller>,
     Path(app): Path<String>,
 ) -> Response {
+    if !st.rate.allow(&format!("deploy:{}", caller.user), 20, 60) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "deploy rate limit exceeded\n",
+        )
+            .into_response();
+    }
     let a = match project_for(&st, &caller, &app) {
         Ok(a) => a,
         Err(r) => return r,
@@ -1818,8 +1962,22 @@ async fn github_hook(
     Path(app): Path<String>,
     Query(q): Query<HookQuery>,
     headers: HeaderMap,
-    body: Bytes,
+    req: Request,
 ) -> Response {
+    // Webhooks are a public endpoint: never buffer more than a small payload.
+    let body = match axum::body::to_bytes(req.into_body(), MAX_WEBHOOK).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "webhook payload too large\n").into_response()
+        }
+    };
+    if !st.rate.allow(&format!("hook:{app}"), 30, 60) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many webhook deliveries\n",
+        )
+            .into_response();
+    }
     let project_secret = st
         .db
         .get_setting(&format!("webhook_secret:{app}"))
@@ -1885,17 +2043,13 @@ async fn github_hook(
         .flatten()
         .filter(|b| !b.is_empty());
     let r#ref = payload["ref"].as_str().unwrap_or("");
-    if let Some(branch) = &branch_setting {
-        if !r#ref.is_empty() && r#ref != format!("refs/heads/{branch}") {
-            return Json(json!({"ignored": true, "reason": "branch filter"})).into_response();
-        }
-    }
 
     let pushed_branch = r#ref.strip_prefix("refs/heads/").filter(|b| !b.is_empty());
     let deploy_branch = pushed_branch
         .map(str::to_string)
         .or_else(|| branch_setting.clone());
-    let out = match deploy_from_repo_branch(&st, &app, deploy_branch.as_deref()).await {
+    let env = git_deploy_env(branch_setting.as_deref(), pushed_branch);
+    let out = match deploy_from_repo_branch_env(&st, &app, deploy_branch.as_deref(), env).await {
         Ok(out) => out,
         Err(e) => return internal(e),
     };
@@ -1954,6 +2108,27 @@ pub async fn deploy_from_repo_branch(
     st: &AppState,
     app: &str,
     branch: Option<&str>,
+) -> anyhow::Result<DeployOutcome> {
+    deploy_from_repo_branch_env(st, app, branch, "production").await
+}
+
+/// A push to the configured production branch deploys production; any other
+/// branch pushed to a project with a configured branch becomes a preview.
+pub fn git_deploy_env(
+    production_branch: Option<&str>,
+    pushed_branch: Option<&str>,
+) -> &'static str {
+    match (production_branch, pushed_branch) {
+        (Some(prod), Some(pushed)) if prod != pushed => "preview",
+        _ => "production",
+    }
+}
+
+pub async fn deploy_from_repo_branch_env(
+    st: &AppState,
+    app: &str,
+    branch: Option<&str>,
+    env: &str,
 ) -> anyhow::Result<DeployOutcome> {
     let row = st
         .db
@@ -2049,11 +2224,42 @@ pub async fn deploy_from_repo_branch(
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "main".into());
-    let out = deploy::deploy_dir(st, app, &dir, None, None, "production", None).await?;
+    let out = deploy::deploy_dir(st, app, &dir, None, None, env, None).await?;
     if !sha.is_empty() {
         let _ = st
             .db
             .set_deploy_commit(&out.deploy_id, &sha, message, commit_author, &branch);
+    }
+    Ok(out)
+}
+
+/// Parse and validate the dashboard's "Name: value" header editor.
+pub(crate) fn parse_proxy_headers(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| format!("Missing ':' in header line: {line}"))?;
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() || value.is_empty() {
+            return Err(format!("Header line needs a name and value: {line}"));
+        }
+        if !safe_header(name) {
+            return Err(format!(
+                "Header {name} is managed by dok and cannot be overridden"
+            ));
+        }
+        HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| format!("Invalid header name: {name}"))?;
+        HeaderValue::from_str(value).map_err(|_| format!("Invalid value for header {name}"))?;
+        out.push((name.to_string(), value.to_string()));
+        if out.len() > 20 {
+            return Err("Too many custom headers (max 20)".into());
+        }
     }
     Ok(out)
 }
@@ -2214,6 +2420,16 @@ async fn reject_private_repo_dns(repo: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Same rule as the dashboard: shell-safe variable names only.
+pub(crate) fn valid_env_key(k: &str) -> bool {
+    let mut chars = k.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 pub(crate) fn valid_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 63
@@ -2298,6 +2514,34 @@ mod tests {
         assert_eq!(normalize_env("preview"), Some("preview"));
         assert_eq!(normalize_env(""), Some("production"));
         assert_eq!(normalize_env("staging"), None);
+    }
+
+    #[test]
+    fn git_branches_map_to_envs() {
+        assert_eq!(
+            super::git_deploy_env(Some("main"), Some("main")),
+            "production"
+        );
+        assert_eq!(super::git_deploy_env(Some("main"), Some("dev")), "preview");
+        assert_eq!(super::git_deploy_env(None, Some("dev")), "production");
+        assert_eq!(super::git_deploy_env(Some("main"), None), "production");
+    }
+
+    #[test]
+    fn env_body_accepts_secret_objects_and_lists() {
+        let body = serde_json::json!({
+            "vars": {"PLAIN": "one", "SECRET": {"value": "two", "secret": true}, "KEEP": "three"},
+            "secrets": ["KEEP"],
+            "replace": true
+        });
+        let (vars, replace) = super::parse_env_body(body).unwrap();
+        assert!(replace);
+        assert_eq!(vars["PLAIN"], ("one".to_string(), None));
+        assert_eq!(vars["SECRET"], ("two".to_string(), Some(true)));
+        assert_eq!(vars["KEEP"], ("three".to_string(), Some(true)));
+        assert!(super::valid_env_key("DATABASE_URL"));
+        assert!(!super::valid_env_key("1BAD"));
+        assert!(!super::valid_env_key("BAD\nKEY"));
     }
 
     #[test]
@@ -2784,6 +3028,33 @@ mod tests {
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("\"***\""), "{text}");
         assert!(!text.contains("\"1\""), "{text}");
+
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::PUT,
+            "/api/v1/projects/envapp/env/production",
+            Some("{\"SECRET\":{\"value\":\"s3cret\",\"secret\":true}}"),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(
+            call(
+                &st,
+                Some(&owner),
+                Method::GET,
+                "/api/v1/projects/envapp/env/production",
+                None,
+            )
+            .await
+            .into_body(),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!text.contains("s3cret"), "secret leaked to owner: {text}");
+        assert!(text.contains("\"***\""), "{text}");
 
         let r = call(
             &st,

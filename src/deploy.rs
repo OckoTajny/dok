@@ -108,6 +108,23 @@ struct Detected {
     dockerfile: Option<String>,
 }
 
+/// Static output directory produced by common frontend builders.
+fn node_output_dir(pkg: &serde_json::Value) -> String {
+    let dep = |name: &str| {
+        ["dependencies", "devDependencies"]
+            .iter()
+            .any(|k| pkg.get(k).and_then(|d| d.get(name)).is_some())
+    };
+    if dep("nuxt") || dep("nuxt3") {
+        ".output/public".into()
+    } else if dep("react-scripts") || dep("@sveltejs/kit") {
+        "build".into()
+    } else {
+        // Vite, Astro, Svelte, and most other builders.
+        "dist".into()
+    }
+}
+
 /// Auto-detect a build without a Dockerfile. An explicit `framework` wins;
 /// `static` means static assets. Unknown projects fail instead of silently
 /// being served as static.
@@ -129,12 +146,48 @@ fn detect_build(dir: &Path, hint: Option<&str>) -> Option<Detected> {
     );
     let go = matches!(hint.as_deref(), Some("go" | "golang"));
     if node || dir.join("package.json").is_file() {
-        return Some(Detected {
-            framework: hint.clone().unwrap_or_else(|| "node".into()),
-            dockerfile: Some(
-                "FROM node:22-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install --omit=dev || npm install\nCOPY . .\nENV NODE_ENV=production PORT=3000\nEXPOSE 3000\nCMD [\"npm\",\"start\"]\n".into(),
-            ),
-        });
+        let pkg = std::fs::read_to_string(dir.join("package.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let scripts = pkg
+            .as_ref()
+            .and_then(|v| v.get("scripts"))
+            .and_then(|v| v.as_object());
+        let has_build = scripts.map(|s| s.contains_key("build")).unwrap_or(false);
+        let has_start = scripts.map(|s| s.contains_key("start")).unwrap_or(false);
+        let framework = hint.clone().unwrap_or_else(|| "node".into());
+        let install =
+            "RUN if [ -f package-lock.json ]; then npm ci || npm install; else npm install; fi\n";
+        if has_start {
+            let build = if has_build { "RUN npm run build\n" } else { "" };
+            return Some(Detected {
+                framework,
+                dockerfile: Some(format!(
+                    "FROM node:22-alpine\nWORKDIR /app\nCOPY package*.json ./\n{install}COPY . .\n{build}ENV NODE_ENV=production PORT=3000\nEXPOSE 3000\nCMD [\"npm\",\"start\"]\n"
+                )),
+            });
+        }
+        if has_build {
+            let out = pkg
+                .as_ref()
+                .map(node_output_dir)
+                .unwrap_or_else(|| "dist".into());
+            return Some(Detected {
+                framework,
+                dockerfile: Some(format!(
+                    "FROM node:22-alpine AS build\nWORKDIR /app\nCOPY package*.json ./\n{install}COPY . .\nRUN npm run build\nFROM node:22-alpine\nRUN npm install -g serve@14\nWORKDIR /app\nCOPY --from=build /app ./app\nWORKDIR /app/app\nEXPOSE 3000\nCMD [\"serve\",\"-s\",\"{out}\",\"-l\",\"3000\"]\n"
+                )),
+            });
+        }
+        if dir.join("index.html").is_file() {
+            return Some(Detected {
+                framework: "static".into(),
+                dockerfile: None,
+            });
+        }
+        // A package.json with neither start nor build would only fail later;
+        // return None so the deploy error tells the user what to add.
+        return None;
     }
     if python || dir.join("requirements.txt").is_file() || dir.join("pyproject.toml").is_file() {
         return Some(Detected {
@@ -229,6 +282,17 @@ pub async fn deploy_dir(
     author: Option<&str>,
 ) -> Result<DeployOutcome> {
     let env = normalize_env(env);
+    // Bound concurrent builds and refuse to fill the disk completely.
+    let _gate = st
+        .deploy_gate
+        .acquire()
+        .await
+        .map_err(|_| anyhow::anyhow!("deploy queue is closed"))?;
+    if let Ok(free) = fs2::available_space(&st.data) {
+        if free < 1024 * 1024 * 1024 {
+            bail!("not enough free disk space to build (need at least 1 GB)");
+        }
+    }
     // One deploy per app at a time, across processes (the git hook runs its own).
     let _lock = st.lock_deploy(app).await?;
     let deploy_id = uuid::Uuid::new_v4().simple().to_string();
@@ -435,10 +499,11 @@ pub async fn deploy_dir(
             cpus: Some(cpus),
             host_port,
             container_port,
-            domain: chosen_domain,
+            domain: chosen_domain.or_else(|| prev.as_ref().and_then(|p| p.domain.clone())),
             status: "running".into(),
             dir: Some(dir.to_string_lossy().to_string()),
-            repo: None,
+            // A plain push must not forget how the project is deployed.
+            repo: prev.as_ref().and_then(|p| p.repo.clone()),
             production_deploy: Some(deploy_id.clone()),
             framework: if framework.is_empty() {
                 None
@@ -527,7 +592,7 @@ pub async fn deploy_dir(
     } else {
         match host_port {
             Some(p) => format!("http://127.0.0.1:{p}"),
-            None => format!("{} preview", st.public_url),
+            None => String::new(),
         }
     };
 
@@ -998,10 +1063,24 @@ mod tests {
         assert!(detect_build(&dir, None).is_none());
         std::fs::write(dir.join("index.html"), "x").unwrap();
         assert_eq!(detect_build(&dir, None).unwrap().framework, "static");
-        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"scripts":{"start":"node index.js"}}"#,
+        )
+        .unwrap();
         let node = detect_build(&dir, None).unwrap();
         assert_eq!(node.framework, "node");
         assert!(node.dockerfile.unwrap().contains("node:22"));
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"scripts":{"build":"vite build"},"devDependencies":{"vite":"1"}}"#,
+        )
+        .unwrap();
+        let vite = detect_build(&dir, None).unwrap();
+        let dockerfile = vite.dockerfile.unwrap();
+        assert!(dockerfile.contains("npm run build"), "{dockerfile}");
+        assert!(dockerfile.contains("serve"), "{dockerfile}");
+        assert!(dockerfile.contains("dist"), "{dockerfile}");
         std::fs::remove_file(dir.join("package.json")).unwrap();
         std::fs::write(dir.join("go.mod"), "module x").unwrap();
         assert_eq!(detect_build(&dir, None).unwrap().framework, "go");
@@ -1025,5 +1104,49 @@ mod tests {
         assert_eq!(container_name("app", "preview"), "dok-app-preview");
         assert_eq!(normalize_env("preview"), "preview");
         assert_eq!(normalize_env("staging"), "production");
+    }
+
+    #[tokio::test]
+    async fn redeploy_keeps_domain_and_repo() {
+        let base = std::env::temp_dir().join(format!("dok-keep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let db = crate::db::Db::open(&base.join("dok.db")).unwrap();
+        db.upsert_app(&crate::db::App {
+            name: "app".into(),
+            team_id: None,
+            kind: "static".into(),
+            image: None,
+            memory_mb: None,
+            cpus: None,
+            host_port: None,
+            container_port: None,
+            domain: Some("app.example.com".into()),
+            status: "ok".into(),
+            dir: None,
+            repo: Some("https://github.com/example/app.git".into()),
+            production_deploy: None,
+            framework: None,
+            updated_at: crate::db::now(),
+        })
+        .unwrap();
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("index.html"), "hi").unwrap();
+        let st = crate::state::AppState::new(
+            db.clone(),
+            base.join("data"),
+            None,
+            "http://localhost".into(),
+        );
+        super::deploy_dir(&st, "app", &src, None, None, "production", None)
+            .await
+            .unwrap();
+        let app = db.get_app("app").unwrap().unwrap();
+        assert_eq!(app.domain.as_deref(), Some("app.example.com"));
+        assert_eq!(
+            app.repo.as_deref(),
+            Some("https://github.com/example/app.git")
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

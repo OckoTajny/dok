@@ -18,8 +18,10 @@
 HTTP-01 challenges, redirects HTTP to HTTPS and issues certificates for every
 custom domain and `<app>.<base_domain>` into `<data>/acme`. Certificates are
 listed (with status) under **Domains**, and can be re-requested from the UI or
-`POST /api/v1/certificates/{host}/renew`. The ACME order list is built at
-startup, so restart after adding a domain.
+`POST /api/v1/certificates/{host}/renew`. The supervisor watches the domain set
+every 15 seconds, so a fresh instance with no domains can be configured over
+HTTP and switches to TLS as soon as the first project or domain appears; no
+restart is needed after adding a domain.
 
 Without `--edge` dok keeps the current behaviour: plain HTTP behind Traefik.
 The live desktop instance uses that mode; do not switch it to edge while

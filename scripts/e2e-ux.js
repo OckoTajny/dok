@@ -101,10 +101,13 @@ const { chromium } = require("playwright");
   if (!(await page.textContent("body")).includes("Join E2E Team"))
     fail("signed-in join page missing the team name");
   await page.click('button:has-text("Join E2E Team")');
-  await page.waitForURL("**/dashboard/team**");
+  await page.waitForURL("**/dashboard**");
   body = await page.textContent("body");
-  if (!body.includes("You joined the team.")) fail("signed-in invite accept did not flash");
-  if (!body.includes("used")) fail("accepted invite is not marked used");
+  if (!body.includes("already a member")) fail("existing member invite was not refused");
+  // An existing member must not burn the single-use invite.
+  await page.goto(url + "/dashboard/team");
+  body = await page.textContent("body");
+  if (!body.includes("active")) fail("existing member consumed the invite");
 
   await page.goto(url + "/join/not-a-real-token");
   if (!(await page.textContent("body")).includes("not valid"))
@@ -122,6 +125,27 @@ const { chromium } = require("playwright");
   if (!body.includes("Removes 1 deployments")) fail("delete confirmation summary missing: " + body.slice(0, 400));
   await page.click('button:has-text("Save settings")');
   await page.waitForFunction(() => document.body.innerText.includes("Settings saved."));
+
+  // ---- webhook settings are in the dashboard ----------------------------
+  if (!(await page.locator("#hook-branch").count())) fail("webhook branch field missing");
+  await page.fill("#hook-branch", "main");
+  await page.fill("#hook-secret", "0123456789abcdef");
+  await page.click('button:has-text("Save webhook")');
+  await page.waitForFunction(() => document.body.innerText.includes("Webhook settings saved."));
+
+  // ---- personal API tokens are self-service ----------------------------
+  await page.goto(url + "/dashboard/account");
+  if (!(await page.locator("#token-name").count())) fail("account token form missing");
+  await page.fill("#token-name", "e2e-token");
+  await page.click('button:has-text("Create token")');
+  await page.waitForFunction(() => document.body.innerText.includes("shown only once"));
+  const newToken = (await page.textContent("#new-token")).trim();
+  if (!/^[a-f0-9]{64}$/.test(newToken)) fail("new token is malformed: " + newToken);
+  await page.goto(url + "/dashboard/account");
+  if (await page.locator("#new-token").count()) fail("token shown again after reload");
+  if (!(await page.textContent("body")).includes("e2e-token")) fail("token not listed");
+  await page.click('form[action="/dashboard/tokens/revoke"] button');
+  await page.waitForFunction(() => document.body.innerText.includes("Token revoked."));
 
   // ---- certificate renewal goes through the same path as the API ------
   await page.goto(url + "/dashboard/project/uxapp/domains");
@@ -144,6 +168,10 @@ const { chromium } = require("playwright");
   await page.keyboard.press("Escape");
   if (await page.evaluate(() => document.body.classList.contains("nav-open")))
     fail("Escape did not close the drawer");
+  if ((await page.getAttribute("button.menu", "aria-expanded")) !== "false")
+    fail("Escape left aria-expanded=true");
+  if (!(await page.evaluate(() => document.activeElement?.classList.contains("menu"))))
+    fail("focus did not return to the menu button");
 
   await browser.close();
   console.log("ux: OK");

@@ -66,4 +66,16 @@ if DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains list uxapp | grep -q '
   exit 1
 fi
 
+# CLI parity for secrets, proxy, certificates, access log, webhooks and tokens.
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" env uxapp --secret SMOKE_SECRET=s3cret >/dev/null
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" env pull uxapp | grep -q 'SMOKE_SECRET=\*\*\*'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy set uxapp --header 'X-Frame-Options: DENY' >/dev/null
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q 'X-Frame-Options'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" certs list | grep -q '"certificates"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" access-log uxapp | grep -q '"requests"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" webhook uxapp --branch main >/dev/null
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" webhook uxapp | grep -q '"branch": "main"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" tokens create --name ci | grep -q '"token"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" tokens list | grep -q '"ci"'
+
 echo "ux: OK"

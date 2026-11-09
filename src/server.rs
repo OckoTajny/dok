@@ -4,6 +4,9 @@ use crate::state::AppState;
 use anyhow::{Context, Result};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tower::ServiceExt;
 
 pub async fn run(args: ServeArgs) -> Result<()> {
     tracing_subscriber::fmt()
@@ -111,6 +114,12 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     .with_trusted_proxies(trusted);
 
     st.sync_traefik();
+    // The post-receive hook runs in a separate process without the CLI flags;
+    // persist what it needs to build preview URLs.
+    let _ = st
+        .db
+        .set_setting("base_domain", args.base_domain.as_deref().unwrap_or(""));
+    let _ = st.db.set_setting("public_url", &public_url);
     sweep_tmp(&data);
 
     if args.backup_keep > 0 {
@@ -139,27 +148,6 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         }
     );
 
-    let mut domains = args.acme_domain.clone();
-    for (_, d) in st.db.domains().unwrap_or_default() {
-        if let Some(d) = d {
-            if !domains.contains(&d) {
-                domains.push(d);
-            }
-        }
-    }
-    for (host, _) in st.db.domain_hosts().unwrap_or_default() {
-        if !domains.contains(&host) {
-            domains.push(host);
-        }
-    }
-    if let Some(base) = &args.base_domain {
-        for a in st.db.list_apps().unwrap_or_default() {
-            let host = format!("{}.{}", a.name, base);
-            if !domains.contains(&host) {
-                domains.push(host);
-            }
-        }
-    }
     let tls_mode = args.edge || !args.acme_domain.is_empty();
 
     if !tls_mode {
@@ -171,16 +159,11 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .await?;
         return Ok(());
     }
-    if domains.is_empty() {
-        tracing::warn!("edge/ACME enabled but no domains found; serving plain HTTP on {addr}");
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(
-            listener,
-            crate::api::router(st).into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await?;
-        return Ok(());
-    }
+
+    // In edge mode :80 serves the dashboard until the first certificate is
+    // ready, then switches to ACME + HTTPS redirect. Without this, a fresh
+    // install with no domains yet would need a restart before TLS could start.
+    let tls_active = Arc::new(AtomicBool::new(false));
 
     let shared_resolver: std::sync::Arc<
         std::sync::Mutex<Option<std::sync::Arc<rustls_acme::ResolvesServerCertAcme>>>,
@@ -194,12 +177,17 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let http_st = st.clone();
     let edge = args.edge;
     let http_resolver = shared_resolver.clone();
+    let http_tls_active = tls_active.clone();
     let http = tokio::spawn(async move {
         if edge {
             let resolver = http_resolver;
+            let active = http_tls_active;
+            let fallback_st = http_st;
             let app =
                 axum::Router::new().fallback(move |req: axum::http::Request<axum::body::Body>| {
                     let resolver = resolver.clone();
+                    let active = active.clone();
+                    let st = fallback_st.clone();
                     async move {
                         let path = req.uri().path().to_string();
                         if let Some(token) = path.strip_prefix("/.well-known/acme-challenge/") {
@@ -218,18 +206,29 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                                 }
                             }
                         }
-                        let host = crate::proxy::host_of(&req);
-                        let pq = req
-                            .uri()
-                            .path_and_query()
-                            .map(|v| v.as_str())
-                            .unwrap_or("/");
-                        let location = format!("https://{host}{pq}");
-                        axum::response::Response::builder()
-                            .status(axum::http::StatusCode::MOVED_PERMANENTLY)
-                            .header(axum::http::header::LOCATION, location)
-                            .body(axum::body::Body::empty())
-                            .unwrap()
+                        if active.load(Ordering::Relaxed) {
+                            let host = crate::proxy::host_of(&req);
+                            let pq = req
+                                .uri()
+                                .path_and_query()
+                                .map(|v| v.as_str())
+                                .unwrap_or("/");
+                            let location = format!("https://{host}{pq}");
+                            return axum::response::Response::builder()
+                                .status(axum::http::StatusCode::MOVED_PERMANENTLY)
+                                .header(axum::http::header::LOCATION, location)
+                                .body(axum::body::Body::empty())
+                                .unwrap();
+                        }
+                        // No certificate yet: keep the dashboard reachable over
+                        // HTTP so the first domain/project can be added.
+                        match crate::api::router(st).oneshot(req).await {
+                            Ok(r) => r,
+                            Err(_) => axum::response::Response::builder()
+                                .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(axum::body::Body::from("internal\n"))
+                                .unwrap(),
+                        }
                     }
                 });
             if let Err(e) = axum::serve(http_listener, app).await {
@@ -254,6 +253,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let acme_dir = data.join("acme");
     let tls_port = args.tls_port;
     let supervisor_st = st.clone();
+    let supervisor_tls_active = tls_active.clone();
     let supervisor = tokio::spawn(async move {
         let mut current_hosts: Vec<String> = Vec::new();
         let mut current_tls: Option<tokio::task::JoinHandle<()>> = None;
@@ -276,6 +276,18 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 .unwrap_or(0);
             let renew = renew_at > last_renew;
             if hosts.is_empty() {
+                // Keep the HTTP dashboard alive; TLS starts as soon as a
+                // project or custom domain is registered.
+                if !current_hosts.is_empty() {
+                    supervisor_tls_active.store(false, Ordering::Relaxed);
+                    if let Some(h) = current_tls.take() {
+                        h.abort();
+                    }
+                    if let Some(h) = current_acme.take() {
+                        h.abort();
+                    }
+                    current_hosts.clear();
+                }
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
                 continue;
             }
@@ -284,6 +296,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     last_renew = renew_at;
                     clear_cert_cache(&acme_dir);
                 }
+                supervisor_tls_active.store(false, Ordering::Relaxed);
                 if let Some(h) = current_tls.take() {
                     h.abort();
                     let _ = h.await;
@@ -353,6 +366,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     continue;
                 };
                 let https_st = supervisor_st.clone();
+                let tls_flag = supervisor_tls_active.clone();
                 current_tls = Some(tokio::spawn(async move {
                     if let Err(e) = axum_server::from_tcp(listener)
                         .expect("tls listener")
@@ -365,7 +379,9 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     {
                         tracing::error!("https server stopped: {e}");
                     }
+                    tls_flag.store(false, Ordering::Relaxed);
                 }));
+                supervisor_tls_active.store(true, Ordering::Relaxed);
             }
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         }

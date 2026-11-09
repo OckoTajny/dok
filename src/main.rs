@@ -19,11 +19,11 @@ fn main() -> anyhow::Result<()> {
                 .build()?;
             rt.block_on(server::run(args))
         }
-        cli::Cmd::DeployGit { app, data } => {
+        cli::Cmd::DeployGit { app, data, r#ref } => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            rt.block_on(cli::deploy_git(app, data))
+            rt.block_on(cli::deploy_git(app, data, r#ref))
         }
         cmd => cli::run(cmd),
     }

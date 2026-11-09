@@ -61,9 +61,23 @@ dok projects                     list projects
 dok projects create <name>       create an empty project
 dok projects rm <name>           delete a project
 dok logs <app> [--env E]         build + runtime logs (-f to follow)
-dok env <app> [-e E] KEY=VALUE   set env (production/preview/development)
-dok env pull <app> [env]         print env as KEY=VALUE
+dok env <app> [-e E] [--secret] KEY=VALUE
+                                 set env (secrets are write-only)
+dok env pull <app> [env]         print env as KEY=VALUE (secrets are ***)
 dok env rm <app> KEY [env]       remove one env key
+dok proxy show <app>             print proxy settings
+dok proxy set <app> [--header "Name: value"] [--basic-user U]
+                                 [--basic-password P] [--redirect R]
+                                 [--compression] [--force-https] [--max-body-mb N]
+dok certs list                   list certificates and project owners
+dok certs renew <host>           request a fresh certificate
+dok access-log <app>             recent proxy requests
+dok webhook <app>                show GitHub webhook settings
+dok webhook <app> --secret S --branch main
+                                 rotate the secret / production branch
+dok tokens list                  list personal token ids
+dok tokens create [--name N]     mint a token (printed once)
+dok tokens revoke <id>           revoke a personal token
 dok domain <app> <host>          route a domain
 dok domains list <app>           list project domains
 dok domains rm <app> <host>      remove a project domain
@@ -177,12 +191,15 @@ Each project has tabs for **Deployments** (env badge, promote only previews,
 rollback), **Logs** (deploy picker, live session stream with pause, copy and
 download, access log), **Environment** (production / preview / development),
 **Domains** (with certificate status and renew), **Proxy** and **Settings**.
-Environment secrets are write-only: values are masked, `KEY=` in the bulk
-editor keeps the current value, and a secret can only be declassified by
-explicitly clearing its per-row checkbox. Every write returns a flash message;
-validation errors are inline `422` pages. Sessions and CSRF tokens live in
-SQLite, so a restart does not log you out; every dashboard write is
-CSRF-protected.
+Environment secrets are write-only: values are masked in the dashboard and the
+API even for owners, `KEY=` in the bulk editor keeps the current value, and a
+secret can only be declassified by explicitly clearing its per-row checkbox.
+Every write returns a flash message and validation errors redirect back to the
+form with an inline banner. Sessions and CSRF tokens live in SQLite, so a
+restart does not log you out; every dashboard write is CSRF-protected.
+Signed-in users can mint and revoke personal CLI tokens under **Account → API
+tokens** (or `dok tokens`), so invited teammates are never stuck without a
+`dok login` token.
 
 ## API (v1)
 
@@ -213,6 +230,8 @@ PUT/DELETE /api/v1/teams/{team}/members/{user}
 GET/POST /api/v1/teams/{team}/invites
 DELETE /api/v1/teams/{team}/invites/{token}
 GET  /api/v1/whoami
+GET/POST /api/v1/tokens
+DELETE /api/v1/tokens/{id}
 ```
 
 `/api/v1/apps/...` remains as an alias. A token resolves to its user; every
@@ -225,10 +244,11 @@ and claimed by the first dashboard setup.
 ## Proxy, edge and certificates
 
 Per-project proxy settings (custom headers, basic auth with argon2 hashes,
-www/apex redirect, static compression, max body size, force HTTPS) are
-available from the Proxy tab and the API. They are applied by the built-in
-proxy for every request. Framing/hop headers cannot be injected, and
-`X-Forwarded-Proto` is only trusted from loopback or an explicit
+www/apex redirect, gzip/Brotli compression for static and proxied responses,
+max body size, force HTTPS) are available from the Proxy tab and the API. They
+are applied by the built-in proxy for every request. Invalid or reserved
+headers are rejected instead of silently dropped. Framing/hop headers cannot be
+injected, and `X-Forwarded-Proto` is only trusted from loopback or an explicit
 `--trusted-proxy CIDR` (add your Docker/Traefik network there).
 
 The dashboard host and the `base_domain` apex are reserved. Projects are only
@@ -274,8 +294,9 @@ Uploads are capped at 200 MB streamed, 20 000 archive entries and 500 MB
 uncompressed. Partial uploads and `<data>/tmp` leftovers older than 24 h are
 swept at startup. Environment values are passed to Docker through a 0600
 `--env-file` and deleted afterwards. The CLI never packs dotfiles (except
-`.well-known`) or `.env*`, and static serving denies dotfile paths. Viewer
-tokens see env key names with masked values; only owner/admin see values.
+`.well-known`) or `.env*`, and static serving denies dotfile paths. Viewers see
+env key names with masked values; owner/admin see non-secret values, while
+secret values stay masked everywhere after they are written.
 
 Team roles: only owners may grant admin/owner; admins may invite members and
 viewers. Invites are single-use and expire after seven days.

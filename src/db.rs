@@ -14,7 +14,10 @@ pub fn now() -> i64 {
 }
 
 #[derive(Clone)]
-pub struct Db(Arc<Mutex<Connection>>);
+pub struct Db {
+    conn: Arc<Mutex<Connection>>,
+    path: Arc<std::path::PathBuf>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct App {
@@ -260,6 +263,16 @@ CREATE INDEX IF NOT EXISTS access_log_app ON access_log (app, id);
 
 const DB_VERSION: i64 = 4;
 
+/// Add a column, tolerating only the "already exists" case. Any other failure
+/// aborts the migration instead of bumping `user_version` with a broken schema.
+fn add_column(tx: &rusqlite::Transaction, sql: &str) -> Result<()> {
+    match tx.execute(sql, []) {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("duplicate column name") => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// One transactional step per schema version. New databases start at 0 and
 /// run the same steps as old ones so migrations are exercised everywhere.
 fn migrate(conn: &mut Connection) -> Result<()> {
@@ -286,24 +299,24 @@ fn migrate(conn: &mut Connection) -> Result<()> {
                     "ALTER TABLE tokens ADD COLUMN user_id TEXT",
                     "ALTER TABLE sessions ADD COLUMN user_id TEXT",
                 ] {
-                    let _ = tx.execute(sql, []);
+                    add_column(&tx, sql)?;
                 }
                 // Keep one owner per legacy domain before the unique index.
-                let _ = tx.execute(
+                tx.execute(
                     "UPDATE apps SET domain = NULL WHERE domain IS NOT NULL AND rowid NOT IN (
                        SELECT MAX(rowid) FROM apps WHERE domain IS NOT NULL GROUP BY domain)",
                     [],
-                );
-                let _ = tx.execute(
+                )?;
+                tx.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS apps_domain_unique
                      ON apps(domain) WHERE domain IS NOT NULL",
                     [],
-                );
-                let _ = tx.execute(
+                )?;
+                tx.execute(
                     "INSERT OR IGNORE INTO env_vars (app, env, key, value, secret)
                      SELECT app, 'production', key, value, 0 FROM env",
                     [],
-                );
+                )?;
             }
             1 => {
                 let _ = tx.execute_batch(
@@ -323,11 +336,11 @@ fn migrate(conn: &mut Connection) -> Result<()> {
                     "ALTER TABLE deploys ADD COLUMN commit_author TEXT",
                     "ALTER TABLE deploys ADD COLUMN branch TEXT",
                 ] {
-                    let _ = tx.execute(sql, []);
+                    add_column(&tx, sql)?;
                 }
             }
             3 => {
-                let _ = tx.execute("ALTER TABLE invites ADD COLUMN invited_by TEXT", []);
+                add_column(&tx, "ALTER TABLE invites ADD COLUMN invited_by TEXT")?;
             }
             _ => break,
         }
@@ -389,11 +402,14 @@ impl Db {
         })();
         let _ = fs2::FileExt::unlock(&lock);
         migrated?;
-        Ok(Self(Arc::new(Mutex::new(conn))))
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: Arc::new(path.to_path_buf()),
+        })
     }
 
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     // ---------- users & passkeys ----------
@@ -812,6 +828,36 @@ impl Db {
                 app.host_port, app.container_port, app.domain, app.status, app.dir,
                 app.repo, app.updated_at, app.team_id, app.production_deploy, app.framework
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Insert a project only when the name is still free. Returns true when
+    /// this caller won the race; false means another request created it.
+    pub fn create_app_if_absent(&self, app: &App) -> Result<bool> {
+        let changed = self.conn().execute(
+            "INSERT OR IGNORE INTO apps (name, created_at, kind, image, memory_mb, cpus, host_port, container_port, domain, status, dir, repo, updated_at, team_id, production_deploy, framework)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                app.name, now(), app.kind, app.image, app.memory_mb, app.cpus,
+                app.host_port, app.container_port, app.domain, app.status, app.dir,
+                app.repo, app.updated_at, app.team_id, app.production_deploy, app.framework
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Explicitly replace repo and framework so clearing a field is possible
+    /// (the generic upsert uses COALESCE and cannot clear values).
+    pub fn set_repo_framework(
+        &self,
+        name: &str,
+        repo: Option<&str>,
+        framework: Option<&str>,
+    ) -> Result<()> {
+        self.conn().execute(
+            "UPDATE apps SET repo = ?2, framework = ?3, updated_at = ?4 WHERE name = ?1",
+            params![name, repo, framework, now()],
         )?;
         Ok(())
     }
@@ -1272,6 +1318,41 @@ impl Db {
         Ok(())
     }
 
+    /// Mint a token for a signed-in user. The plaintext is returned once and
+    /// only its SHA-256 hash is stored.
+    pub fn create_token_for_user(&self, user_id: &str, name: &str) -> Result<String> {
+        let token = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let hash = format!("{:x}", sha2::Sha256::digest(token.as_bytes()));
+        self.add_token(&hash, name.trim(), Some(user_id))?;
+        Ok(token)
+    }
+
+    pub fn tokens_for_user(&self, user_id: &str) -> Result<Vec<(String, String, i64)>> {
+        let c = self.conn();
+        let mut st = c.prepare(
+            "SELECT hash, name, created_at FROM tokens WHERE user_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = st.query_map(params![user_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn revoke_token_for_user(&self, user_id: &str, hash: &str) -> Result<usize> {
+        Ok(self.conn().execute(
+            "DELETE FROM tokens WHERE user_id = ?1 AND hash = ?2",
+            params![user_id, hash],
+        )?)
+    }
+
+    pub fn delete_sessions_for_user(&self, user_id: &str) -> Result<usize> {
+        Ok(self
+            .conn()
+            .execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?)
+    }
+
     /// Claim pre-multi-user projects for the first team.
     pub fn assign_orphan_apps(&self, team_id: &str) -> Result<()> {
         self.conn().execute(
@@ -1306,8 +1387,11 @@ impl Db {
     }
 
     pub fn backup_to(&self, path: &std::path::Path) -> Result<()> {
-        self.conn()
-            .execute("VACUUM INTO ?1", params![path.to_string_lossy()])?;
+        // Use a dedicated connection: VACUUM INTO on the shared connection
+        // would block every dashboard, API and proxy request while it runs.
+        let conn = Connection::open(&*self.path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        conn.execute("VACUUM INTO ?1", params![path.to_string_lossy()])?;
         Ok(())
     }
 
@@ -1468,12 +1552,41 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::{can_read, can_write, hash_password, verify_password, Db};
+    use sha2::Digest;
     use std::path::PathBuf;
 
     fn tmp_db() -> (Db, PathBuf) {
         let path = std::env::temp_dir().join(format!("dok-db-{}.db", uuid::Uuid::new_v4()));
         let db = Db::open(&path).unwrap();
         (db, path)
+    }
+
+    #[test]
+    fn column_migration_fails_loudly() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t(x INTEGER)").unwrap();
+        let tx = conn.transaction().unwrap();
+        super::add_column(&tx, "ALTER TABLE t ADD COLUMN y TEXT").unwrap();
+        // A duplicate column is the only error that is safe to ignore.
+        super::add_column(&tx, "ALTER TABLE t ADD COLUMN y TEXT").unwrap();
+        assert!(super::add_column(&tx, "ALTER TABLE missing ADD COLUMN z TEXT").is_err());
+        tx.rollback().unwrap();
+    }
+
+    #[test]
+    fn tokens_are_user_scoped_and_revocable() {
+        let (db, path) = tmp_db();
+        let a = db.create_user("token-a@example.com", "A").unwrap();
+        let b = db.create_user("token-b@example.com", "B").unwrap();
+        let token = db.create_token_for_user(&a.id, "laptop").unwrap();
+        assert_eq!(db.tokens_for_user(&a.id).unwrap().len(), 1);
+        assert_eq!(db.tokens_for_user(&b.id).unwrap().len(), 0);
+        let hash = format!("{:x}", sha2::Sha256::digest(token.as_bytes()));
+        assert_eq!(db.revoke_token_for_user(&b.id, &hash).unwrap(), 0);
+        assert_eq!(db.revoke_token_for_user(&a.id, &hash).unwrap(), 1);
+        assert!(db.tokens_for_user(&a.id).unwrap().is_empty());
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

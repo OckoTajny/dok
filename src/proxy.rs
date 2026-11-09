@@ -162,6 +162,12 @@ pub async fn serve_app(
         .unwrap_or(app.kind.as_str());
     let dir_override = deploy.as_ref().and_then(|d| d.dir.clone());
     let port_override = deploy.as_ref().and_then(|d| d.host_port);
+    let accept_encoding = req
+        .headers()
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let resp = match kind {
         "static" => {
             let dir = dir_override
@@ -175,19 +181,13 @@ pub async fn serve_app(
                 .get(header::IF_NONE_MATCH)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
-            let accepts_gzip = req
-                .headers()
-                .get(header::ACCEPT_ENCODING)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.contains("gzip"))
-                .unwrap_or(false);
             match serve_static(
                 Path::new(&dir),
                 &method,
                 &path,
                 inm.as_deref(),
                 settings.compression,
-                accepts_gzip,
+                &accept_encoding,
             )
             .await
             {
@@ -202,17 +202,20 @@ pub async fn serve_app(
                 ),
             }
         }
-        _ => match port_override.or(app.host_port) {
-            Some(port) => forward(&st, req, port, &app.name, request_id).await,
-            None => crate::ui::branded_error(
-                StatusCode::BAD_GATEWAY,
-                "Bad gateway",
-                Some(&app.name),
-                "The project has no running container. Check the deploy log or redeploy.",
-                last_good_at(&st, &app.name),
-                request_id,
-            ),
-        },
+        _ => {
+            let r = match port_override.or(app.host_port) {
+                Some(port) => forward(&st, req, port, &app.name, request_id).await,
+                None => crate::ui::branded_error(
+                    StatusCode::BAD_GATEWAY,
+                    "Bad gateway",
+                    Some(&app.name),
+                    "The project has no running container. Check the deploy log or redeploy.",
+                    last_good_at(&st, &app.name),
+                    request_id,
+                ),
+            };
+            maybe_compress(r, settings.compression, &accept_encoding).await
+        }
     };
     log_request(
         &st,
@@ -594,13 +597,100 @@ fn safe_join(root: &Path, url_path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
+fn encode_body(bytes: &[u8], accept_encoding: &str) -> Option<(&'static str, Vec<u8>)> {
+    use std::io::Write;
+    let accepts_br = accept_encoding
+        .split(',')
+        .any(|e| e.trim().split(';').next().unwrap_or("") == "br");
+    let accepts_gzip = accept_encoding.contains("gzip");
+    if accepts_br {
+        let mut out = Vec::new();
+        {
+            let mut enc = brotli::CompressorWriter::new(&mut out, 4096, 3, 22);
+            enc.write_all(bytes).ok()?;
+        }
+        return Some(("br", out));
+    }
+    if accepts_gzip {
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(bytes).ok()?;
+        return Some(("gzip", enc.finish().ok()?));
+    }
+    None
+}
+
+fn compressible_type(content_type: &str) -> bool {
+    let ct = content_type.to_ascii_lowercase();
+    ct.starts_with("text/")
+        || ct.contains("json")
+        || ct.contains("javascript")
+        || ct.contains("xml")
+        || ct.contains("svg")
+}
+
+/// Compress a buffered upstream response (containers included), respecting the
+/// client's Accept-Encoding and the project's compression setting.
+async fn maybe_compress(
+    resp: Response<Body>,
+    enabled: bool,
+    accept_encoding: &str,
+) -> Response<Body> {
+    if !enabled
+        || resp.headers().contains_key(header::CONTENT_ENCODING)
+        || resp.headers().get(header::CONTENT_LENGTH).is_none()
+    {
+        return resp;
+    }
+    let declared = resp
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if declared > 2 * 1024 * 1024 || !compressible_type(content_type) {
+        return resp;
+    }
+    let (parts, body) = resp.into_parts();
+    let bytes = match axum::body::to_bytes(body, 2 * 1024 * 1024 + 1).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return crate::ui::branded_error(
+                StatusCode::BAD_GATEWAY,
+                "Bad gateway",
+                None,
+                "The upstream response could not be read.",
+                None,
+                "",
+            )
+        }
+    };
+    let Some((encoding, data)) = encode_body(&bytes, accept_encoding) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    let len = data.len();
+    let mut out = Response::from_parts(parts, Body::from(data));
+    out.headers_mut()
+        .insert(header::CONTENT_ENCODING, HeaderValue::from_static(encoding));
+    out.headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    if let Ok(len) = HeaderValue::from_str(&len.to_string()) {
+        out.headers_mut().insert(header::CONTENT_LENGTH, len);
+    }
+    out
+}
+
 async fn serve_static(
     root: &Path,
     method: &Method,
     url_path: &str,
     if_none_match: Option<&str>,
     compress: bool,
-    accepts_gzip: bool,
+    accept_encoding: &str,
 ) -> Option<Response<Body>> {
     if method != Method::GET && method != Method::HEAD {
         return Some(
@@ -693,22 +783,18 @@ async fn serve_static(
     if method == Method::HEAD {
         return builder.body(Body::empty()).ok();
     }
-    if compress && accepts_gzip && compressible && meta.len() <= 5 * 1024 * 1024 {
-        use std::io::Write;
+    if compress && compressible && meta.len() <= 5 * 1024 * 1024 {
         let bytes = tokio::fs::read(&canonical).await.ok()?;
-        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        if enc.write_all(&bytes).is_ok() {
-            if let Ok(gz) = enc.finish() {
-                let len = gz.len();
-                let mut resp = builder
-                    .header(header::CONTENT_ENCODING, "gzip")
-                    .header(header::VARY, "Accept-Encoding")
-                    .body(Body::from(gz))
-                    .ok()?;
-                resp.headers_mut()
-                    .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
-                return Some(resp);
-            }
+        if let Some((encoding, data)) = encode_body(&bytes, accept_encoding) {
+            let len = data.len();
+            let mut resp = builder
+                .header(header::CONTENT_ENCODING, encoding)
+                .header(header::VARY, "Accept-Encoding")
+                .body(Body::from(data))
+                .ok()?;
+            resp.headers_mut()
+                .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+            return Some(resp);
         }
     }
     let file = tokio::fs::File::open(&canonical).await.ok()?;
@@ -817,5 +903,20 @@ mod tests {
         assert_eq!(parse_authority("[::1]:8080"), "[::1]");
         assert_eq!(parse_authority("[::1]"), "[::1]");
         assert_eq!(parse_authority(""), "");
+    }
+
+    #[test]
+    fn negotiates_brotli_and_gzip() {
+        let input = b"hello hello hello hello hello";
+        let (enc, data) = super::encode_body(input, "gzip, deflate").unwrap();
+        assert_eq!(enc, "gzip");
+        assert!(!data.is_empty());
+        let (enc, data) = super::encode_body(input, "br, gzip").unwrap();
+        assert_eq!(enc, "br");
+        assert!(!data.is_empty());
+        assert!(super::encode_body(input, "identity").is_none());
+        assert!(super::compressible_type("text/html; charset=utf-8"));
+        assert!(super::compressible_type("application/json"));
+        assert!(!super::compressible_type("image/png"));
     }
 }

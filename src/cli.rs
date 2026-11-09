@@ -44,6 +44,9 @@ pub enum Cmd {
         /// Environment to write: production, preview or development.
         #[arg(short, long, default_value = "production")]
         env: String,
+        /// Store the values as write-only secrets.
+        #[arg(long)]
+        secret: bool,
     },
     /// Point a domain at an app.
     Domain { app: String, host: String },
@@ -72,6 +75,9 @@ pub enum Cmd {
         app: String,
         #[arg(long)]
         data: String,
+        /// Ref being pushed (refs/heads/<branch>), supplied by post-receive.
+        #[arg(long = "ref")]
+        r#ref: Option<String>,
     },
     /// Delete an app and stop its container.
     Rm { app: String },
@@ -86,6 +92,82 @@ pub enum Cmd {
     },
     /// Show deploy, domain and runtime metrics for a project.
     Stats { app: String },
+    /// Show or change per-project proxy settings.
+    Proxy {
+        #[command(subcommand)]
+        cmd: ProxyCmd,
+    },
+    /// List or renew TLS certificates.
+    Certs {
+        #[command(subcommand)]
+        cmd: CertsCmd,
+    },
+    /// Show recent proxy access log entries.
+    AccessLog {
+        app: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Show or update GitHub webhook settings.
+    Webhook {
+        app: String,
+        #[arg(long)]
+        secret: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Manage personal API tokens.
+    Tokens {
+        #[command(subcommand)]
+        cmd: TokensCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TokensCmd {
+    /// List your tokens (hashes, never the secret).
+    List,
+    /// Create a token and print it once.
+    Create {
+        #[arg(long, default_value = "cli")]
+        name: String,
+    },
+    /// Revoke a token by its id/hash from `dok tokens list`.
+    Revoke { hash: String },
+}
+
+#[derive(Subcommand)]
+pub enum ProxyCmd {
+    /// Print the current proxy settings.
+    Show { app: String },
+    /// Update settings; unspecified flags are kept.
+    Set {
+        app: String,
+        /// Response header, e.g. --header "X-Frame-Options: DENY" (repeatable).
+        #[arg(long = "header")]
+        headers: Vec<String>,
+        #[arg(long)]
+        basic_user: Option<String>,
+        #[arg(long)]
+        basic_password: Option<String>,
+        /// off, www-to-apex or apex-to-www.
+        #[arg(long)]
+        redirect: Option<String>,
+        #[arg(long)]
+        compression: bool,
+        #[arg(long)]
+        force_https: bool,
+        #[arg(long)]
+        max_body_mb: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CertsCmd {
+    /// List certificates for projects you can read.
+    List,
+    /// Request a fresh certificate for a host.
+    Renew { host: String },
 }
 
 #[derive(Subcommand)]
@@ -348,7 +430,12 @@ pub fn run(cmd: Cmd) -> Result<()> {
             println!("== runtime ==\n{}", v["runtime"].as_str().unwrap_or(""));
             Ok(())
         }
-        Cmd::Env { app, vars, env } => {
+        Cmd::Env {
+            app,
+            vars,
+            env,
+            secret,
+        } => {
             if app == "rm" {
                 let Some(target) = vars.first() else {
                     bail!("usage: dok env rm <app> <KEY> [env]");
@@ -398,7 +485,14 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 let (k, val) = v
                     .split_once('=')
                     .with_context(|| format!("expected KEY=VALUE, got {v}"))?;
-                map.insert(k.to_string(), serde_json::Value::String(val.to_string()));
+                map.insert(
+                    k.to_string(),
+                    if secret {
+                        serde_json::json!({"value": val, "secret": true})
+                    } else {
+                        serde_json::Value::String(val.to_string())
+                    },
+                );
             }
             let resp = client()?
                 .put(format!("{}/api/v1/projects/{app}/env/{env}", base(&cfg)))
@@ -492,6 +586,161 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 .send()?;
             handle(resp)
         }
+        Cmd::Proxy { cmd } => {
+            let cfg = load_config()?;
+            match cmd {
+                ProxyCmd::Show { app } => {
+                    let resp = client()?
+                        .get(format!("{}/api/v1/projects/{app}/proxy", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+                ProxyCmd::Set {
+                    app,
+                    headers,
+                    basic_user,
+                    basic_password,
+                    redirect,
+                    compression,
+                    force_https,
+                    max_body_mb,
+                } => {
+                    let resp = client()?
+                        .get(format!("{}/api/v1/projects/{app}/proxy", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    if !resp.status().is_success() {
+                        return handle(resp);
+                    }
+                    let mut value: serde_json::Value = resp.json()?;
+                    let Some(obj) = value.as_object_mut() else {
+                        bail!("server returned invalid proxy settings");
+                    };
+                    if !headers.is_empty() {
+                        let mut pairs = Vec::new();
+                        for raw in &headers {
+                            let (k, v) = raw
+                                .split_once(':')
+                                .with_context(|| format!("expected Name: value, got {raw}"))?;
+                            pairs.push(serde_json::json!([k.trim(), v.trim()]));
+                        }
+                        obj.insert("headers".into(), serde_json::Value::Array(pairs));
+                    }
+                    if let Some(user) = basic_user {
+                        obj.insert("basic_auth_user".into(), serde_json::json!(user));
+                    }
+                    if let Some(password) = basic_password {
+                        obj.insert("basic_auth_password".into(), serde_json::json!(password));
+                    }
+                    if let Some(redirect) = redirect {
+                        if !matches!(redirect.as_str(), "off" | "www-to-apex" | "apex-to-www") {
+                            bail!("redirect must be off, www-to-apex or apex-to-www");
+                        }
+                        obj.insert("redirect".into(), serde_json::json!(redirect));
+                    }
+                    if compression {
+                        obj.insert("compression".into(), serde_json::json!(true));
+                    }
+                    if force_https {
+                        obj.insert("force_https".into(), serde_json::json!(true));
+                    }
+                    if let Some(mb) = max_body_mb {
+                        obj.insert("max_body_mb".into(), serde_json::json!(mb));
+                    }
+                    let resp = client()?
+                        .put(format!("{}/api/v1/projects/{app}/proxy", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .json(&value)
+                        .send()?;
+                    handle(resp)
+                }
+            }
+        }
+        Cmd::Certs { cmd } => {
+            let cfg = load_config()?;
+            match cmd {
+                CertsCmd::List => {
+                    let resp = client()?
+                        .get(format!("{}/api/v1/certificates", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+                CertsCmd::Renew { host } => {
+                    let resp = client()?
+                        .post(format!("{}/api/v1/certificates/{host}/renew", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+            }
+        }
+        Cmd::AccessLog { app, limit } => {
+            let cfg = load_config()?;
+            let resp = client()?
+                .get(format!(
+                    "{}/api/v1/projects/{app}/access-log?limit={limit}",
+                    base(&cfg)
+                ))
+                .bearer_auth(&cfg.token)
+                .send()?;
+            handle(resp)
+        }
+        Cmd::Webhook {
+            app,
+            secret,
+            branch,
+        } => {
+            let cfg = load_config()?;
+            if secret.is_none() && branch.is_none() {
+                let resp = client()?
+                    .get(format!("{}/api/v1/projects/{app}/webhook", base(&cfg)))
+                    .bearer_auth(&cfg.token)
+                    .send()?;
+                return handle(resp);
+            }
+            let mut body = serde_json::Map::new();
+            if let Some(secret) = secret {
+                body.insert("secret".into(), serde_json::json!(secret));
+            }
+            if let Some(branch) = branch {
+                body.insert("branch".into(), serde_json::json!(branch));
+            }
+            let resp = client()?
+                .put(format!("{}/api/v1/projects/{app}/webhook", base(&cfg)))
+                .bearer_auth(&cfg.token)
+                .json(&serde_json::Value::Object(body))
+                .send()?;
+            handle(resp)
+        }
+        Cmd::Tokens { cmd } => {
+            let cfg = load_config()?;
+            match cmd {
+                TokensCmd::List => {
+                    let resp = client()?
+                        .get(format!("{}/api/v1/tokens", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+                TokensCmd::Create { name } => {
+                    let resp = client()?
+                        .post(format!("{}/api/v1/tokens", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .json(&serde_json::json!({"name": name}))
+                        .send()?;
+                    handle(resp)
+                }
+                TokensCmd::Revoke { hash } => {
+                    let resp = client()?
+                        .delete(format!("{}/api/v1/tokens/{hash}", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+            }
+        }
         Cmd::Git { app, repo } => {
             let cfg = load_config()?;
             let resp = client()?
@@ -580,11 +829,32 @@ pub fn run(cmd: Cmd) -> Result<()> {
     }
 }
 
-pub async fn deploy_git(app: String, data: String) -> Result<()> {
+pub async fn deploy_git(app: String, data: String, reference: Option<String>) -> Result<()> {
     let data = PathBuf::from(expand_home(&data));
     let db = crate::db::Db::open(&data.join("dok.db"))?;
-    let st = crate::state::AppState::new(db, data, None, String::new());
-    let out = crate::api::deploy_from_repo(&st, &app).await?;
+    let base_domain = db
+        .get_setting("base_domain")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
+    let public_url = db
+        .get_setting("public_url")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let production_branch = db
+        .get_setting(&format!("webhook_branch:{app}"))
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
+    let pushed = reference
+        .as_deref()
+        .and_then(|r| r.strip_prefix("refs/heads/"))
+        .filter(|b| !b.is_empty());
+    let env = crate::api::git_deploy_env(production_branch.as_deref(), pushed);
+    let branch = pushed.map(str::to_string).or(production_branch);
+    let st = crate::state::AppState::new(db, data, base_domain, public_url);
+    let out = crate::api::deploy_from_repo_branch_env(&st, &app, branch.as_deref(), env).await?;
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }

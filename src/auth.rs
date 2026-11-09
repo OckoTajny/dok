@@ -255,6 +255,21 @@ async fn join_accept(
         return forbidden("invalid CSRF token");
     }
     let token = form.get("token").cloned().unwrap_or_default();
+    if let Ok(Some((team_id, _))) = st.db.invite(&token) {
+        if st
+            .db
+            .role(&team_id, &session.user.id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return crate::ui::redirect_flash(
+                "/dashboard",
+                true,
+                "You are already a member of that team.",
+            );
+        }
+    }
     match st.db.use_invite(&token, &session.user.id) {
         Ok(Some(team_id)) => {
             let slug = st

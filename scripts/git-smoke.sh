@@ -46,7 +46,13 @@ for _ in $(seq 1 40); do
 done
 echo "$body" | grep -q 'pushed via git'
 
-# A configured non-default branch is what redeploy clones and builds.
+# A push to a non-production branch becomes a preview; production stays live.
+python3 - "$DATA" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1] + "/dok.db")
+db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ("webhook_branch:gitapp", "main"))
+db.commit()
+PY
 cd "$WORK/clone"
 git checkout -q -b dev
 echo '<h1>branch build</h1>' > index.html
@@ -54,6 +60,15 @@ git add index.html
 git -c user.name=smoke -c user.email=smoke@example.com commit -q -m "dev branch"
 git push -q origin dev
 cd - >/dev/null
+curl -fsS -H "Host: $APP.127.0.0.1" "http://127.0.0.1:$PORT/" | grep -q 'pushed via git'
+preview_url=$(DOK_SERVER="$DOK_SERVER" DOK_TOKEN="$DOK_TOKEN" "$BIN" deploys "$APP" | python3 -c 'import sys,json
+rows=[d for d in json.load(sys.stdin)["deploys"] if d["env"]=="preview"]
+print(rows[0]["url"] if rows else "")')
+test -n "$preview_url"
+preview_host=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlparse(sys.argv[1]).hostname)' "$preview_url")
+curl -fsS -H "Host: $preview_host" "http://127.0.0.1:$PORT/" | grep -q 'branch build'
+
+# Switching the production branch makes `dok redeploy` build dev for production.
 python3 - "$DATA" <<'PY'
 import sqlite3, sys
 db = sqlite3.connect(sys.argv[1] + "/dok.db")

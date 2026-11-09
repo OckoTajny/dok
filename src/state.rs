@@ -50,6 +50,10 @@ pub struct AppState {
     pub traefik_dir: Option<PathBuf>,
     pub rate: RateLimiter,
     pub trusted_proxies: Vec<ipnet::IpNet>,
+    /// Bound concurrent builds/deploys and log streams so one token cannot
+    /// exhaust the host.
+    pub deploy_gate: Arc<tokio::sync::Semaphore>,
+    pub stream_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -77,6 +81,8 @@ impl AppState {
             traefik_dir: None,
             rate: RateLimiter::default(),
             trusted_proxies: Vec::new(),
+            deploy_gate: Arc::new(tokio::sync::Semaphore::new(4)),
+            stream_gate: Arc::new(tokio::sync::Semaphore::new(16)),
         }
     }
 
