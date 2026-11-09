@@ -11,6 +11,12 @@ mod ui;
 use clap::Parser;
 
 fn main() -> anyhow::Result<()> {
+    // Secrets live in SQLite (including WAL/SHM) and backups; make every file
+    // this process creates private regardless of the caller's umask.
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(0o077);
+    }
     let parsed = cli::Cli::parse();
     match parsed.cmd {
         cli::Cmd::Serve(args) => {

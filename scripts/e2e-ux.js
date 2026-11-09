@@ -163,7 +163,7 @@ const { chromium } = require("playwright");
   await page.click("button.menu");
   if (!(await page.evaluate(() => document.body.classList.contains("nav-open"))))
     fail("mobile drawer did not open");
-  const box = await page.locator('aside a:has-text("Sign out")').boundingBox();
+  const box = await page.locator('aside button:has-text("Sign out")').boundingBox();
   if (!box || box.height < 40) fail("mobile tap target too small");
   await page.keyboard.press("Escape");
   if (await page.evaluate(() => document.body.classList.contains("nav-open")))

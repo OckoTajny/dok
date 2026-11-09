@@ -19,6 +19,11 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let data = expand(&args.data);
     std::fs::create_dir_all(&data)
         .with_context(|| format!("create data dir {}", data.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700));
+    }
 
     let db = Db::open(&data.join("dok.db"))?;
 
@@ -34,6 +39,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     } else {
         "http"
     };
+    crate::ui::SECURE_COOKIES.store(scheme == "https", Ordering::Relaxed);
     // Passkey RP IDs must be domain names, not bare IPs, so a default
     // `dok serve` uses localhost for the dashboard origin. An explicit
     // --dashboard-origin may be given as `host:port` or as a full URL; the
@@ -544,6 +550,11 @@ fn backup_db(st: &AppState, keep: usize) {
     let dir = st.data.join("backups");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
     let stamp = crate::db::now();
     let mut path = dir.join(format!("dok-{stamp}.db"));

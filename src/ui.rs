@@ -8,6 +8,19 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set by `server::run` when the public origin is HTTPS so one-time and flash
+/// cookies carry `Secure` too.
+pub static SECURE_COOKIES: AtomicBool = AtomicBool::new(false);
+
+fn cookie_secure() -> &'static str {
+    if SECURE_COOKIES.load(Ordering::Relaxed) {
+        "; Secure"
+    } else {
+        ""
+    }
+}
 
 const CSS: &str = r#"
 :root{color-scheme:dark}
@@ -571,7 +584,10 @@ pub(crate) fn redirect_flash(to: &str, ok: bool, msg: &str) -> Response<Body> {
         .header(header::LOCATION, location)
         .header(
             header::SET_COOKIE,
-            format!("dok_flash={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=60"),
+            format!(
+                "dok_flash={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=60{}",
+                cookie_secure()
+            ),
         )
         .body(Body::empty())
         .unwrap()
@@ -591,7 +607,8 @@ fn redirect_invite(to: &str, token: &str) -> Response<Body> {
         .header(
             header::SET_COOKIE,
             format!(
-                "dok_invite_once={value}; Path=/dashboard/team; HttpOnly; SameSite=Lax; Max-Age=60"
+                "dok_invite_once={value}; Path=/dashboard/team; HttpOnly; SameSite=Lax; Max-Age=60{}",
+                cookie_secure()
             ),
         )
         .body(Body::empty())
@@ -599,9 +616,10 @@ fn redirect_invite(to: &str, token: &str) -> Response<Body> {
 }
 
 fn with_invite_cleared(mut resp: Response<Body>) -> Response<Body> {
-    if let Ok(v) = header::HeaderValue::from_str(
-        "dok_invite_once=; Path=/dashboard/team; HttpOnly; SameSite=Lax; Max-Age=0",
-    ) {
+    if let Ok(v) = header::HeaderValue::from_str(&format!(
+        "dok_invite_once=; Path=/dashboard/team; HttpOnly; SameSite=Lax; Max-Age=0{}",
+        cookie_secure()
+    )) {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
     resp
@@ -620,25 +638,30 @@ fn redirect_new_token(to: &str, token: &str) -> Response<Body> {
         .header(header::LOCATION, location)
         .header(
             header::SET_COOKIE,
-            format!("dok_token_once={value}; Path=/dashboard/account; HttpOnly; SameSite=Lax; Max-Age=60"),
+            format!(
+                "dok_token_once={value}; Path=/dashboard/account; HttpOnly; SameSite=Lax; Max-Age=60{}",
+                cookie_secure()
+            ),
         )
         .body(Body::empty())
         .unwrap()
 }
 
 fn with_token_cleared(mut resp: Response<Body>) -> Response<Body> {
-    if let Ok(v) = header::HeaderValue::from_str(
-        "dok_token_once=; Path=/dashboard/account; HttpOnly; SameSite=Lax; Max-Age=0",
-    ) {
+    if let Ok(v) = header::HeaderValue::from_str(&format!(
+        "dok_token_once=; Path=/dashboard/account; HttpOnly; SameSite=Lax; Max-Age=0{}",
+        cookie_secure()
+    )) {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
     resp
 }
 
 fn with_flash_cleared(mut resp: Response<Body>) -> Response<Body> {
-    if let Ok(v) =
-        header::HeaderValue::from_str("dok_flash=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
-    {
+    if let Ok(v) = header::HeaderValue::from_str(&format!(
+        "dok_flash=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{}",
+        cookie_secure()
+    )) {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
     resp
@@ -757,6 +780,13 @@ fn public_url_for(st: &AppState, app: &App) -> Option<String> {
                 .as_ref()
                 .map(|b| format!("{}://{}.{}", st.scheme, app.name, b))
         })
+        .or_else(|| {
+            st.db
+                .domains_for(&app.name)
+                .ok()
+                .and_then(|d| d.into_iter().next())
+                .map(|d| format!("{}://{}", st.scheme, d))
+        })
 }
 
 fn domain_of(st: &AppState, app: &App) -> String {
@@ -833,7 +863,7 @@ fn sidebar(
     s.push_str(&format!(
         "<div class=side-title>Account</div><div class=muted style=\"padding:0 8px;margin-left:-8px;font-size:12px\">{}</div>\
 <a class=\"{}\" href=\"/dashboard/account{team_q}\"{}>API tokens</a>\
-<a href=\"#\" onclick=\"fetch('/auth/logout',{{method:'POST',headers:{{'x-csrf':'{csrf}'}}}}).then(()=>location.href='/');return false\">Sign out</a>",
+<form method=post action=/dashboard/logout class=inline><input type=hidden name=csrf value=\"{csrf}\"><button class=\"btn link\">Sign out</button></form>",
         esc(&user.email),
         if account_on { "on" } else { "" },
         if account_on { " aria-current=page" } else { "" },
@@ -1061,6 +1091,19 @@ fn render_dashboard(
         })
         .unwrap_or(false);
     let csrf = csrf_input(session);
+    let has_tokens = !st
+        .db
+        .tokens_for_user(&user.id)
+        .unwrap_or_default()
+        .is_empty();
+    let onboarding = if has_tokens {
+        String::new()
+    } else {
+        format!(
+            "<div class=notice>New here? <a href=\"/dashboard/account\">Create an API token</a> in Account → API tokens, then run <code>dok login {url} &lt;token&gt;</code> before <code>dok push</code>.</div>",
+            url = esc(&st.public_url)
+        )
+    };
     let create = if can_create {
         format!(
             "<form id=project-create class=\"row\" method=post action=/dashboard/projects style=\"margin:22px 0 18px;max-width:520px\">{csrf}\
@@ -1076,10 +1119,11 @@ fn render_dashboard(
     let main = format!(
         "<div class=head><div class=\"row between\"><div><h1>{team}</h1><div class=muted>Projects deployed from this team.</div></div>\
 <a class=btn href=\"/dashboard/team?team={slug}\">Team &amp; invites</a></div></div>\
-{create}\
+{onboarding}{create}\
 <h2>All projects</h2><div class=grid>{cards}</div>",
         team = esc(&team_name),
         slug = esc(&team_slug),
+        onboarding = onboarding,
         create = create,
         cards = cards
     );
@@ -1157,6 +1201,17 @@ fn cert_table(st: &AppState, app: &App, csrf: &str, can: bool) -> String {
             .as_i64()
             .map(fmt_time)
             .unwrap_or_else(|| "-".into());
+        let detail = info["error"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| info["note"].as_str().filter(|s| !s.is_empty()))
+            .map(|s| {
+                format!(
+                    "<div class=\"muted small\">{}</div>",
+                    esc(&s.chars().take(180).collect::<String>())
+                )
+            })
+            .unwrap_or_default();
         let renew = if can {
             format!(
                 "<form class=inline method=post action=/dashboard/certificates/renew>{csrf}<input type=hidden name=app value=\"{app}\"><input type=hidden name=host value=\"{host}\">\
@@ -1168,8 +1223,9 @@ fn cert_table(st: &AppState, app: &App, csrf: &str, can: bool) -> String {
             String::new()
         };
         rows.push_str(&format!(
-            "<tr><td><code>{host}</code></td><td><span class=\"badge {cls}\">{status}</span></td><td class=muted>{expires}</td><td style=\"text-align:right\">{renew}</td></tr>",
+            "<tr><td><code>{host}</code>{detail}</td><td><span class=\"badge {cls}\">{status}</span></td><td class=muted>{expires}</td><td style=\"text-align:right\">{renew}</td></tr>",
             host = esc(&host),
+            detail = detail,
             cls = cls,
             status = esc(status),
             expires = esc(&expires),
@@ -1204,11 +1260,16 @@ async fn render_project(
             let selected = q
                 .get("deploy")
                 .and_then(|id| deploys.iter().find(|d| &d.id == id));
-            let env = selected
+            let effective = if q.get("env").is_some() {
+                selected
+            } else {
+                selected.or_else(|| deploys.first())
+            };
+            let env = effective
                 .map(|d| d.env.clone())
                 .or_else(|| q.get("env").cloned())
                 .unwrap_or_else(|| "production".into());
-            let build = match selected {
+            let build = match effective {
                 Some(d) => st
                     .db
                     .deploy_log(&app.name, &d.id)
@@ -1222,7 +1283,7 @@ async fn render_project(
                     .flatten()
                     .unwrap_or_default(),
             };
-            let kind = selected
+            let kind = effective
                 .map(|d| {
                     if d.image.is_some() {
                         "docker"
@@ -1231,7 +1292,7 @@ async fn render_project(
                     }
                 })
                 .unwrap_or(app.kind.as_str());
-            let container = selected.and_then(|d| d.container.clone());
+            let container = effective.and_then(|d| d.container.clone());
             let runtime = if kind == "docker" {
                 crate::deploy::container_logs(&app.name, &env, container.as_deref(), 200).await
             } else {
@@ -1290,7 +1351,7 @@ async fn render_project(
             } else {
                 format!("<pre class=log id=runtime-log>{}</pre>", esc(&runtime))
             };
-            let deploy_q = selected
+            let deploy_q = effective
                 .map(|d| format!("&deploy={}", d.id))
                 .unwrap_or_default();
             let live_btn = if kind == "docker" {
@@ -1327,7 +1388,7 @@ async fn render_project(
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Logs</h2><div class=row>{live_btn}</div></div>\
 <form class=\"row\" method=get action=\"/dashboard/project/{app}/logs\" style=\"margin:10px 0 16px\">\
-<label class=sr for=deploy-select>Deploy</label><select id=deploy-select name=deploy style=\"max-width:420px\">{selector}</select><button class=\"btn\">Show deploy</button></form>\
+<label class=sr for=deploy-select>Deploy</label><select id=deploy-select name=deploy onchange=\"this.form.submit()\" style=\"max-width:420px\">{selector}</select><button class=\"btn\">Show deploy</button></form>\
 <div class=\"row small\" style=\"margin-bottom:4px\"><h3 style=\"margin:0\">Build log</h3>{copy_btn}</div>{build_body}\
 <div class=\"row small\" style=\"margin:18px 0 4px\"><h3 style=\"margin:0\">Runtime log</h3>{runtime_btns}</div>{runtime_body}\
 {stats_line}\
@@ -1472,7 +1533,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                     text = esc(&text)
                 )
             } else {
-                "<div class=error>You have read-only access to this project. Values are hidden; ask an owner or admin to change them.</div>".to_string()
+                "<div class=card><span class=muted>You have read-only access to this project. Values are hidden; ask an owner or admin to change them.</span></div>".to_string()
             };
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Environment · {env}</h2><div class=row>{switches}</div></div>\
@@ -1496,6 +1557,16 @@ liveCtl=null;b.textContent='Live stream';}}\
             let mut rows = String::new();
             for d in &domains {
                 let primary = app.domain.as_deref() == Some(d.as_str());
+                let promote = if can && !primary {
+                    format!(
+                        "<form class=inline method=post action=\"/dashboard/domains/{app}/primary\">{csrf}<input type=hidden name=host value=\"{host}\"><button class=\"btn link\">Make primary</button></form> ",
+                        app = esc(&app.name),
+                        csrf = csrf,
+                        host = esc(d)
+                    )
+                } else {
+                    String::new()
+                };
                 let remove = if can {
                     format!(
                         "<form class=inline method=post action=\"/dashboard/domains/{app}/remove\" {confirm}>{csrf}<input type=hidden name=host value=\"{host}\">\
@@ -1512,9 +1583,10 @@ liveCtl=null;b.textContent='Live stream';}}\
                     String::new()
                 };
                 rows.push_str(&format!(
-                    "<tr><td><code>{host}</code>{badge}</td><td style=\"text-align:right\">{remove}</td></tr>",
+                    "<tr><td><code>{host}</code>{badge}</td><td style=\"text-align:right\">{promote}{remove}</td></tr>",
                     host = esc(d),
                     badge = if primary { " <span class=\"badge env\">primary</span>" } else { "" },
+                    promote = promote,
                     remove = remove
                 ));
             }
@@ -1534,7 +1606,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             content.push_str(&format!(
                 "<h2 style=\"margin-top:18px\">Domains</h2>\
 <div class=muted small style=\"margin-bottom:12px\">Default: <code>{default}</code>. Point DNS at this host before adding a custom domain.</div>\
-<div style=\"overflow:auto\"><table><tbody>{rows}</tbody></table></div>\
+<div style=\"overflow:auto\"><table><thead><tr><th>Domain</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>\
 {add_domain}\
 <h2 style=\"margin-top:36px\">Certificates</h2>{certs}",
                 default = esc(&domain_of(st, app)),
@@ -1588,7 +1660,15 @@ liveCtl=null;b.textContent='Live stream';}}\
                     max = s.max_body_mb.unwrap_or(0)
                 )
             } else {
-                "<div class=error>You have read-only access to proxy settings. Ask an owner or admin to change them.</div>".to_string()
+                format!(
+                    "<div class=card><span class=muted>You have read-only access to proxy settings.</span><div class=\"small\" style=\"margin-top:8px\">Custom headers: <code>{headers}</code><br>Basic auth user: {user}<br>Redirect: {redirect}<br>Compression: {comp}<br>Force HTTPS: {https}<br>Max body: {max} MB</div></div>",
+                    headers = if headers.is_empty() { "none".to_string() } else { esc(&headers) },
+                    user = esc(s.basic_auth_user.as_deref().unwrap_or("none")),
+                    redirect = esc(redirect),
+                    comp = if s.compression { "on" } else { "off" },
+                    https = if s.force_https { "on" } else { "off" },
+                    max = s.max_body_mb.map(|m| m.to_string()).unwrap_or_else(|| "unlimited".into())
+                )
             };
             content.push_str(&format!(
                 "<h2 style=\"margin-top:18px\">Proxy</h2>\
@@ -1621,7 +1701,11 @@ liveCtl=null;b.textContent='Live stream';}}\
                     framework = esc(app.framework.as_deref().unwrap_or(""))
                 )
             } else {
-                "<div class=error>You have read-only access to project settings. Ask an owner or admin to change them.</div>".to_string()
+                format!(
+                    "<div class=card><span class=muted>You have read-only access to project settings.</span><div class=\"small\" style=\"margin-top:8px\">Git repository: <code>{repo}</code><br>Framework: {framework}</div></div>",
+                    repo = esc(app.repo.as_deref().unwrap_or("none")),
+                    framework = esc(app.framework.as_deref().unwrap_or("auto"))
+                )
             };
             let branch = st
                 .db
@@ -1657,8 +1741,10 @@ liveCtl=null;b.textContent='Live stream';}}\
                 )
             } else {
                 format!(
-                    "<h2 style=\"margin-top:36px\">GitHub webhook</h2><div class=muted small>Payload URL <code>{}</code></div>",
-                    esc(&webhook_url)
+                    "<h2 style=\"margin-top:36px\">GitHub webhook</h2><div class=card><div class=muted small>Payload URL</div><code>{}</code><div class=\"muted small\" style=\"margin-top:6px\">Production branch: {branch} · secret {secret}</div></div>",
+                    esc(&webhook_url),
+                    branch = if branch.is_empty() { "not set".to_string() } else { esc(&branch) },
+                    secret = if secret_set { "configured" } else { "not set" }
                 )
             };
             let danger = if can {
@@ -1677,8 +1763,25 @@ liveCtl=null;b.textContent='Live stream';}}\
             } else {
                 String::new()
             };
+            let local_repo = app.repo.as_deref().filter(|r| {
+                std::path::Path::new(r).is_absolute()
+                    && std::path::Path::new(r).starts_with(st.data.join("repos"))
+            });
+            let git_hint = if let Some(repo) = local_repo {
+                format!(
+                    "<div class=\"muted small\" style=\"margin-top:10px\">Server git remote: <code>{}</code></div>",
+                    esc(repo)
+                )
+            } else if app.repo.is_none() {
+                format!(
+                    "<div class=\"muted small\" style=\"margin-top:10px\">Or initialize a server-side git remote with <code>dok git-init {}</code>.</div>",
+                    esc(&app.name)
+                )
+            } else {
+                String::new()
+            };
             content.push_str(&format!(
-                "<h2 style=\"margin-top:18px\">Settings</h2>{settings_form}{webhook_form}{danger}"
+                "<h2 style=\"margin-top:18px\">Settings</h2>{settings_form}{git_hint}{webhook_form}{danger}"
             ));
         }
         _ => {
@@ -2480,6 +2583,10 @@ pub async fn handle(
             Err(e) => Some(server_error(&e.to_string())),
         };
     }
+    if rest == "logout" {
+        let _ = st.db.delete_sessions_for_user(&user.id);
+        return Some(redirect_flash("/", true, "Signed out."));
+    }
     if rest == "logout-all" {
         let _ = st.db.delete_sessions_for_user(&user.id);
         return Some(redirect_flash("/", true, "Signed out on every device."));
@@ -2513,13 +2620,7 @@ pub async fn handle(
             ));
         }
         let base = crate::auth::slugify(&name);
-        let mut slug = base.clone();
-        let mut n = 2;
-        while st.db.team_by_slug(&slug).ok().flatten().is_some() {
-            slug = format!("{base}-{n}");
-            n += 1;
-        }
-        return match st.db.create_team(&name, &slug, &user.id) {
+        return match st.db.create_team_unique(&name, &base, &user.id) {
             Ok(team) => Some(redirect_flash(
                 &format!("/dashboard/team?team={}", team.slug),
                 true,
@@ -2832,6 +2933,30 @@ pub async fn handle(
         }
         "domains" => {
             let back = format!("/dashboard/project/{}/domains", app.name);
+            if tail == "primary" {
+                let host = form
+                    .get("host")
+                    .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
+                    .unwrap_or_default();
+                let known = st
+                    .db
+                    .domains_for(&app.name)
+                    .unwrap_or_default()
+                    .contains(&host)
+                    || app.domain.as_deref() == Some(host.as_str());
+                if !known || !crate::api::valid_host(&host) {
+                    return Some(unprocessable("Unknown domain for this project.", &back));
+                }
+                if let Err(e) = st.db.set_domain(&app.name, &host) {
+                    return Some(server_error(&e.to_string()));
+                }
+                st.sync_traefik();
+                return Some(redirect_flash(
+                    &back,
+                    true,
+                    &format!("{host} is now the primary domain."),
+                ));
+            }
             if tail == "remove" {
                 let host = form
                     .get("host")
@@ -2893,8 +3018,15 @@ pub async fn handle(
                     ));
                 }
             }
-            if let Err(e) = st.db.add_domain(&app.name, &host) {
-                return Some(server_error(&e.to_string()));
+            match st.db.add_domain(&app.name, &host) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Some(unprocessable(
+                        "That domain is already in use by another project.",
+                        &back,
+                    ))
+                }
+                Err(e) => return Some(server_error(&e.to_string())),
             }
             st.sync_traefik();
             Some(redirect_flash(
@@ -2992,7 +3124,9 @@ pub async fn handle(
         }
         "settings" => {
             let repo = form.get("repo").map(|s| s.trim()).unwrap_or("");
-            if !repo.is_empty() && !crate::api::valid_repo_url(repo) {
+            let local_repo = std::path::Path::new(repo).is_absolute()
+                && std::path::Path::new(repo).starts_with(st.data.join("repos"));
+            if !repo.is_empty() && !local_repo && !crate::api::valid_repo_url(repo) {
                 return Some(unprocessable(
                     "Enter a public https://, ssh:// or git@host:path repository, or leave the field blank.",
                     &format!("/dashboard/project/{}/settings", app.name),

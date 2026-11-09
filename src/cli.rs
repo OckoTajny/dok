@@ -158,8 +158,12 @@ pub enum ProxyCmd {
         redirect: Option<String>,
         #[arg(long)]
         compression: bool,
+        #[arg(long = "no-compression")]
+        no_compression: bool,
         #[arg(long)]
         force_https: bool,
+        #[arg(long = "no-force-https")]
+        no_force_https: bool,
         #[arg(long)]
         max_body_mb: Option<u64>,
     },
@@ -176,7 +180,12 @@ pub enum CertsCmd {
 #[derive(Subcommand)]
 pub enum ProjectsCmd {
     /// Create a project.
-    Create { name: String },
+    Create {
+        name: String,
+        /// Team slug or id; defaults to the first writable team.
+        #[arg(long)]
+        team: Option<String>,
+    },
     /// Delete a project and stop its containers.
     Rm { name: String },
 }
@@ -393,11 +402,11 @@ pub fn run(cmd: Cmd) -> Result<()> {
                         .send()?;
                     handle(resp)
                 }
-                Some(ProjectsCmd::Create { name }) => {
+                Some(ProjectsCmd::Create { name, team }) => {
                     let resp = client()?
                         .post(format!("{}/api/v1/projects", base(&cfg)))
                         .bearer_auth(&cfg.token)
-                        .json(&serde_json::json!({"name": name}))
+                        .json(&serde_json::json!({"name": name, "team": team}))
                         .send()?;
                     handle(resp)
                 }
@@ -644,7 +653,9 @@ pub fn run(cmd: Cmd) -> Result<()> {
                     basic_password,
                     redirect,
                     compression,
+                    no_compression,
                     force_https,
+                    no_force_https,
                     max_body_mb,
                 } => {
                     let resp = client()?
@@ -680,11 +691,17 @@ pub fn run(cmd: Cmd) -> Result<()> {
                         }
                         obj.insert("redirect".into(), serde_json::json!(redirect));
                     }
-                    if compression {
-                        obj.insert("compression".into(), serde_json::json!(true));
+                    if compression || no_compression {
+                        obj.insert(
+                            "compression".into(),
+                            serde_json::json!(compression && !no_compression),
+                        );
                     }
-                    if force_https {
-                        obj.insert("force_https".into(), serde_json::json!(true));
+                    if force_https || no_force_https {
+                        obj.insert(
+                            "force_https".into(),
+                            serde_json::json!(force_https && !no_force_https),
+                        );
                     }
                     if let Some(mb) = max_body_mb {
                         obj.insert("max_body_mb".into(), serde_json::json!(mb));

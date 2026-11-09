@@ -71,6 +71,13 @@ DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" env uxapp --secret SMOKE_SECRET=s
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" env pull uxapp | grep -q 'SMOKE_SECRET=\*\*\*'
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy set uxapp --header 'X-Frame-Options: DENY' >/dev/null
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q 'X-Frame-Options'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy set uxapp --compression --force-https >/dev/null
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q '"compression": true'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy set uxapp --no-compression --no-force-https >/dev/null
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q '"compression": false'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q '"force_https": false'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" projects create cli-team-app --team e2e-team >/dev/null
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" apps | grep -q 'cli-team-app'
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" certs list | grep -q '"certificates"'
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" access-log uxapp | grep -q '"requests"'
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" webhook uxapp --branch main >/dev/null

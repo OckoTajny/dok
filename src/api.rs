@@ -1258,10 +1258,11 @@ async fn add_domain(
         return r;
     }
     match st.db.add_domain(&app, &host) {
-        Ok(_) => {
+        Ok(true) => {
             st.sync_traefik();
             Json(json!({"ok": true, "domain": host})).into_response()
         }
+        Ok(false) => (StatusCode::CONFLICT, "domain belongs to another project\n").into_response(),
         Err(e) => internal(e),
     }
 }
@@ -1462,6 +1463,13 @@ pub fn project_url(st: &AppState, app: &crate::db::App) -> String {
         format!("{}://{d}", st.scheme)
     } else if let Some(base) = &st.base_domain {
         format!("{}://{}.{}", st.scheme, app.name, base)
+    } else if let Some(d) = st
+        .db
+        .domains_for(&app.name)
+        .ok()
+        .and_then(|d| d.into_iter().next())
+    {
+        format!("{}://{d}", st.scheme)
     } else {
         st.public_url.clone()
     }
@@ -1633,16 +1641,7 @@ async fn create_team_api(
         return bad("team name must be 1-64 characters");
     }
     let base = crate::auth::slugify(name);
-    let mut slug = base.clone();
-    let mut n = 1;
-    while st.db.team_by_slug(&slug).ok().flatten().is_some() {
-        n += 1;
-        slug = format!("{base}-{n}");
-        if n > 50 {
-            return (StatusCode::CONFLICT, "team slug is taken\n").into_response();
-        }
-    }
-    match st.db.create_team(name, &slug, &caller.user) {
+    match st.db.create_team_unique(name, &base, &caller.user) {
         Ok(t) => Json(t).into_response(),
         Err(e) => internal(e),
     }
@@ -1964,11 +1963,11 @@ fn init_bare_repo(st: &AppState, app: &str) -> anyhow::Result<(String, String)> 
         std::fs::create_dir_all(parent)?;
     }
     let hook_body = format!(
-        "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_QUARANTINE_PATH\nref=\"\"\nwhile read -r _old _new name; do ref=\"$name\"; done\nexec '{}' deploy-git '{}' --data '{}' --ref \"$ref\" >> '{}' 2>&1\n",
-        exe.display(),
-        app,
-        st.data.display(),
-        log.display()
+        "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_QUARANTINE_PATH\nref=\"\"\nwhile read -r _old _new name; do ref=\"$name\"; done\nexec {} deploy-git {} --data {} --ref \"$ref\" >> {} 2>&1\n",
+        shell_quote(&exe.to_string_lossy()),
+        shell_quote(app),
+        shell_quote(&st.data.to_string_lossy()),
+        shell_quote(&log.to_string_lossy())
     );
     let hook_path = dir.join("hooks/post-receive");
     std::fs::write(&hook_path, hook_body)?;
@@ -2033,6 +2032,9 @@ async fn github_hook(
             "too many webhook deliveries\n",
         )
             .into_response();
+    }
+    if st.db.get_app(&app).ok().flatten().is_none() {
+        return not_found();
     }
     let project_secret = st
         .db
@@ -2145,6 +2147,10 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         out.push(((hi << 4) | lo) as u8);
     }
     Some(out)
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn constant_eq(a: &str, b: &str) -> bool {

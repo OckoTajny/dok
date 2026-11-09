@@ -13,6 +13,12 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(unix)]
+fn chmod(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+}
+
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
@@ -383,9 +389,17 @@ impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            chmod(parent, 0o700);
         }
         let mut conn =
             Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            chmod(path, 0o600);
+            chmod(&path.with_extension("db-wal"), 0o600);
+            chmod(&path.with_extension("db-shm"), 0o600);
+        }
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // The server and the post-receive hook open the same file from two
@@ -578,6 +592,25 @@ impl Db {
             name: name.to_string(),
             slug: slug.to_string(),
         })
+    }
+
+    /// Create a team with a race-free slug: retry on the UNIQUE constraint and
+    /// append a numeric suffix. Returns the slug conflict as an error after 50
+    /// attempts.
+    pub fn create_team_unique(&self, name: &str, base: &str, owner: &str) -> Result<Team> {
+        for n in 0..50 {
+            let slug = if n == 0 {
+                base.to_string()
+            } else {
+                format!("{base}-{}", n + 1)
+            };
+            match self.create_team(name, &slug, owner) {
+                Ok(t) => return Ok(t),
+                Err(e) if e.to_string().contains("UNIQUE") => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        anyhow::bail!("team slug is taken")
     }
 
     pub fn teams_for(&self, user_id: &str) -> Result<Vec<Team>> {
@@ -1290,12 +1323,12 @@ impl Db {
 
     // ---------- domains ----------
 
-    pub fn add_domain(&self, app: &str, host: &str) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO domains (host, app, created_at) VALUES (?1, ?2, ?3)",
+    pub fn add_domain(&self, app: &str, host: &str) -> Result<bool> {
+        let changed = self.conn().execute(
+            "INSERT OR IGNORE INTO domains (host, app, created_at) VALUES (?1, ?2, ?3)",
             params![host, app, now()],
         )?;
-        Ok(())
+        Ok(changed == 1)
     }
 
     pub fn deploy_counts(&self, app: &str) -> Result<(i64, i64, i64)> {
@@ -1460,6 +1493,8 @@ impl Db {
         let conn = Connection::open(&*self.path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.execute("VACUUM INTO ?1", params![path.to_string_lossy()])?;
+        #[cfg(unix)]
+        chmod(path, 0o600);
         Ok(())
     }
 
@@ -1640,6 +1675,17 @@ mod tests {
         super::add_column(&tx, "ALTER TABLE t ADD COLUMN y TEXT").unwrap();
         assert!(super::add_column(&tx, "ALTER TABLE missing ADD COLUMN z TEXT").is_err());
         tx.rollback().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (db, path) = tmp_db();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "db mode {mode:o}");
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

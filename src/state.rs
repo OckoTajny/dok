@@ -16,13 +16,25 @@ impl RateLimiter {
     pub fn allow(&self, key: &str, limit: usize, window_secs: i64) -> bool {
         let now = crate::db::now();
         let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let hits = map.entry(key.to_string()).or_default();
-        hits.retain(|t| *t > now - window_secs);
-        if hits.len() >= limit {
-            return false;
+        let allowed = {
+            let hits = map.entry(key.to_string()).or_default();
+            hits.retain(|t| *t > now - window_secs);
+            if hits.len() >= limit {
+                false
+            } else {
+                hits.push(now);
+                true
+            }
+        };
+        // Drop expired/disallowed buckets so a spray of client IPs cannot grow
+        // the map without bound.
+        if map.get(key).map(|h| h.is_empty()).unwrap_or(false) {
+            map.remove(key);
         }
-        hits.push(now);
-        true
+        if map.len() > 4096 {
+            map.retain(|_, hits| !hits.is_empty());
+        }
+        allowed
     }
 }
 
