@@ -143,10 +143,10 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
             } else if first_run {
                 Some(crate::ui::page_setup())
             } else {
-                Some(crate::ui::page_login())
+                Some(crate::ui::page_login_for(&req))
             }
         }
-        ("GET", "/login") => Some(crate::ui::page_login()),
+        ("GET", "/login") => Some(crate::ui::page_login_for(&req)),
         ("GET", p) if p.starts_with("/join/") => {
             let token = p.trim_start_matches("/join/").to_string();
             match (st.db.invite_details(&token), &session) {

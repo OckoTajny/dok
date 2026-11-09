@@ -82,7 +82,8 @@ pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;
 .tabs a.on{color:#fff;border-bottom-color:#ededed}
 .head{padding:26px 0 4px}
 .empty{border:1px dashed #333;border-radius:10px;padding:36px 20px;text-align:center;color:#999}
-.notice{border:1px solid #1f4426;background:#07130a;color:#7ee787;border-radius:8px;padding:10px 12px;margin:12px 0;font-size:12px;word-break:break-all}
+.notice{border:1px solid #1f4426;background:#07130a;color:#7ee787;border-radius:8px;padding:10px 12px;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
+.inline{display:inline}
 .error{border:1px solid #4b1f1f;background:#170808;color:#ff7b72;border-radius:8px;padding:10px 12px;margin:12px 0;font-size:12px}
 .auth{max-width:400px;margin:11vh auto;padding:0 24px}
 .auth h1{font-size:26px;margin-bottom:8px}
@@ -95,7 +96,7 @@ pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;
 .errpage .code{font-size:12px;color:#999;letter-spacing:.14em;text-transform:uppercase}
 .errpage h1{font-size:30px;margin:8px 0 10px}
 .errpage .meta{border-top:1px solid #222;margin-top:24px;padding-top:14px;font-size:12px;color:#999}
-.errpage .meta div{margin:4px 0;word-break:break-all}
+.errpage .meta div{margin:4px 0;overflow-wrap:anywhere}
 .sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 @media(max-width:760px){
  .wrap{padding:0 16px}
@@ -110,7 +111,8 @@ pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;
  body.nav-open .scrim{display:block}
  .btn,.menu,.tabs a,.side a,.btn.link{min-height:44px}
  body.nav-open{overflow:hidden}
- .tabs a{display:flex;align-items:center;justify-content:center;flex:1 0 auto}
+ .tabs{flex-wrap:nowrap;overflow-x:auto}
+ .tabs a{display:flex;align-items:center;justify-content:center;flex:0 0 auto}
  .grid{grid-template-columns:1fr}
  input,select,textarea{font-size:16px}
  .head{padding-top:18px}
@@ -230,10 +232,16 @@ pub fn page_setup() -> Response<Body> {
     ))
 }
 
-pub fn page_login() -> Response<Body> {
+pub fn page_login_for(req: &Request<Body>) -> Response<Body> {
+    let flash = take_flash(req);
+    with_flash_cleared(login_page(flash.as_ref()))
+}
+
+fn login_page(flash: Option<&Flash>) -> Response<Body> {
     let inner = format!(
-        r#"{}<p class=small style="margin:0 0 14px">Use the passkey you registered for this instance.</p>
+        r#"{}{}<p class=small style="margin:0 0 14px">Use the passkey you registered for this instance.</p>
 <form onsubmit="login();return false"><button id=go class="btn primary" type=submit style="width:100%">Sign in with passkey</button></form>"#,
+        flash_banner(flash),
         err_box()
     );
     html(auth_page(
@@ -569,6 +577,36 @@ pub(crate) fn redirect_flash(to: &str, ok: bool, msg: &str) -> Response<Body> {
         .unwrap()
 }
 
+fn take_invite_once(req: &Request<Body>) -> Option<String> {
+    dec_cookie(&cookie_value(req, "dok_invite_once")?)
+}
+
+fn redirect_invite(to: &str, token: &str) -> Response<Body> {
+    let value = enc_cookie(token);
+    let location = header::HeaderValue::from_str(to)
+        .unwrap_or_else(|_| header::HeaderValue::from_static("/dashboard/team"));
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, location)
+        .header(
+            header::SET_COOKIE,
+            format!(
+                "dok_invite_once={value}; Path=/dashboard/team; HttpOnly; SameSite=Lax; Max-Age=60"
+            ),
+        )
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn with_invite_cleared(mut resp: Response<Body>) -> Response<Body> {
+    if let Ok(v) = header::HeaderValue::from_str(
+        "dok_invite_once=; Path=/dashboard/team; HttpOnly; SameSite=Lax; Max-Age=0",
+    ) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
+    }
+    resp
+}
+
 fn take_token_once(req: &Request<Body>) -> Option<String> {
     dec_cookie(&cookie_value(req, "dok_token_once")?)
 }
@@ -746,12 +784,15 @@ fn sidebar(
     selected: Option<&Team>,
     csrf: &str,
     active_app: Option<&str>,
+    active_section: Option<&str>,
 ) -> String {
     let mut s = String::from("<aside class=side id=sidebar aria-label=Sidebar>");
     s.push_str("<button class=\"btn link close\" id=nav-close type=button onclick=\"toggleNav()\">Close menu</button>");
     s.push_str("<div class=side-title>Teams</div>");
     for t in teams {
-        let on = active_app.is_none() && selected.map(|x| x.id == t.id).unwrap_or(false);
+        let on = active_app.is_none()
+            && active_section.is_none()
+            && selected.map(|x| x.id == t.id).unwrap_or(false);
         s.push_str(&format!(
             "<a class=\"{}\" href=\"/dashboard?team={}\"{}>{}</a>",
             if on { "on" } else { "" },
@@ -761,9 +802,12 @@ fn sidebar(
         ));
     }
     if let Some(team) = selected {
+        let team_on = active_section == Some("team");
         s.push_str(&format!(
-            "<a href=\"/dashboard/team?team={}\">Members &amp; invites</a>",
-            esc(&team.slug)
+            "<a class=\"{}\" href=\"/dashboard/team?team={}\"{}>Members &amp; invites</a>",
+            if team_on { "on" } else { "" },
+            esc(&team.slug),
+            if team_on { " aria-current=page" } else { "" }
         ));
         s.push_str("<div class=side-title>Projects</div>");
         let mut apps = db.apps_for_team(&team.id).unwrap_or_default();
@@ -782,11 +826,17 @@ fn sidebar(
             ));
         }
     }
+    let account_on = active_section == Some("account");
+    let team_q = selected
+        .map(|t| format!("?team={}", t.slug))
+        .unwrap_or_default();
     s.push_str(&format!(
         "<div class=side-title>Account</div><div class=muted style=\"padding:0 8px;margin-left:-8px;font-size:12px\">{}</div>\
-<a href=\"/dashboard/account\">API tokens</a>\
+<a class=\"{}\" href=\"/dashboard/account{team_q}\"{}>API tokens</a>\
 <a href=\"#\" onclick=\"fetch('/auth/logout',{{method:'POST',headers:{{'x-csrf':'{csrf}'}}}}).then(()=>location.href='/');return false\">Sign out</a>",
         esc(&user.email),
+        if account_on { "on" } else { "" },
+        if account_on { " aria-current=page" } else { "" },
         csrf = esc(csrf)
     ));
     let _ = st;
@@ -802,6 +852,7 @@ fn layout_with_sidebar(
     selected: Option<&Team>,
     csrf: &str,
     active_app: Option<&str>,
+    active_section: Option<&str>,
     title: &str,
     flash: Option<&Flash>,
     main: &str,
@@ -828,7 +879,16 @@ function copyText(t,b){{if(!navigator.clipboard)return;navigator.clipboard.write
         user = esc(&user.name),
         team = esc(selected.map(|t| t.name.as_str()).unwrap_or("")),
         flash = flash_banner(flash),
-        side = sidebar(st, db, user, teams, selected, csrf, active_app),
+        side = sidebar(
+            st,
+            db,
+            user,
+            teams,
+            selected,
+            csrf,
+            active_app,
+            active_section
+        ),
         main = main
     );
     page(title, &body)
@@ -904,16 +964,22 @@ fn render_dashboard(
                     .trim_start_matches("http://")
             })
             .unwrap_or("not routed yet");
-        let host_html = url
-            .as_deref()
-            .map(|u| {
-                format!(
-                    "<a href=\"{}\" target=_blank rel=noreferrer>{}</a>",
-                    esc(u),
-                    esc(host)
-                )
-            })
-            .unwrap_or_else(|| esc(host));
+        let host_html = if latest.is_some() {
+            url.as_deref()
+                .map(|u| {
+                    format!(
+                        "<a href=\"{}\" target=_blank rel=noreferrer>{}</a>",
+                        esc(u),
+                        esc(host)
+                    )
+                })
+                .unwrap_or_else(|| esc(host))
+        } else {
+            format!(
+                "{} <span class=muted>· awaiting first deploy</span>",
+                esc(host)
+            )
+        };
         let (badge, meta) = match latest {
             Some(d) => {
                 let short: String = d.id.chars().take(8).collect();
@@ -921,8 +987,13 @@ fn render_dashboard(
                     .commit_message
                     .as_deref()
                     .map(|m| {
+                        let branch = d
+                            .branch
+                            .as_deref()
+                            .map(|b| format!(" <span class=\"badge\">{}</span>", esc(b)))
+                            .unwrap_or_default();
                         format!(
-                            "<div class=muted small style=\"margin-top:4px\">{} <code>{}</code></div>",
+                            "<div class=muted small style=\"margin-top:4px\">{} <code>{}</code>{branch}</div>",
                             esc(&m.chars().take(52).collect::<String>()),
                             esc(d.commit_sha.as_deref().unwrap_or("").chars().take(7).collect::<String>().as_str())
                         )
@@ -1021,6 +1092,7 @@ fn render_dashboard(
             &teams,
             selected.as_ref(),
             &session.csrf,
+            None,
             None,
             &format!("{team_name} · Projects"),
             flash,
@@ -1177,9 +1249,10 @@ async fn render_project(
             for d in &deploys {
                 let short = &d.id[..d.id.len().min(8)];
                 selector.push_str(&format!(
-                    "<option value=\"{id}\"{sel}>{} · {} · {} · {}</option>",
+                    "<option value=\"{id}\"{sel}>{} · {} · {} · {} · {}</option>",
                     short,
                     d.env,
+                    d.branch.as_deref().unwrap_or("-"),
                     d.status,
                     fmt_time(d.created_at),
                     id = esc(&d.id),
@@ -1267,7 +1340,7 @@ function downloadLog(id,name){{var el=document.getElementById(id);if(!el)return;
 async function toggleLive(url){{var b=document.getElementById('live-btn');var el=document.getElementById('runtime-log');\
 if(liveCtl){{liveCtl.abort();liveCtl=null;b.textContent='Resume stream';return;}}\
 if(!el){{el=document.createElement('pre');el.className='log';el.id='runtime-log';document.querySelectorAll('.empty').forEach(function(e){{if(e.textContent.indexOf('No runtime output')>=0)e.replaceWith(el)}});}}\
-liveCtl=new AbortController();b.textContent='Pause';\
+liveCtl=new AbortController();b.textContent='Pause';el.textContent='';\
 try{{var r=await fetch(url,{{signal:liveCtl.signal}});var rd=r.body.getReader();var dec=new TextDecoder();\
 while(true){{var n=await rd.read();if(n.done)break;el.textContent+=dec.decode(n.value,{{stream:true}});el.scrollTop=el.scrollHeight;}}\
 }}catch(e){{if(e.name!=='AbortError')el.textContent+='\\n[stream stopped: '+e.message+']\\n';}}\
@@ -1333,6 +1406,37 @@ liveCtl=null;b.textContent='Live stream';}}\
                     current = current,
                     update = update
                 ));
+            }
+            if env != "production" {
+                let specified: Vec<&str> = vars.iter().map(|(k, _, _)| k.as_str()).collect();
+                let production_secrets: Vec<String> = st
+                    .db
+                    .env(&app.name, "production")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|(_, _, s)| *s)
+                    .map(|(k, _, _)| k)
+                    .collect();
+                for (k, v) in st.db.env_resolved(&app.name, &env).unwrap_or_default() {
+                    if specified.contains(&k.as_str()) {
+                        continue;
+                    }
+                    let hidden = !can || production_secrets.contains(&k);
+                    let current = if hidden {
+                        "<span class=muted>••••••••</span> <span class=\"badge\">inherited</span>"
+                            .to_string()
+                    } else {
+                        format!(
+                            "<code>{}</code> <span class=\"badge\">inherited</span>",
+                            esc(&v)
+                        )
+                    };
+                    rows.push_str(&format!(
+                        "<div class=envitem><div class=\"row between\"><code class=k>{key}</code><div class=small>{current}</div></div></div>",
+                        key = esc(&k),
+                        current = current
+                    ));
+                }
             }
             if rows.is_empty() {
                 rows.push_str("<div class=empty><strong>No variables in this environment</strong><div class=\"small\" style=\"margin-top:6px\">Add the first one below. Values are passed to the next deploy.</div></div>");
@@ -1590,7 +1694,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                 let mut actions = String::new();
                 if can && d.status == "ok" && d.env != "production" {
                     actions.push_str(&format!(
-                        "<form class=inline method=post action=\"/dashboard/promote/{}/{}\">{}<button class=\"btn link\">Promote to production</button></form> ",
+                        "<form class=inline method=post action=\"/dashboard/promote/{}/{}\" onsubmit=\"this.querySelector('button').disabled=true;this.querySelector('button').textContent='Working…'\">{}<button class=\"btn link\">Promote to production</button></form> ",
                         esc(&app.name),
                         esc(&d.id),
                         csrf
@@ -1612,7 +1716,14 @@ liveCtl=null;b.textContent='Live stream';}}\
                         ))
                     ));
                 }
-                let mut meta = esc(d.author.as_deref().unwrap_or("token"));
+                let mut meta = esc(d
+                    .commit_author
+                    .as_deref()
+                    .or(d.author.as_deref())
+                    .unwrap_or("token"));
+                if let Some(branch) = &d.branch {
+                    meta.push_str(&format!(" <span class=\"badge\">{}</span>", esc(branch)));
+                }
                 if let Some(sha) = &d.commit_sha {
                     let s8 = &sha[..sha.len().min(7)];
                     let msg = d.commit_message.as_deref().unwrap_or("");
@@ -1649,7 +1760,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             }
             let redeploy = if can && app.repo.is_some() {
                 format!(
-                    "<form class=inline method=post action=\"/dashboard/redeploy/{}\">{}<button class=\"btn\">Redeploy from git</button></form>",
+                    "<form class=inline method=post action=\"/dashboard/redeploy/{}\" onsubmit=\"this.querySelector('button').disabled=true;this.querySelector('button').textContent='Deploying…'\">{}<button class=\"btn\">Redeploy from git</button></form>",
                     esc(&app.name),
                     csrf
                 )
@@ -1708,14 +1819,18 @@ liveCtl=null;b.textContent='Live stream';}}\
         }
     }
 
-    let open_btn = public_url_for(st, app)
-        .map(|u| {
-            format!(
-                "<a class=btn href=\"{}\" target=_blank rel=noreferrer>Open app</a>",
-                esc(&u)
-            )
-        })
-        .unwrap_or_default();
+    let open_btn = if app.production_deploy.is_some() {
+        public_url_for(st, app)
+            .map(|u| {
+                format!(
+                    "<a class=btn href=\"{}\" target=_blank rel=noreferrer>Open app</a>",
+                    esc(&u)
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let domain_html = match public_url_for(st, app) {
         Some(url) => format!(
             "<a href=\"{}\" target=_blank rel=noreferrer>{}</a>",
@@ -1749,6 +1864,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             selected.as_ref(),
             &session.csrf,
             Some(&app.name),
+            None,
             &format!("{} · {}", app.name, tab_label(tab)),
             flash,
             &main,
@@ -1819,6 +1935,7 @@ fn render_account(
             selected.as_ref(),
             &session.csrf,
             None,
+            Some("account"),
             "Account",
             flash,
             &main,
@@ -1869,9 +1986,14 @@ fn render_team(
     };
 
     let members = st.db.members(&team.id).unwrap_or_default();
+    let owner_count = st.db.owner_count(&team.id).unwrap_or(0);
+    let actor_is_owner = actor_role.as_deref() == Some("owner");
     let mut rows = String::new();
     for (u, role) in &members {
         let current = role.as_str();
+        let last_owner = current == "owner" && owner_count <= 1;
+        let protected = matches!(current, "owner" | "admin") && !actor_is_owner;
+        let editable = can_manage && !last_owner && !protected;
         let mut opts = String::new();
         let mut seen: Vec<&str> = Vec::new();
         for r in granted.iter().copied().chain(std::iter::once(current)) {
@@ -1884,7 +2006,7 @@ fn render_team(
                 if r == current { " selected" } else { "" }
             ));
         }
-        let actions = if can_manage {
+        let actions = if editable {
             format!(
                 "<form class=row method=post action=/dashboard/team/role>{csrf}\
 <input type=hidden name=team value=\"{slug}\"><input type=hidden name=user value=\"{uid}\">\
@@ -2031,6 +2153,7 @@ fn render_team(
             Some(&team),
             &session.csrf,
             None,
+            Some("team"),
             &format!("{} · Team", team.name),
             flash,
             &main,
@@ -2053,21 +2176,22 @@ fn check_csrf(session: &Session, form: &HashMap<String, String>) -> Result<(), R
     }
 }
 
-fn parse_vars(text: &str) -> Vec<(String, String, bool)> {
+fn parse_vars(text: &str) -> Result<Vec<(String, String, bool)>, String> {
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if let Some((k, v)) = line.split_once('=') {
-            let k = k.trim();
-            if !k.is_empty() {
-                out.push((k.to_string(), v.trim().to_string(), false));
-            }
+        let Some((k, v)) = line.split_once('=') else {
+            return Err(format!("Expected KEY=VALUE, got: {line}"));
+        };
+        let k = k.trim();
+        if !k.is_empty() {
+            out.push((k.to_string(), v.trim().to_string(), false));
         }
     }
-    out
+    Ok(out)
 }
 
 fn create_project(
@@ -2079,16 +2203,15 @@ fn create_project(
         .get("name")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    let back = form
+        .get("team")
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("/dashboard?team={s}"))
+        .unwrap_or_else(|| "/dashboard".into());
     if !crate::api::valid_name(&name) {
         return Err(unprocessable(
             "Project names must be lowercase letters, digits and dashes (max 63 characters).",
-            "/dashboard",
-        ));
-    }
-    if st.db.get_app(&name).ok().flatten().is_some() {
-        return Err(unprocessable(
-            "A project with that name already exists.",
-            "/dashboard",
+            &back,
         ));
     }
     let team = if let Some(slug) = form.get("team").filter(|s| !s.is_empty()) {
@@ -2097,12 +2220,12 @@ fn create_project(
             .team_by_slug(slug)
             .ok()
             .flatten()
-            .ok_or_else(|| unprocessable("No such team.", "/dashboard"))?;
+            .ok_or_else(|| unprocessable("No such team.", &back))?;
         let role = st.db.role(&t.id, &user.id).ok().flatten();
         if !crate::db::can_write(role.as_deref()) {
             return Err(unprocessable(
                 "You cannot create projects in this team.",
-                "/dashboard",
+                &back,
             ));
         }
         Some(t)
@@ -2119,7 +2242,7 @@ fn create_project(
     let Some(team) = team else {
         return Err(unprocessable(
             "You are not an owner or admin of any team.",
-            "/dashboard",
+            &back,
         ));
     };
     let app = App {
@@ -2139,9 +2262,33 @@ fn create_project(
         framework: None,
         updated_at: crate::db::now(),
     };
-    st.db
-        .upsert_app(&app)
-        .map_err(|e| crate::ui::server_error(&e.to_string()))?;
+    if !st
+        .db
+        .create_app_if_absent(&app)
+        .map_err(|e| crate::ui::server_error(&e.to_string()))?
+    {
+        let writable = st
+            .db
+            .get_app(&name)
+            .ok()
+            .flatten()
+            .map(|a| {
+                let role = a
+                    .team_id
+                    .as_deref()
+                    .and_then(|tid| st.db.role(tid, &user.id).ok().flatten());
+                crate::db::can_write(role.as_deref())
+            })
+            .unwrap_or(false);
+        return Err(unprocessable(
+            if writable {
+                "A project with that name already exists."
+            } else {
+                "You cannot create that project."
+            },
+            &back,
+        ));
+    }
     st.sync_traefik();
     Ok(())
 }
@@ -2240,14 +2387,14 @@ pub async fn handle(
             ));
         }
         if path == "/dashboard/team" {
-            return Some(render_team(
-                st,
-                &user,
-                &session,
-                &query,
-                None,
-                flash.as_ref(),
-            ));
+            let invite = take_invite_once(&req);
+            let has_invite = invite.is_some();
+            let resp = render_team(st, &user, &session, &query, invite, flash.as_ref());
+            return Some(if has_invite {
+                with_invite_cleared(resp)
+            } else {
+                resp
+            });
         }
         let rest = path.trim_start_matches("/dashboard/");
         let mut parts = rest.splitn(2, '/');
@@ -2406,18 +2553,10 @@ pub async fn handle(
             .db
             .create_invite(&team.id, &role, 7 * 86400, Some(&user.id))
         {
-            Ok(token) => {
-                let mut ctx = query.clone();
-                ctx.insert("team".into(), team.slug.clone());
-                Some(render_team(
-                    st,
-                    &user,
-                    &session,
-                    &ctx,
-                    Some(token),
-                    flash.as_ref(),
-                ))
-            }
+            Ok(token) => Some(redirect_invite(
+                &format!("/dashboard/team?team={}", team.slug),
+                &token,
+            )),
             Err(e) => Some(server_error(&e.to_string())),
         };
     } else if rest == "team/invite/revoke" {
@@ -2473,17 +2612,17 @@ pub async fn handle(
                     &back,
                 ));
             }
-            if target_role.as_deref() == Some("owner")
-                && st.db.owner_count(&team.id).unwrap_or(0) <= 1
-            {
-                return Some(unprocessable(
+            return match st.db.remove_member_checked(&team.id, &target) {
+                Ok(crate::db::MemberChange::Changed) => {
+                    Some(redirect_flash(&back, true, "Member removed."))
+                }
+                Ok(crate::db::MemberChange::NotFound) => {
+                    Some(unprocessable("That person is not a member.", &back))
+                }
+                Ok(crate::db::MemberChange::LastOwner) => Some(unprocessable(
                     "This is the last owner. Promote someone else to owner first.",
                     &back,
-                ));
-            }
-            return match st.db.remove_member(&team.id, &target) {
-                Ok(0) => Some(unprocessable("That person is not a member.", &back)),
-                Ok(_) => Some(redirect_flash(&back, true, "Member removed.")),
+                )),
                 Err(e) => Some(server_error(&e.to_string())),
             };
         }
@@ -2491,27 +2630,32 @@ pub async fn handle(
         if !matches!(role.as_str(), "owner" | "admin" | "member" | "viewer") {
             return Some(unprocessable("Unknown role.", &back));
         }
+        if matches!(target_role.as_deref(), Some("owner") | Some("admin"))
+            && actor_role.as_deref() != Some("owner")
+        {
+            return Some(unprocessable(
+                "Only an owner can change an owner or admin role.",
+                &back,
+            ));
+        }
         if !crate::db::can_grant(actor_role.as_deref(), &role) {
             return Some(unprocessable(
                 "You cannot grant that role. Only owners may grant admin or owner.",
                 &back,
             ));
         }
-        if target_role.as_deref() == Some("owner")
-            && role != "owner"
-            && st.db.owner_count(&team.id).unwrap_or(0) <= 1
-        {
-            return Some(unprocessable(
-                "This is the last owner. Promote someone else to owner first.",
-                &back,
-            ));
-        }
-        return match st.db.update_member_role(&team.id, &target, &role) {
-            Ok(0) => Some(unprocessable("That person is not a member.", &back)),
-            Ok(_) => Some(redirect_flash(
+        return match st.db.update_member_role_checked(&team.id, &target, &role) {
+            Ok(crate::db::MemberChange::Changed) => Some(redirect_flash(
                 &back,
                 true,
                 &format!("Role changed to {role}."),
+            )),
+            Ok(crate::db::MemberChange::NotFound) => {
+                Some(unprocessable("That person is not a member.", &back))
+            }
+            Ok(crate::db::MemberChange::LastOwner) => Some(unprocessable(
+                "This is the last owner. Promote someone else to owner first.",
+                &back,
             )),
             Err(e) => Some(server_error(&e.to_string())),
         };
@@ -2564,7 +2708,7 @@ pub async fn handle(
             Ok(_) => Some(redirect_flash(
                 &deployments,
                 true,
-                "Redeploy started. The log below updates as it builds.",
+                "Redeploy finished. Open the deploy log for details.",
             )),
             Err(e) => Some(redirect_flash(
                 &deployments,
@@ -2619,7 +2763,10 @@ pub async fn handle(
                 ));
             }
             if op == "bulk" {
-                let vars = parse_vars(form.get("vars").map(String::as_str).unwrap_or(""));
+                let vars = match parse_vars(form.get("vars").map(String::as_str).unwrap_or("")) {
+                    Ok(v) => v,
+                    Err(msg) => return Some(unprocessable(&msg, &back)),
+                };
                 for (k, _, _) in &vars {
                     if !valid_env_key(k) {
                         return Some(unprocessable(
@@ -2775,6 +2922,11 @@ pub async fn handle(
             }
             if ps.basic_auth_user.is_none() {
                 ps.basic_auth_hash = None;
+            } else if ps.basic_auth_hash.is_none() {
+                return Some(unprocessable(
+                    "Enter a basic-auth password the first time you enable a user.",
+                    &back,
+                ));
             }
             ps.redirect = Some(
                 form.get("redirect")
@@ -2867,12 +3019,21 @@ pub async fn handle(
             crate::deploy::stop_container(&app.name, "preview").await;
             crate::deploy::stop_all_previews(&app.name).await;
             let _ = tokio::fs::remove_dir_all(st.builds_dir().join(&app.name)).await;
+            let _ =
+                tokio::fs::remove_dir_all(st.data.join("repos").join(format!("{}.git", app.name)))
+                    .await;
             if let Err(e) = st.db.delete_app(&app.name) {
                 return Some(server_error(&e.to_string()));
             }
             st.sync_traefik();
+            let slug = app
+                .team_id
+                .as_deref()
+                .and_then(|tid| st.db.team(tid).ok().flatten())
+                .map(|t| t.slug)
+                .unwrap_or_default();
             Some(redirect_flash(
-                "/dashboard",
+                &format!("/dashboard?team={slug}"),
                 true,
                 &format!("Project {} deleted.", app.name),
             ))
@@ -2891,7 +3052,7 @@ mod tests {
 
     #[test]
     fn parses_env_lines() {
-        let v = parse_vars("# comment\nA=1\n B = two words \nbadline\n\nC=\n");
+        let v = parse_vars("# comment\nA=1\n B = two words \n\nC=\n").unwrap();
         assert_eq!(
             v,
             vec![
@@ -2900,6 +3061,7 @@ mod tests {
                 ("C".into(), "".into(), false),
             ]
         );
+        assert!(parse_vars("A=1\nbadline").is_err());
     }
 
     #[test]

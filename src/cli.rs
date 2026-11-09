@@ -35,6 +35,9 @@ pub enum Cmd {
         follow: bool,
         #[arg(long, default_value = "production")]
         env: String,
+        /// Select one deploy id (useful for preview containers).
+        #[arg(long)]
+        deploy: Option<String>,
     },
     /// Set environment variables (KEY=VALUE ...). `env pull <app>` prints them.
     Env {
@@ -192,6 +195,16 @@ pub enum TeamCmd {
     Invites { team: String },
     /// Revoke an invite link.
     Revoke { team: String, token: String },
+    /// Create a team.
+    Create { name: String },
+    /// Change a member role.
+    Role {
+        team: String,
+        user: String,
+        role: String,
+    },
+    /// Remove a member.
+    Remove { team: String, user: String },
 }
 
 #[derive(Subcommand)]
@@ -398,12 +411,21 @@ pub fn run(cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Push(args) => push(args),
-        Cmd::Logs { app, follow, env } => {
+        Cmd::Logs {
+            app,
+            follow,
+            env,
+            deploy,
+        } => {
             let cfg = load_config()?;
+            let deploy_q = deploy
+                .as_deref()
+                .map(|d| format!("&deploy={d}"))
+                .unwrap_or_default();
             if follow {
                 let mut resp = client()?
                     .get(format!(
-                        "{}/api/v1/projects/{app}/logs/stream?env={env}",
+                        "{}/api/v1/projects/{app}/logs/stream?env={env}{deploy_q}",
                         base(&cfg)
                     ))
                     .bearer_auth(&cfg.token)
@@ -417,7 +439,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
             }
             let resp = client()?
                 .get(format!(
-                    "{}/api/v1/projects/{app}/logs?env={env}",
+                    "{}/api/v1/projects/{app}/logs?env={env}{deploy_q}",
                     base(&cfg)
                 ))
                 .bearer_auth(&cfg.token)
@@ -563,10 +585,29 @@ pub fn run(cmd: Cmd) -> Result<()> {
                     format!("/api/v1/teams/{team}/invites/{token}"),
                     None,
                 ),
+                TeamCmd::Create { name } => (
+                    "POST",
+                    "/api/v1/teams".to_string(),
+                    Some(serde_json::json!({"name": name})),
+                ),
+                TeamCmd::Role { team, user, role } => (
+                    "PUT",
+                    format!("/api/v1/teams/{team}/members/{user}"),
+                    Some(serde_json::json!({"role": role})),
+                ),
+                TeamCmd::Remove { team, user } => (
+                    "DELETE",
+                    format!("/api/v1/teams/{team}/members/{user}"),
+                    None,
+                ),
             };
             let req = match method {
                 "POST" => client()?
                     .post(format!("{}{path}", base(&cfg)))
+                    .bearer_auth(&cfg.token)
+                    .json(&body.unwrap_or_default()),
+                "PUT" => client()?
+                    .put(format!("{}{path}", base(&cfg)))
                     .bearer_auth(&cfg.token)
                     .json(&body.unwrap_or_default()),
                 "DELETE" => client()?
@@ -800,13 +841,15 @@ pub fn run(cmd: Cmd) -> Result<()> {
             }
             let v: serde_json::Value = resp.json()?;
             let base_url = base(&cfg);
-            let url = match v["domain"].as_str() {
-                Some(d) => format!("{}://{d}", scheme_of(&base_url)),
-                None => {
-                    let (scheme, host) = split_server(&base_url);
-                    format!("{scheme}://{app}.{host}")
+            let url = v["url"].as_str().map(str::to_string).unwrap_or_else(|| {
+                match v["domain"].as_str() {
+                    Some(d) => format!("{}://{d}", scheme_of(&base_url)),
+                    None => {
+                        let (scheme, host) = split_server(&base_url);
+                        format!("{scheme}://{app}.{host}")
+                    }
                 }
-            };
+            });
             println!("{url}");
             Ok(())
         }

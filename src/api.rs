@@ -321,9 +321,6 @@ async fn create_project(
     if !valid_name(&b.name) {
         return bad("invalid project name");
     }
-    if st.db.get_app(&b.name).ok().flatten().is_some() {
-        return (StatusCode::CONFLICT, "project already exists\n").into_response();
-    }
     let team_id = match team_for_caller(&st, &caller, b.team.as_deref()) {
         Ok(t) => t,
         Err(r) => return r,
@@ -345,11 +342,20 @@ async fn create_project(
         framework: None,
         updated_at: crate::db::now(),
     };
-    match st.db.upsert_app(&app) {
-        Ok(_) => {
+    match st.db.create_app_if_absent(&app) {
+        Ok(true) => {
             st.sync_traefik();
             Json(app).into_response()
         }
+        Ok(false) => match st.db.get_app(&b.name) {
+            Ok(Some(existing)) => {
+                if let Err(r) = require_write(&st, &caller, &existing) {
+                    return r;
+                }
+                (StatusCode::CONFLICT, "project already exists\n").into_response()
+            }
+            _ => internal(anyhow::anyhow!("project disappeared")),
+        },
         Err(e) => internal(e),
     }
 }
@@ -360,7 +366,11 @@ async fn get_project(
     Path(app): Path<String>,
 ) -> Response {
     match project_for(&st, &caller, &app) {
-        Ok(a) => Json(a).into_response(),
+        Ok(a) => {
+            let mut v = serde_json::to_value(&a).unwrap_or_else(|_| json!({}));
+            v["url"] = json!(project_url(&st, &a));
+            Json(v).into_response()
+        }
         Err(r) => r,
     }
 }
@@ -381,6 +391,7 @@ async fn delete_project(
     deploy::stop_container(&app, "preview").await;
     deploy::stop_all_previews(&app).await;
     let _ = tokio::fs::remove_dir_all(st.builds_dir().join(&app)).await;
+    let _ = tokio::fs::remove_dir_all(st.data.join("repos").join(format!("{app}.git"))).await;
     match st.db.delete_app(&app) {
         Ok(_) => {
             st.sync_traefik();
@@ -647,8 +658,36 @@ async fn logs_stream(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let env = normalize_env(q.env.as_deref().unwrap_or("production")).unwrap_or("production");
-    log_stream_response(&st, &app, env, a.kind.as_str(), None).await
+    let deploy = q
+        .deploy
+        .as_deref()
+        .and_then(|id| st.db.deploy(&app, id).ok().flatten());
+    let env = deploy
+        .as_ref()
+        .map(|d| d.env.clone())
+        .or_else(|| q.env.as_deref().and_then(normalize_env).map(str::to_string))
+        .unwrap_or_else(|| "production".into());
+    let kind = deploy
+        .as_ref()
+        .map(|d| {
+            if d.image.is_some() {
+                "docker"
+            } else {
+                "static"
+            }
+        })
+        .unwrap_or(a.kind.as_str());
+    let container = deploy
+        .as_ref()
+        .and_then(|d| d.container.clone())
+        .or_else(|| {
+            st.db
+                .deploys_env(&app, Some(&env), 1)
+                .unwrap_or_default()
+                .first()
+                .and_then(|d| d.container.clone())
+        });
+    log_stream_response(&st, &app, &env, kind, container.as_deref()).await
 }
 
 /// Shared live container log stream for token API and session dashboard.
@@ -1027,8 +1066,12 @@ async fn create_token(
     Json(b): Json<TokenBody>,
 ) -> Response {
     let name = b.name.trim();
-    let name = if name.is_empty() { "cli" } else { name };
-    match st.db.create_token_for_user(&caller.user, name) {
+    let name: String = if name.is_empty() {
+        "cli".into()
+    } else {
+        name.chars().take(64).collect()
+    };
+    match st.db.create_token_for_user(&caller.user, &name) {
         Ok(token) => Json(json!({
             "token": token,
             "name": name,
@@ -1126,11 +1169,7 @@ async fn put_webhook(
         }
     }
     if let Some(branch) = b.branch.as_deref() {
-        if !branch.is_empty()
-            && !branch
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
-        {
+        if !branch.is_empty() && !valid_branch(branch) {
             return bad("invalid branch name");
         }
         let _ = st.db.set_setting(&format!("webhook_branch:{app}"), branch);
@@ -1375,6 +1414,10 @@ async fn put_proxy(
     }
     if let Some(pw) = b.basic_auth_password.as_deref().filter(|p| !p.is_empty()) {
         b.settings.basic_auth_hash = Some(crate::db::hash_password(pw));
+    } else if b.settings.basic_auth_hash.is_none() {
+        // The dashboard/API never sends the stored hash back. Preserve it when
+        // the caller only changes another setting.
+        b.settings.basic_auth_hash = st.db.proxy_settings(&app).basic_auth_hash;
     }
     if b.settings
         .basic_auth_user
@@ -1384,6 +1427,8 @@ async fn put_proxy(
     {
         b.settings.basic_auth_user = None;
         b.settings.basic_auth_hash = None;
+    } else if b.settings.basic_auth_hash.is_none() {
+        return bad("basic auth needs a password the first time it is enabled");
     }
     if b.settings.headers.len() > 20 {
         return bad("too many custom headers (max 20)");
@@ -1409,6 +1454,16 @@ async fn put_proxy(
     match st.db.set_proxy_settings(&app, &b.settings) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => internal(e),
+    }
+}
+
+pub fn project_url(st: &AppState, app: &crate::db::App) -> String {
+    if let Some(d) = &app.domain {
+        format!("{}://{d}", st.scheme)
+    } else if let Some(base) = &st.base_domain {
+        format!("{}://{}.{}", st.scheme, app.name, base)
+    } else {
+        st.public_url.clone()
     }
 }
 
@@ -1530,6 +1585,7 @@ pub fn request_cert_renewal(st: &AppState, host: &str) -> anyhow::Result<String>
         "expires": prev_expiry,
     });
     st.db.set_setting("cert_renew", &now.to_string())?;
+    st.db.set_setting("cert_renew_host", host)?;
     st.db
         .set_setting(&format!("cert:{host}"), &value.to_string())?;
     Ok(status)
@@ -1639,19 +1695,14 @@ async fn put_member(
     if !matches!(b.role.as_str(), "owner" | "admin" | "member" | "viewer") {
         return bad("invalid role");
     }
-    let current = st.db.role(&t.id, &user).ok().flatten();
-    match current.as_deref() {
-        None => return not_found(),
-        Some("owner") if b.role != "owner" => {
-            if st.db.owner_count(&t.id).unwrap_or(0) <= 1 {
-                return (StatusCode::CONFLICT, "cannot demote the last owner\n").into_response();
-            }
+    match st.db.update_member_role_checked(&t.id, &user, &b.role) {
+        Ok(crate::db::MemberChange::Changed) => {
+            Json(json!({"ok": true, "role": b.role})).into_response()
         }
-        _ => {}
-    }
-    match st.db.update_member_role(&t.id, &user, &b.role) {
-        Ok(0) => not_found(),
-        Ok(_) => Json(json!({"ok": true, "role": b.role})).into_response(),
+        Ok(crate::db::MemberChange::NotFound) => not_found(),
+        Ok(crate::db::MemberChange::LastOwner) => {
+            (StatusCode::CONFLICT, "cannot demote the last owner\n").into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -1675,20 +1726,16 @@ async fn delete_member(
     let current = st.db.role(&t.id, &user).ok().flatten();
     match current.as_deref() {
         None => return not_found(),
-        Some("owner") => {
-            if actor.as_deref() != Some("owner") {
-                return forbidden();
-            }
-            if st.db.owner_count(&t.id).unwrap_or(0) <= 1 {
-                return (StatusCode::CONFLICT, "cannot remove the last owner\n").into_response();
-            }
-        }
+        Some("owner") if actor.as_deref() != Some("owner") => return forbidden(),
         Some("admin") if actor.as_deref() != Some("owner") => return forbidden(),
         _ => {}
     }
-    match st.db.remove_member(&t.id, &user) {
-        Ok(0) => not_found(),
-        Ok(_) => Json(json!({"removed": user})).into_response(),
+    match st.db.remove_member_checked(&t.id, &user) {
+        Ok(crate::db::MemberChange::Changed) => Json(json!({"removed": user})).into_response(),
+        Ok(crate::db::MemberChange::NotFound) => not_found(),
+        Ok(crate::db::MemberChange::LastOwner) => {
+            (StatusCode::CONFLICT, "cannot remove the last owner\n").into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -1849,8 +1896,17 @@ async fn git_init(
             framework: None,
             updated_at: crate::db::now(),
         };
-        if let Err(e) = st.db.upsert_app(&row) {
-            return internal(e);
+        match st.db.create_app_if_absent(&row) {
+            Ok(true) => {}
+            Ok(false) => match st.db.get_app(&app) {
+                Ok(Some(a)) => {
+                    if let Err(r) = require_write(&st, &caller, &a) {
+                        return r;
+                    }
+                }
+                _ => return internal(anyhow::anyhow!("project disappeared")),
+            },
+            Err(e) => return internal(e),
         }
     }
     match init_bare_repo(&st, &app) {
@@ -2045,6 +2101,11 @@ async fn github_hook(
     let r#ref = payload["ref"].as_str().unwrap_or("");
 
     let pushed_branch = r#ref.strip_prefix("refs/heads/").filter(|b| !b.is_empty());
+    if let Some(branch) = pushed_branch {
+        if !valid_branch(branch) || branch.starts_with('-') {
+            return bad("invalid branch name in webhook");
+        }
+    }
     let deploy_branch = pushed_branch
         .map(str::to_string)
         .or_else(|| branch_setting.clone());
@@ -2155,10 +2216,18 @@ pub async fn deploy_from_repo_branch_env(
     } else {
         "https:ssh"
     };
+    let resolve_specs = if local_repo {
+        Vec::new()
+    } else {
+        reject_private_repo_dns(&repo).await?
+    };
     let git = |args: &[&str]| {
         let mut c = tokio::process::Command::new("git");
-        c.args(["-c", "protocol.ext.allow=never", "-c", file_policy])
-            .args(args)
+        c.args(["-c", "protocol.ext.allow=never", "-c", file_policy]);
+        for spec in &resolve_specs {
+            c.arg("-c").arg(format!("http.curloptResolve={spec}"));
+        }
+        c.args(args)
             .env("GIT_ALLOW_PROTOCOL", allow)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
@@ -2167,7 +2236,6 @@ pub async fn deploy_from_repo_branch_env(
     };
 
     if !local_repo {
-        reject_private_repo_dns(&repo).await?;
         let probe = git(&["ls-remote", "--heads", &repo]).output().await?;
         if !probe.status.success() {
             anyhow::bail!(
@@ -2307,6 +2375,13 @@ pub(crate) fn valid_repo_url(s: &str) -> bool {
     let Some(host) = repo_host_of(&lower) else {
         return false;
     };
+    // Never store credentials embedded in the URL (they would be shown back
+    // in the dashboard and API).
+    if let Some((_scheme, rest)) = lower.split_once("://") {
+        if rest.contains('@') && rest.split('@').next().unwrap_or("").contains(':') {
+            return false;
+        }
+    }
     if !(host.contains('.') || host == "localhost") {
         return false;
     }
@@ -2382,12 +2457,12 @@ fn repo_host_allowed(host: &str) -> bool {
         || host == "instance-data")
 }
 
-/// Resolve a public repo host before git connects, so a DNS name cannot point
-/// at the metadata service. Returns Ok when resolution is unavailable (git
-/// will report its own network error).
-async fn reject_private_repo_dns(repo: &str) -> anyhow::Result<()> {
+/// Resolve a public repo host before git connects and return curl resolve
+/// specs so git/curl uses the checked addresses instead of resolving again
+/// (which would allow DNS-rebinding into the metadata service).
+async fn reject_private_repo_dns(repo: &str) -> anyhow::Result<Vec<String>> {
     let Some(host) = repo_host_of(repo) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     if let Ok(list) = std::env::var("DOK_REPO_ALLOW_HOSTS") {
         if list
@@ -2395,29 +2470,46 @@ async fn reject_private_repo_dns(repo: &str) -> anyhow::Result<()> {
             .map(|h| h.trim())
             .any(|h| h.eq_ignore_ascii_case(&host))
         {
-            return Ok(());
+            return Ok(Vec::new());
         }
     }
     if host.parse::<std::net::IpAddr>().is_ok() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let port = if repo
+    let https = repo
         .trim_start()
         .to_ascii_lowercase()
-        .starts_with("https://")
-    {
-        443
-    } else {
-        22
+        .starts_with("https://");
+    let port = if https { 443 } else { 22 };
+    let Ok(addrs) = tokio::net::lookup_host((host.as_str(), port)).await else {
+        return Ok(Vec::new());
     };
-    if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), port)).await {
-        for addr in addrs {
-            if !ip_is_public(addr.ip()) {
-                anyhow::bail!("repo host {host} resolves to a private address");
-            }
+    let mut ips = Vec::new();
+    for addr in addrs {
+        if !ip_is_public(addr.ip()) {
+            anyhow::bail!("repo host {host} resolves to a private address");
         }
+        ips.push(match addr.ip() {
+            std::net::IpAddr::V4(v4) => v4.to_string(),
+            std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+        });
     }
-    Ok(())
+    if !https || ips.is_empty() {
+        // Git's HTTPS transport uses libcurl, where this pin is enforced.
+        // SSH host keys remain the authentication boundary.
+        return Ok(Vec::new());
+    }
+    Ok(vec![format!("{host}:{port}:{}", ips.join(","))])
+}
+
+pub(crate) fn valid_branch(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+        && !s.starts_with('/')
+        && !s.ends_with('/')
+        && !s.contains("..")
 }
 
 /// Same rule as the dashboard: shell-safe variable names only.
@@ -2505,6 +2597,8 @@ mod tests {
         assert!(!super::valid_repo_url(
             "https://metadata.google.internal/a.git"
         ));
+        assert!(!super::valid_repo_url("https://user:pw@example.com/a.git"));
+        assert!(super::valid_repo_url("https://user@example.com/a.git"));
         assert!(super::valid_repo_url("ssh://git@8.8.8.8/a.git"));
     }
 
@@ -2990,6 +3084,37 @@ mod tests {
         let r = api_routes(st.clone()).oneshot(req).await.unwrap();
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
         let _ = token;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn proxy_update_preserves_basic_auth_hash() {
+        let (st, path) = state();
+        let (_u, team, owner) = seed(&st, "proxy-owner", "owner");
+        project(&st, "proxied", &team);
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::PUT,
+            "/api/v1/projects/proxied/proxy",
+            Some(r#"{"basic_auth_user":"u","basic_auth_password":"pw"}"#),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let first = st.db.proxy_settings("proxied").basic_auth_hash.clone();
+        assert!(first.is_some());
+        let r = call(
+            &st,
+            Some(&owner),
+            Method::PUT,
+            "/api/v1/projects/proxied/proxy",
+            Some(r#"{"basic_auth_user":"u","headers":[["X-Test","1"]],"compression":true}"#),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let settings = st.db.proxy_settings("proxied");
+        assert_eq!(settings.basic_auth_hash, first);
+        assert!(settings.compression);
         let _ = std::fs::remove_file(path);
     }
 

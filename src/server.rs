@@ -275,6 +275,12 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(0);
             let renew = renew_at > last_renew;
+            let renew_host = supervisor_st
+                .db
+                .get_setting("cert_renew_host")
+                .ok()
+                .flatten()
+                .unwrap_or_default();
             if hosts.is_empty() {
                 // Keep the HTTP dashboard alive; TLS starts as soon as a
                 // project or custom domain is registered.
@@ -294,7 +300,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             if hosts != current_hosts || renew {
                 if renew {
                     last_renew = renew_at;
-                    clear_cert_cache(&acme_dir);
+                    clear_cert_cache_for(&acme_dir, &renew_host);
                 }
                 supervisor_tls_active.store(false, Ordering::Relaxed);
                 if let Some(h) = current_tls.take() {
@@ -421,13 +427,24 @@ fn desired_hosts(st: &AppState, extra: &[String], base: &Option<String>) -> Vec<
     hosts
 }
 
-fn clear_cert_cache(dir: &std::path::Path) {
+fn clear_cert_cache_for(dir: &std::path::Path, host: &str) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in rd.flatten() {
         let name = entry.file_name();
-        if name.to_string_lossy().starts_with("cached_cert_") {
+        if !name.to_string_lossy().starts_with("cached_cert_") {
+            continue;
+        }
+        if host.is_empty() {
+            let _ = std::fs::remove_file(entry.path());
+            continue;
+        }
+        let matches = name.to_string_lossy().contains(host)
+            || std::fs::read(entry.path())
+                .map(|b| String::from_utf8_lossy(&b).contains(host))
+                .unwrap_or(false);
+        if matches {
             let _ = std::fs::remove_file(entry.path());
         }
     }

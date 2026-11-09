@@ -2,6 +2,7 @@ use crate::state::AppState;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::process::Command;
 
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
@@ -934,18 +935,21 @@ pub async fn container_stats(app: &str, env: &str, container: Option<&str>) -> s
     let name = container
         .map(str::to_string)
         .unwrap_or_else(|| container_name(app, env));
-    let out = Command::new("docker")
-        .args([
-            "stats",
-            "--no-stream",
-            "--format",
-            "{{.CPUPerc}}|{{.MemUsage}}",
-            &name,
-        ])
-        .output()
-        .await;
+    let out = tokio::time::timeout(
+        Duration::from_secs(5),
+        Command::new("docker")
+            .args([
+                "stats",
+                "--no-stream",
+                "--format",
+                "{{.CPUPerc}}|{{.MemUsage}}",
+                &name,
+            ])
+            .output(),
+    )
+    .await;
     match out {
-        Ok(o) if o.status.success() => {
+        Ok(Ok(o)) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
             let line = text.lines().next().unwrap_or("");
             let (cpu, mem) = line.split_once('|').unwrap_or(("", ""));
@@ -969,16 +973,20 @@ pub async fn container_logs(app: &str, env: &str, container: Option<&str>, tail:
     let name = container
         .map(str::to_string)
         .unwrap_or_else(|| container_name(app, env));
-    let out = Command::new("docker")
-        .args(["logs", "--tail", &tail.to_string(), &name])
-        .output()
-        .await;
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new("docker")
+            .args(["logs", "--tail", &tail.to_string(), &name])
+            .output(),
+    )
+    .await;
     match out {
-        Ok(o) => {
+        Ok(Ok(o)) => {
             let mut s = String::from_utf8_lossy(&o.stdout).to_string();
             s.push_str(&String::from_utf8_lossy(&o.stderr));
             s
         }
+        Ok(Err(_)) => String::new(),
         Err(_) => String::new(),
     }
 }

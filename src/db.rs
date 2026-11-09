@@ -94,6 +94,13 @@ pub struct ProxySettings {
     pub force_https: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberChange {
+    Changed,
+    NotFound,
+    LastOwner,
+}
+
 pub fn can_read(role: Option<&str>) -> bool {
     matches!(role, Some("owner" | "admin" | "member" | "viewer"))
 }
@@ -662,18 +669,73 @@ impl Db {
         Ok(())
     }
 
-    pub fn update_member_role(&self, team_id: &str, user_id: &str, role: &str) -> Result<usize> {
-        Ok(self.conn().execute(
+    /// Atomically demote a member, refusing to remove the last owner.
+    pub fn update_member_role_checked(
+        &self,
+        team_id: &str,
+        user_id: &str,
+        role: &str,
+    ) -> Result<MemberChange> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT role FROM members WHERE team_id = ?1 AND user_id = ?2",
+                params![team_id, user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(current) = current else {
+            return Ok(MemberChange::NotFound);
+        };
+        if current == "owner" && role != "owner" {
+            let owners: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM members WHERE team_id = ?1 AND role = 'owner'",
+                params![team_id],
+                |r| r.get(0),
+            )?;
+            if owners <= 1 {
+                return Ok(MemberChange::LastOwner);
+            }
+        }
+        tx.execute(
             "UPDATE members SET role = ?3 WHERE team_id = ?1 AND user_id = ?2",
             params![team_id, user_id, role],
-        )?)
+        )?;
+        tx.commit()?;
+        Ok(MemberChange::Changed)
     }
 
-    pub fn remove_member(&self, team_id: &str, user_id: &str) -> Result<usize> {
-        Ok(self.conn().execute(
+    /// Atomically remove a member, refusing to remove the last owner.
+    pub fn remove_member_checked(&self, team_id: &str, user_id: &str) -> Result<MemberChange> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT role FROM members WHERE team_id = ?1 AND user_id = ?2",
+                params![team_id, user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(current) = current else {
+            return Ok(MemberChange::NotFound);
+        };
+        if current == "owner" {
+            let owners: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM members WHERE team_id = ?1 AND role = 'owner'",
+                params![team_id],
+                |r| r.get(0),
+            )?;
+            if owners <= 1 {
+                return Ok(MemberChange::LastOwner);
+            }
+        }
+        tx.execute(
             "DELETE FROM members WHERE team_id = ?1 AND user_id = ?2",
             params![team_id, user_id],
-        )?)
+        )?;
+        tx.commit()?;
+        Ok(MemberChange::Changed)
     }
 
     pub fn owner_count(&self, team_id: &str) -> Result<i64> {
@@ -912,6 +974,12 @@ impl Db {
             "DELETE FROM settings WHERE key = ?1",
             params![format!("proxy:{name}")],
         )?;
+        for key in [
+            format!("webhook_secret:{name}"),
+            format!("webhook_branch:{name}"),
+        ] {
+            c.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        }
         for host in hosts.into_iter().chain(app_domain) {
             c.execute(
                 "DELETE FROM settings WHERE key = ?1",
@@ -1475,6 +1543,7 @@ impl Db {
         }
     }
 
+    #[allow(dead_code)]
     pub fn domains(&self) -> Result<Vec<(String, Option<String>)>> {
         let c = self.conn();
         let mut st = c.prepare("SELECT name, domain FROM apps WHERE domain IS NOT NULL")?;
@@ -1587,6 +1656,19 @@ mod tests {
         assert!(db.tokens_for_user(&a.id).unwrap().is_empty());
         drop(db);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn backup_writes_a_snapshot() {
+        let (db, path) = tmp_db();
+        db.create_user("backup@example.com", "Backup").unwrap();
+        let out = path.with_extension("snapshot.db");
+        db.backup_to(&out).unwrap();
+        assert!(out.exists());
+        assert!(std::fs::metadata(&out).unwrap().len() > 0);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(out);
     }
 
     #[test]
