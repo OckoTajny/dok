@@ -38,8 +38,8 @@ const CSS: &str = r#"
  --ink-2:#d8d7d1;
  --muted:#95959f;
  --faint:#7f7f8a;
- --accent:#ffb454;
- --accent-hi:#ffc678;
+ --accent:#E9A23B;
+ --accent-hi:#F2B45A;
  --accent-ink:#1a1000;
  --accent-soft:rgba(255,180,84,.12);
  --accent-line:rgba(255,180,84,.38);
@@ -80,11 +80,9 @@ code{font-size:.92em}
 .top{position:sticky;top:0;z-index:40;display:flex;align-items:center;justify-content:space-between;gap:18px;height:60px;margin:0 -32px;padding:0 32px;border-bottom:1px solid var(--line-soft);background:rgba(8,8,10,.78);backdrop-filter:blur(16px) saturate(140%)}
 .brand{display:inline-flex;align-items:center;gap:9px;font-weight:650;font-size:16px;letter-spacing:-.025em;color:var(--ink)}
 .brand:hover{color:var(--ink);text-decoration:none}
-.mark{position:relative;width:18px;height:18px;border-radius:5px;background:var(--accent);box-shadow:0 0 18px -5px rgba(255,180,84,.7);flex:0 0 auto}
-.mark::after{content:"";position:absolute;inset:5px;border-radius:1.5px;background:var(--accent-ink)}
+.mark{width:22px;height:22px;flex:0 0 auto;display:block}
 .brand.small{font-size:14px}
-.brand.small .mark{width:16px;height:16px;border-radius:4px}
-.brand.small .mark::after{inset:4.5px}
+.brand.small .mark{width:18px;height:18px}
 .top-meta{display:flex;align-items:center;gap:16px;min-width:0}
 .top-link{font:10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .top-link:hover{color:var(--ink);text-decoration:none}
@@ -408,7 +406,7 @@ fn page(title: &str, body: &str) -> String {
     format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
 <meta name=theme-color content=\"#08080a\"><meta name=color-scheme content=dark>\
-<link rel=icon href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23ffb454'/%3E%3Crect x='9' y='9' width='14' height='14' rx='2' fill='%231a1000'/%3E%3C/svg%3E\">\
+<link rel=icon href=\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%20width%3D%2232%22%20height%3D%2232%22%20role%3D%22img%22%20aria-label%3D%22dok%22%3E%0A%20%20%3Ctitle%3Edok%20%E2%80%94%20favicon%3C%2Ftitle%3E%0A%20%20%3C%21--%2032x32%20build.%20Full-bleed%20tile%20so%20the%20icon%20fills%20the%20browser%20tab%2C%20and%20a%20heavier%20d%0A%20%20%20%20%20%20%20than%20the%20primary%20mark%20%28stem%206.4%2C%20counter%208.2%20of%2032%29%20so%20the%20letter%20still%20reads%20at%0A%20%20%20%20%20%20%20a%2016px%20render.%20Same%2045%20degree%20chamfer%2C%20shallower%2C%20so%20it%20survives.%20--%3E%0A%20%20%3Cpath%20fill%3D%22%23E9A23B%22%20fill-rule%3D%22evenodd%22%20d%3D%22M0%207A7%207%200%200%201%207%200h18a7%207%200%200%201%207%207v18a7%207%200%200%201-7%207H7a7%207%200%200%201-7-7Z%0A%20%20%20%20M19.1%204.4H22.1L25.5%207.8V28.7H19.1V28.18A9.5%209.5%200%201%201%2019.1%2010.22Z%0A%20%20%20%20M19.1%2016.517A4.1%204.1%200%201%200%2019.1%2021.883Z%22%2F%3E%0A%3C%2Fsvg%3E%0A\">\
 <title>{t} · dok</title><style>{css}</style></head><body>{body}</body></html>",
         t = esc(title),
         css = CSS,
@@ -418,7 +416,7 @@ fn page(title: &str, body: &str) -> String {
 
 fn auth_page(title: &str, subtitle: &str, inner: &str, script: &str) -> String {
     let body = format!(
-        "<main class=auth><div class=auth-top><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span>\
+        "<main class=auth><div class=auth-top><span class=\"brand small\"><svg class='mark' viewBox='0 0 32 32' aria-hidden='true'><path fill='#E9A23B' fill-rule='evenodd' d='M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6ZM19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183ZM19 16.492A3.9 3.9 0 1 0 19 21.708Z'/></svg>dok</span>\
 <span class=auth-kicker>Passkey access</span></div>\
 <h1>{t}</h1><p class=lede>{s}</p><div class=card>{inner}</div>\
 <div class=foot>Passkeys only — nothing to remember, nothing to leak.</div></main><script>{script}</script>",
@@ -615,7 +613,7 @@ pub fn page_join_invalid() -> Response<Body> {
         StatusCode::GONE,
         page(
             "Invite not valid",
-            "<main class=errpage><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span><div class=err-code>Invite link</div>\
+            "<main class=errpage><span class=\"brand small\"><svg class='mark' viewBox='0 0 32 32' aria-hidden='true'><path fill='#E9A23B' fill-rule='evenodd' d='M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6ZM19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183ZM19 16.492A3.9 3.9 0 1 0 19 21.708Z'/></svg>dok</span><div class=err-code>Invite link</div>\
 <h1>This invite link is not valid</h1><p class=lede>It may have expired, already been used, or been revoked. Ask a team owner or admin for a new link.</p>\
 <p><a class=btn href=/>Back to sign in</a></p></main>",
         ),
@@ -646,7 +644,7 @@ The token API keeps working at <code>/api/v1/health</code>."
         page(
             "Dashboard not configured",
             &format!(
-                "<main class=errpage><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span><div class=err-code>503 · Not configured</div>\
+                "<main class=errpage><span class=\"brand small\"><svg class='mark' viewBox='0 0 32 32' aria-hidden='true'><path fill='#E9A23B' fill-rule='evenodd' d='M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6ZM19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183ZM19 16.492A3.9 3.9 0 1 0 19 21.708Z'/></svg>dok</span><div class=err-code>503 · Not configured</div>\
 <h1>Dashboard not configured</h1><p class=lede>{msg}</p>\
 <div class=meta><div>Listening on <code>{}</code></div></div></main>",
                 esc(&st.public_url)
@@ -705,7 +703,7 @@ fn error_body(
         .map(|b| format!("<p><a class=btn href=\"{}\">Back</a></p>", esc(b)))
         .unwrap_or_default();
     format!(
-        "<main class=errpage><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span>\
+        "<main class=errpage><span class=\"brand small\"><svg class='mark' viewBox='0 0 32 32' aria-hidden='true'><path fill='#E9A23B' fill-rule='evenodd' d='M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6ZM19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183ZM19 16.492A3.9 3.9 0 1 0 19 21.708Z'/></svg>dok</span>\
 <div class=err-code>{code} · dok</div><h1>{title}</h1><p class=lede>{msg}</p>{back}<div class=meta>{meta}</div></main>",
         code = esc(code),
         title = esc(title),
@@ -1175,7 +1173,7 @@ fn sidebar(
 ) -> String {
     let mut s = String::from(
         "<aside class=side id=sidebar aria-label=Sidebar>\
-<div class=side-head><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span>\
+<div class=side-head><span class=\"brand small\"><svg class='mark' viewBox='0 0 32 32' aria-hidden='true'><path fill='#E9A23B' fill-rule='evenodd' d='M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6ZM19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183ZM19 16.492A3.9 3.9 0 1 0 19 21.708Z'/></svg>dok</span>\
 <button class=\"btn link close\" id=nav-close type=button onclick=\"toggleNav()\">Close</button></div>",
     );
     if !teams.is_empty() {
@@ -1266,7 +1264,7 @@ fn layout_with_sidebar(
     let team_name = selected.map(|t| t.name.as_str()).unwrap_or("Workspace");
     let body = format!(
         "<a class=skip href=\"#main\">Skip to content</a>\
-<div class=wrap><header class=top><a class=brand href=\"/dashboard{team_q}\"><span class=mark aria-hidden=true></span>dok</a>\
+<div class=wrap><header class=top><a class=brand href=\"/dashboard{team_q}\"><svg class='mark' viewBox='0 0 32 32' aria-hidden='true'><path fill='#E9A23B' fill-rule='evenodd' d='M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6ZM19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183ZM19 16.492A3.9 3.9 0 1 0 19 21.708Z'/></svg>dok</a>\
 <div class=top-meta><a class=top-link href=\"https://dok.djt-group.com\" target=_blank rel=noreferrer>Docs</a>\
 <div class=who><span class=avatar aria-hidden=true>{initial}</span><div class=who-text><div class=who-name>{user}</div><div class=who-team>{team}</div></div></div>\
 <button class=menu type=button aria-controls=sidebar aria-expanded=false onclick=\"toggleNav(this)\">Menu</button></div></header>\
@@ -2761,7 +2759,7 @@ fn render_account(
         notice = token_notice,
         csrf = csrf,
         rows = rows,
-        name = esc(&user.name)
+        name = esc(&user.name),
         passkey_rows = passkey_rows,
     );
     let resp = status_html(
