@@ -501,8 +501,8 @@ pub async fn deploy_dir(
             has_dockerfile = true;
         }
     }
-    let memory_mb = conf.memory_mb.unwrap_or(512).max(32);
-    let cpus = conf.cpus.unwrap_or(1.0);
+    let memory_mb = conf.memory_mb.unwrap_or(512).clamp(32, 4096);
+    let cpus = conf.cpus.unwrap_or(1.0).clamp(0.1, 4.0);
     let mut log = String::new();
     if !framework.is_empty() {
         log.push_str(&format!("detected framework: {framework}\n"));
@@ -932,8 +932,12 @@ pub async fn promote(
         .or(conf.port)
         .or_else(|| exposed_port(&path, &dockerfile))
         .unwrap_or(3000);
-    let memory_mb = conf.memory_mb.or(prev.memory_mb).unwrap_or(512).max(32);
-    let cpus = conf.cpus.or(prev.cpus).unwrap_or(1.0);
+    let memory_mb = conf
+        .memory_mb
+        .or(prev.memory_mb)
+        .unwrap_or(512)
+        .clamp(32, 4096);
+    let cpus = conf.cpus.or(prev.cpus).unwrap_or(1.0).clamp(0.1, 4.0);
 
     if let Some(image) = deploy.image.clone() {
         if docker_available().await && image_exists(&image).await {

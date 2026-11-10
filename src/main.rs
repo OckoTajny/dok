@@ -1,3 +1,16 @@
+#![allow(
+    clippy::result_large_err,
+    clippy::too_many_arguments,
+    clippy::needless_borrow,
+    clippy::collapsible_if,
+    clippy::format_in_format_args,
+    clippy::manual_is_multiple_of,
+    clippy::needless_borrows_for_generic_args,
+    clippy::suspicious_open_options,
+    clippy::type_complexity,
+    clippy::while_let_on_iterator
+)]
+
 mod api;
 mod auth;
 mod cli;

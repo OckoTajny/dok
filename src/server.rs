@@ -148,6 +148,11 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     .with_edge(args.edge || !args.acme_domain.is_empty());
 
     st.sync_traefik();
+    if scheme == "https" && !args.edge && st.trusted_proxies.is_empty() {
+        tracing::warn!(
+            "dashboard origin is HTTPS but no --trusted-proxy is configured: X-Forwarded-For/Proto are ignored, so login rate limits, access-log IPs and force-HTTPS will see the proxy address"
+        );
+    }
     let _ = st
         .db
         .fail_running_deploys("interrupted by a dok restart; retry the deploy");
@@ -420,10 +425,22 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     }
                 }));
 
-                // Try to bind alongside the old listener (SO_REUSEPORT). That
-                // keeps existing projects online while the new resolver is
-                // installed. Only fall back to a stop/rebind when the kernel
-                // does not support it.
+                // Do not put a certificate-less listener behind the load
+                // balancer: issue first (HTTP-01 goes through :80), then bind
+                // and atomically replace the old listener. On failure the old
+                // certificate keeps serving.
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+                while !ready.load(Ordering::Relaxed) && tokio::time::Instant::now() < deadline {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                if !ready.load(Ordering::Relaxed) {
+                    tracing::warn!(
+                        "ACME did not issue a certificate within 90s; keeping the previous TLS listener"
+                    );
+                    continue;
+                }
+                // Try to bind alongside the old listener (SO_REUSEPORT). Only
+                // fall back to a stop/rebind when the kernel does not support it.
                 let listener = match bind_tls_listener(tls_port, true) {
                     Ok(l) => l,
                     Err(_) => {
@@ -466,16 +483,12 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                         tracing::error!("https server stopped: {e}");
                     }
                 });
-                if let Some(old) = pending_tls.take() {
+                if let Some(old) = current_tls.replace(new_tls) {
                     old.abort();
                 }
-                if current_tls.is_none() {
-                    current_tls = Some(new_tls);
-                } else {
-                    pending_tls = Some(new_tls);
-                    pending_ready = Some(ready);
-                    supervisor_tls_active.store(true, Ordering::Relaxed);
-                }
+                pending_tls = None;
+                pending_ready = None;
+                supervisor_tls_active.store(true, Ordering::Relaxed);
             } else if current_tls
                 .as_ref()
                 .map(|h| h.is_finished())
@@ -635,6 +648,28 @@ fn parse_cert_expiry(bytes: &[u8]) -> Option<i64> {
 
 /// Expiry of the cached certificate that belongs to this host, so one host's
 /// cert is never reported as another host's status.
+fn cert_has_host(bytes: &[u8], host: &str) -> bool {
+    use x509_parser::extensions::GeneralName;
+    let text = String::from_utf8_lossy(bytes).replace("\\n", "\n");
+    let mut reader = std::io::BufReader::new(text.as_bytes());
+    let Some(Ok(der)) = rustls_pemfile::certs(&mut reader).next() else {
+        return false;
+    };
+    let Ok((_, cert)) = x509_parser::parse_x509_certificate(der.as_ref()) else {
+        return false;
+    };
+    if let Ok(Some(san)) = cert.subject_alternative_name() {
+        for name in &san.value.general_names {
+            if let GeneralName::DNSName(dns) = name {
+                if dns.trim_end_matches('.').eq_ignore_ascii_case(host) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn cert_expiry_for(dir: &std::path::Path, host: &str) -> Option<i64> {
     let rd = std::fs::read_dir(dir).ok()?;
     let mut best: Option<(std::time::SystemTime, i64)> = None;
@@ -646,8 +681,7 @@ fn cert_expiry_for(dir: &std::path::Path, host: &str) -> Option<i64> {
         let Ok(bytes) = std::fs::read(entry.path()) else {
             continue;
         };
-        let text = String::from_utf8_lossy(&bytes).replace("\\n", "\n");
-        if !(name.to_string_lossy().contains(host) || text.contains(host)) {
+        if !cert_has_host(&bytes, host) {
             continue;
         }
         let Some(expiry) = parse_cert_expiry(&bytes) else {

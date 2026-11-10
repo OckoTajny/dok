@@ -412,6 +412,7 @@ async fn create_project(
     };
     match st.db.create_app_if_absent(&app) {
         Ok(true) => {
+            ensure_production_branch(&st, &b.name);
             st.sync_traefik();
             Json(app).into_response()
         }
@@ -680,7 +681,7 @@ async fn upload(
             updated_at: crate::db::now(),
         };
         match st.db.create_app_if_absent(&row) {
-            Ok(true) => {}
+            Ok(true) => ensure_production_branch(&st, &app),
             Ok(false) => {
                 // Another concurrent first push won the race; it must also be
                 // a project this caller is allowed to write to.
@@ -1361,6 +1362,20 @@ async fn put_webhook(
     Json(json!({"ok": true})).into_response()
 }
 
+fn ensure_production_branch(st: &AppState, app: &str) {
+    let key = format!("webhook_branch:{app}");
+    if st
+        .db
+        .get_setting(&key)
+        .ok()
+        .flatten()
+        .filter(|b| !b.is_empty())
+        .is_none()
+    {
+        let _ = st.db.set_setting(&key, "main");
+    }
+}
+
 #[derive(Deserialize)]
 struct DomainBody {
     domain: String,
@@ -1505,7 +1520,10 @@ async fn set_repo(
         );
     }
     match st.db.set_repo(&app, &repo) {
-        Ok(_) => Json(json!({"ok": true, "repo": repo})).into_response(),
+        Ok(_) => {
+            ensure_production_branch(&st, &app);
+            Json(json!({"ok": true, "repo": repo})).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -2447,6 +2465,9 @@ pub fn git_deploy_env(
     pushed_branch: Option<&str>,
 ) -> &'static str {
     match (production_branch, pushed_branch) {
+        // No production branch configured: never let an arbitrary branch
+        // replace live production.
+        (None, _) => "preview",
         (Some(prod), Some(pushed)) if prod != pushed => "preview",
         _ => "production",
     }
@@ -2908,7 +2929,7 @@ mod tests {
             "production"
         );
         assert_eq!(super::git_deploy_env(Some("main"), Some("dev")), "preview");
-        assert_eq!(super::git_deploy_env(None, Some("dev")), "production");
+        assert_eq!(super::git_deploy_env(None, Some("dev")), "preview");
         assert_eq!(super::git_deploy_env(Some("main"), None), "production");
     }
 

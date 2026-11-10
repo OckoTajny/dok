@@ -264,7 +264,7 @@ pub fn page_setup() -> Response<Body> {
 <label for=email>Email</label><input id=email type=email autocomplete=username placeholder="you@example.com" required>
 <label for=name>Name</label><input id=name type=text autocomplete=name placeholder="Your name" required>
 <label for=team>Team</label><input id=team type=text placeholder="Personal">
-<button id=go class="btn primary" type=submit style="width:100%;margin-top:16px">Create a passkey</button></form>\
+<button id=go class="btn primary" type=submit style="width:100%;margin-top:16px">Create a passkey</button></form>
 <noscript><p class=error role=alert>Creating an account needs JavaScript for the passkey prompt. Enable JavaScript and reload this page.</p></noscript>"#,
         err_box()
     );
@@ -285,7 +285,7 @@ fn login_page(flash: Option<&Flash>) -> Response<Body> {
     let inner = format!(
         r#"{}{}<p class=small style="margin:0 0 14px">Use the passkey you registered for this instance.</p>
 <form onsubmit="login();return false"><button id=go class="btn primary" type=submit style="width:100%">Sign in with passkey</button></form>
-<p class="small muted" style="margin:18px 0 0">New here? You need an invite link from a teammate — ask an owner for a <code>/join/…</code> link. Lost your passkey or need another account? An owner can send you a fresh invite. <a href=\"https://github.com/OckoTajny/dok#quick-start\" target=_blank rel=noreferrer>Docs</a></p>\
+<p class="small muted" style="margin:18px 0 0">New here? You need an invite link from a teammate — ask an owner for a <code>/join/…</code> link. Lost your passkey or need another account? An owner can send you a fresh invite. <a href="https://github.com/OckoTajny/dok#quick-start" target=_blank rel=noreferrer>Docs</a></p>
 <noscript><p class=error role=alert>Signing in needs JavaScript for the passkey prompt. Enable JavaScript and reload this page.</p></noscript>"#,
         flash_banner(flash),
         err_box()
