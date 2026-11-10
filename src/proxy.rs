@@ -279,14 +279,15 @@ fn redirect_for(
     if host.is_empty() {
         return None;
     }
-    let https = st.scheme == "https";
-    let forwarded_https = peer.map(|p| st.trusted_peer(p)).unwrap_or(false)
-        && req
-            .headers()
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.eq_ignore_ascii_case("https"))
-            .unwrap_or(false);
+    let https = st.edge
+        || (peer.map(|p| st.trusted_peer(p)).unwrap_or(false)
+            && req
+                .headers()
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.eq_ignore_ascii_case("https"))
+                .unwrap_or(false));
+    let forwarded_https = https;
     let local =
         host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host.starts_with("127.");
     if settings.force_https && !https && !forwarded_https && !local {

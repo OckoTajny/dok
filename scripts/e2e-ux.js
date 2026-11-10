@@ -22,7 +22,7 @@ const { chromium } = require("playwright");
   if (!/E2E Team · Projects · dok$/.test(title)) fail("dashboard title: " + title);
   let body = await page.textContent("body");
   if (!body.includes("uxapp")) fail("dashboard card for uxapp missing");
-  if (!body.includes("Deployments")) fail("card metadata missing");
+  if (!body.includes("uxapp.127.0.0.1")) fail("card host missing");
   const active = await page.locator("aside a.on").allTextContents();
   if (!active.includes("E2E Team")) fail("team not marked active in sidebar");
 
@@ -147,10 +147,12 @@ const { chromium } = require("playwright");
   await page.click('form[action="/dashboard/tokens/revoke"] button');
   await page.waitForFunction(() => document.body.innerText.includes("Token revoked."));
 
-  // ---- certificate renewal goes through the same path as the API ------
+  // ---- certificates are managed by the external proxy in this mode -----
   await page.goto(url + "/dashboard/project/uxapp/domains");
-  await page.locator('form[action="/dashboard/certificates/renew"] button').first().click();
-  await page.waitForFunction(() => document.body.innerText.includes("Certificate renewal requested"));
+  const domainsText = await page.textContent("body");
+  if (!domainsText.includes("external proxy")) fail("certificate table should say external proxy");
+  if (await page.locator('form[action="/dashboard/certificates/renew"] button').count())
+    fail("renew button should be hidden when edge is off");
 
   // ---- mobile drawer and DOM order -------------------------------------
   await page.setViewportSize({ width: 390, height: 844 });

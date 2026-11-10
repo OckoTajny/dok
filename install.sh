@@ -9,9 +9,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-DOMAIN=${DOMAIN:-dok.solta.tech}
-BASE_DOMAIN=${BASE_DOMAIN:-apps.solta.tech}
+: "${DOMAIN:?set DOMAIN=dok.example.com (or DOMAIN=localhost for a local instance)}"
+: "${BASE_DOMAIN:?set BASE_DOMAIN=apps.example.com}"
 PORT=${PORT:-8080}
+SCHEME=${SCHEME:-https}
+if [ "$DOMAIN" = "localhost" ] || [ "$DOMAIN" = "127.0.0.1" ]; then SCHEME=http; fi
+ORIGIN=${ORIGIN:-$SCHEME://$DOMAIN}
+SELF_EDGE=${SELF_EDGE:-}
+TRUSTED_PROXY=${TRUSTED_PROXY:-}
+ACME_EMAIL=${ACME_EMAIL:-}
 EDGE=${EDGE:-}
 DATA=${DATA:-$HOME/.local/share/dok}
 TRAEFIK_DIR=${TRAEFIK_DIR:-$DATA/traefik}
@@ -38,14 +44,33 @@ fi
 mkdir -p "$HOME/bin" "$HOME/.config/systemd/user" "$HOME/.config/dok" "$TRAEFIK_DIR"
 
 # 2. service unit
-say "installing dok.service"
+say "installing dok.service for $ORIGIN"
 sed \
   -e "s#--http-port 8080#--http-port $PORT#" \
   -e "s#--public-host dok.solta.tech#--public-host $DOMAIN#" \
-  -e "s#--dashboard-origin https://dok.solta.tech#--dashboard-origin https://$DOMAIN#" \
+  -e "s#--dashboard-origin https://dok.solta.tech#--dashboard-origin $ORIGIN#" \
   -e "s#--base-domain apps.solta.tech#--base-domain $BASE_DOMAIN#" \
   -e "s#%h/.local/share/dok/traefik#$TRAEFIK_DIR#" \
   deploy/dok-desktop.service > "$HOME/.config/systemd/user/dok.service"
+
+# Optional self-contained TLS edge and trusted proxy.
+if [ -n "$SELF_EDGE" ] || [ -n "$TRUSTED_PROXY" ]; then
+  awk -v edge="$SELF_EDGE" -v dom="$DOMAIN" -v mail="$ACME_EMAIL" -v proxy="$TRUSTED_PROXY" '
+    /^  --data / {
+      if (edge != "") {
+        print "  --edge \\"
+        print "  --acme-domain " dom " \\"
+        if (mail != "") print "  --acme-email " mail " \\"
+      }
+      if (proxy != "") print "  --trusted-proxy " proxy " \\"
+    }
+    { print }
+  ' "$HOME/.config/systemd/user/dok.service" > "$HOME/.config/systemd/user/dok.service.tmp"
+  mv "$HOME/.config/systemd/user/dok.service.tmp" "$HOME/.config/systemd/user/dok.service"
+fi
+if [ -n "$SELF_EDGE" ] && command -v setcap >/dev/null; then
+  sudo setcap 'cap_net_bind_service=+ep' "$BIN" || echo "warning: could not setcap $BIN; run edge as root or set net.ipv4.ip_unprivileged_port_start=80" >&2
+fi
 
 # 3. hook secret
 if [ ! -f "$HOME/.config/dok/env" ]; then
@@ -78,9 +103,9 @@ if [ -n "$EDGE" ]; then
 fi
 
 say "dok is running"
-echo "  dashboard: https://$DOMAIN"
-echo "  apps:      https://<app>.$BASE_DOMAIN"
+echo "  dashboard: $ORIGIN"
+echo "  apps:      $SCHEME://<app>.$BASE_DOMAIN"
 if [ -f "$DATA/initial-token" ]; then
   echo "  token:     $(cat "$DATA/initial-token")"
-  echo "  next:      dok login https://$DOMAIN \$(cat $DATA/initial-token)"
+  echo "  next:      DOK_TOKEN=\$(cat $DATA/initial-token) dok login $ORIGIN"
 fi

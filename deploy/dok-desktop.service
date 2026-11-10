@@ -10,7 +10,6 @@ ExecStart=%h/bin/dok serve \
   --dashboard-origin https://dok.solta.tech \
   --base-domain apps.solta.tech \
   --traefik-dir %h/.local/share/dok/traefik \
-  --trusted-proxy 100.64.0.0/10 \
   --data %h/.local/share/dok
 EnvironmentFile=-%h/.config/dok/env
 Environment=RUST_LOG=dok=info

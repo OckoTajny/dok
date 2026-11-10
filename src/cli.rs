@@ -940,13 +940,25 @@ pub async fn deploy_git(app: String, data: String, reference: Option<String>) ->
         .ok()
         .flatten()
         .filter(|s| !s.is_empty());
+    let traefik_dir = db
+        .get_setting("traefik_dir")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
     let pushed = reference
         .as_deref()
         .and_then(|r| r.strip_prefix("refs/heads/"))
         .filter(|b| !b.is_empty());
+    if let Some(branch) = pushed {
+        if !crate::api::valid_branch(branch) || branch.starts_with('-') {
+            anyhow::bail!("invalid branch name in git hook");
+        }
+    }
     let env = crate::api::git_deploy_env(production_branch.as_deref(), pushed);
     let branch = pushed.map(str::to_string).or(production_branch);
-    let st = crate::state::AppState::new(db, data, base_domain, public_url);
+    let st = crate::state::AppState::new(db, data, base_domain, public_url)
+        .with_traefik_dir(traefik_dir);
     let out = crate::api::deploy_from_repo_branch_env(&st, &app, branch.as_deref(), env).await?;
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -1042,6 +1054,16 @@ fn pack(dir: &Path, out: &Path) -> Result<()> {
         if path == dir || entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
+        if entry.path_is_symlink()
+            || std::fs::symlink_metadata(path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+        {
+            // Never follow a symlink: a hostile repo could point at ~/.ssh and
+            // smuggle host files into the upload.
+            eprintln!("skipping symlink {}", path.display());
+            continue;
+        }
         if path.components().any(|c| {
             matches!(
                 c.as_os_str().to_str(),
@@ -1070,4 +1092,25 @@ fn pack(dir: &Path, out: &Path) -> Result<()> {
         bail!("nothing to upload (empty directory or everything ignored)");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pack;
+
+    #[test]
+    fn pack_skips_symlinks_outside_the_tree() {
+        let dir = std::env::temp_dir().join(format!("dok-pack-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret.txt");
+        std::fs::write(&secret, "TOP-SECRET").unwrap();
+        std::fs::write(dir.join("index.html"), "hello").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, dir.join("leak.txt")).unwrap();
+        let out = dir.join("out.tar.gz");
+        pack(&dir, &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(!bytes.windows(10).any(|w| w == b"TOP-SECRET"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

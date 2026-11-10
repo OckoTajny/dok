@@ -27,6 +27,7 @@ struct PendingReg {
     name: String,
     team: Option<String>,
     invite: Option<String>,
+    attach: bool,
     exp: i64,
 }
 
@@ -178,6 +179,14 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
         ("POST", "/auth/setup/finish") => Some(register_finish(st, auth, req).await),
         ("POST", "/auth/join/start") => Some(join_start(st, auth, req).await),
         ("POST", "/auth/join/accept") => Some(join_accept(st, req, session.as_ref()).await),
+        ("POST", "/auth/passkey/start") => Some(match session.as_ref() {
+            Some(s) => add_passkey_start(st, auth, s).await,
+            None => redirect("/"),
+        }),
+        ("POST", "/auth/passkey/finish") => Some(match session.as_ref() {
+            Some(s) => add_passkey_finish(st, auth, req, s).await,
+            None => redirect("/"),
+        }),
         ("POST", "/auth/login/start") => Some(login_start(st, auth)),
         ("POST", "/auth/login/finish") => Some(login_finish(st, auth, req).await),
         ("POST", "/auth/logout") => Some(logout(auth, &st.db, &req, session.as_ref())),
@@ -189,6 +198,93 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
             .into_response(),
         ),
         _ => crate::ui::handle(st, auth, req, session).await,
+    }
+}
+
+async fn add_passkey_start(st: &AppState, auth: &AuthState, session: &Session) -> Response<Body> {
+    if !st
+        .rate
+        .allow(&format!("passkey:{}", session.user.id), 10, 60)
+    {
+        return (StatusCode::TOO_MANY_REQUESTS, "too many attempts\n").into_response();
+    }
+    let keys = load_keys(&st.db, &session.user.id);
+    let exclude: Vec<Vec<u8>> = keys.iter().map(|k| k.cred_id().to_vec()).collect();
+    let uid = match Uuid::parse_str(&session.user.id) {
+        Ok(u) => u,
+        Err(_) => return bad("invalid user id"),
+    };
+    match auth.web.start_passkey_registration(
+        uid,
+        &session.user.email,
+        &session.user.name,
+        Some(exclude),
+    ) {
+        Ok((ccr, state)) => {
+            let id = Uuid::new_v4().simple().to_string();
+            let now = crate::db::now();
+            let mut p = auth.pending_reg.lock().unwrap();
+            p.retain(|_, v| v.exp > now);
+            p.insert(
+                id.clone(),
+                PendingReg {
+                    state,
+                    user_id: session.user.id.clone(),
+                    email: session.user.email.clone(),
+                    name: session.user.name.clone(),
+                    team: None,
+                    invite: None,
+                    attach: true,
+                    exp: now + 600,
+                },
+            );
+            let mut v = serde_json::to_value(ccr).unwrap_or_default();
+            v["id"] = json!(id);
+            Json(v).into_response()
+        }
+        Err(e) => bad(&format!("cannot start passkey registration: {e}")),
+    }
+}
+
+async fn add_passkey_finish(
+    st: &AppState,
+    auth: &AuthState,
+    req: Request<Body>,
+    session: &Session,
+) -> Response<Body> {
+    let body: FinishBody = match read_json(req).await {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let cred: RegisterPublicKeyCredential = match serde_json::from_value(body.credential) {
+        Ok(c) => c,
+        Err(e) => return bad(&format!("bad credential: {e}")),
+    };
+    let state = {
+        let now = crate::db::now();
+        let mut p = auth.pending_reg.lock().unwrap();
+        p.remove(&body.id).and_then(|v| {
+            if v.exp > now && v.attach && v.user_id == session.user.id {
+                Some(v.state)
+            } else {
+                None
+            }
+        })
+    };
+    let Some(state) = state else {
+        return bad("registration expired");
+    };
+    let passkey = match auth.web.finish_passkey_registration(&cred, &state) {
+        Ok(k) => k,
+        Err(e) => return bad(&format!("registration failed: {e}")),
+    };
+    let data = match serde_json::to_string(&passkey) {
+        Ok(d) => d,
+        Err(e) => return bad(&format!("cannot store passkey: {e}")),
+    };
+    match st.db.add_passkey(&session.user.id, &data) {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Err(e) => bad(&format!("cannot store passkey: {e}")),
     }
 }
 
@@ -337,6 +433,7 @@ fn register_start(
                     name: name.to_string(),
                     team,
                     invite,
+                    attach: false,
                     exp: now + 600,
                 },
             );
@@ -366,7 +463,7 @@ async fn register_finish(st: &AppState, auth: &AuthState, req: Request<Body>) ->
     let pending = {
         let now = crate::db::now();
         let mut p = auth.pending_reg.lock().unwrap();
-        p.remove(&body.id).filter(|v| v.exp > now)
+        p.remove(&body.id).filter(|v| v.exp > now && !v.attach)
     };
     let Some(p) = pending else {
         return bad("registration expired");

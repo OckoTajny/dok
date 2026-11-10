@@ -49,10 +49,7 @@ fn safe_dockerfile_path(dir: &Path, name: &str) -> bool {
 async fn wait_until_ready(port: u16, limit: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + limit;
     loop {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .is_ok()
-        {
+        if http_ready(port).await {
             return true;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -60,6 +57,36 @@ async fn wait_until_ready(port: u16, limit: Duration) -> bool {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+/// A TCP accept is not readiness: Docker's userland proxy accepts before the
+/// app serves HTTP. Require a real non-5xx HTTP response (404 is fine).
+async fn http_ready(port: u16) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
+        return false;
+    };
+    let req = b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    if tokio::time::timeout(Duration::from_secs(2), stream.write_all(req))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .is_none()
+    {
+        return false;
+    }
+    let mut buf = [0u8; 512];
+    let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf)).await
+    else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&buf[..n]);
+    text.starts_with("HTTP/1.1 2")
+        || text.starts_with("HTTP/1.1 3")
+        || text.starts_with("HTTP/1.1 4")
+        || text.starts_with("HTTP/1.0 2")
+        || text.starts_with("HTTP/1.0 3")
+        || text.starts_with("HTTP/1.0 4")
 }
 
 fn archive_limits_ok(entries: usize, total: u64) -> bool {
@@ -335,6 +362,7 @@ pub async fn deploy_dir(
     domain_hint: Option<String>,
     env: &str,
     author: Option<&str>,
+    require_existing: bool,
 ) -> Result<DeployOutcome> {
     let env = normalize_env(env);
     // Bound concurrent builds and refuse to fill the disk completely.
@@ -350,6 +378,10 @@ pub async fn deploy_dir(
     }
     // One deploy per app at a time, across processes (the git hook runs its own).
     let _lock = st.lock_deploy(app).await?;
+    let prev = st.db.get_app(app)?;
+    if require_existing && prev.is_none() {
+        bail!("project was deleted while the deploy was being prepared");
+    }
     let deploy_id = uuid::Uuid::new_v4().simple().to_string();
     st.db.add_deploy(
         &deploy_id,
@@ -366,8 +398,6 @@ pub async fn deploy_dir(
         env,
         done: false,
     };
-
-    let prev = st.db.get_app(app)?;
     let conf = read_dok_toml(dir);
     let chosen_domain = if env == "production" {
         // `dok.toml` may claim a domain on the first deploy. Later domain
@@ -490,6 +520,11 @@ pub async fn deploy_dir(
         // Start the replacement first; the old container keeps serving until the
         // new one is running.
         let temp_name = format!("dok-{app}-{env}-{}", &deploy_id[..8]);
+        let restart_policy = if env == "preview" {
+            "no"
+        } else {
+            "unless-stopped"
+        };
         let mut cmd = Command::new("docker");
         cmd.args([
             "run",
@@ -497,7 +532,7 @@ pub async fn deploy_dir(
             "--name",
             &temp_name,
             "--restart",
-            "unless-stopped",
+            restart_policy,
             "-l",
             &format!("dok.app={app}"),
             "-l",
@@ -681,6 +716,9 @@ pub async fn deploy_dir(
     let removed = st.db.prune_deploys_env(app, env, 10)?;
     cleanup_removed(&removed).await;
     cleanup_builds(st, app).await;
+    if env == "preview" {
+        prune_running_previews(st, app, 3).await;
+    }
 
     let url = if env == "production" {
         st.db
@@ -766,6 +804,23 @@ async fn cleanup_builds(st: &AppState, app: &str) {
         let p = entry.path();
         if !keep.contains(&p.to_string_lossy().to_string()) {
             let _ = tokio::fs::remove_dir_all(&p).await;
+        }
+    }
+}
+
+/// Keep at most `keep` preview containers running per project. Older preview
+/// rows stay for promote/debug, but their containers are stopped so a project
+/// cannot leave ten always-on previews consuming memory and ports.
+async fn prune_running_previews(st: &AppState, app: &str, keep: usize) {
+    for d in st
+        .db
+        .deploys_env(app, Some("preview"), 100)
+        .unwrap_or_default()
+        .into_iter()
+        .skip(keep)
+    {
+        if let Some(name) = d.container.as_deref().filter(|n| n.contains("-preview-")) {
+            let _ = Command::new("docker").args(["stop", name]).output().await;
         }
     }
 }
@@ -953,7 +1008,7 @@ pub async fn promote(
         }
     }
 
-    deploy_dir(st, app, &path, None, None, "production", author).await
+    deploy_dir(st, app, &path, None, None, "production", author, true).await
 }
 
 async fn image_exists(image: &str) -> bool {
@@ -1301,7 +1356,7 @@ mod tests {
             None,
             "http://localhost".into(),
         );
-        super::deploy_dir(&st, "app", &src, None, None, "production", None)
+        super::deploy_dir(&st, "app", &src, None, None, "production", None, false)
             .await
             .unwrap();
         let app = db.get_app("app").unwrap().unwrap();

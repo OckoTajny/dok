@@ -132,10 +132,16 @@ pub struct AppState {
     pub traefik_dir: Option<PathBuf>,
     pub rate: RateLimiter,
     pub trusted_proxies: Vec<ipnet::IpNet>,
+    /// Built-in edge: this process terminates TLS, so requests reaching the
+    /// app router are already HTTPS.
+    pub edge: bool,
     /// Bound concurrent builds/deploys and log streams so one token cannot
     /// exhaust the host.
     pub deploy_gate: Arc<tokio::sync::Semaphore>,
     pub stream_gate: Arc<tokio::sync::Semaphore>,
+    /// Bound concurrent uploads/extractions so disk and memory cannot be
+    /// exhausted before the deploy gate is reached.
+    pub upload_gate: Arc<tokio::sync::Semaphore>,
     /// Recent CPU/memory samples per project, newest last (bounded ring).
     pub metrics: Arc<Mutex<HashMap<String, VecDeque<MetricSample>>>>,
 }
@@ -165,8 +171,10 @@ impl AppState {
             traefik_dir: None,
             rate: RateLimiter::default(),
             trusted_proxies: Vec::new(),
+            edge: false,
             deploy_gate: Arc::new(tokio::sync::Semaphore::new(4)),
             stream_gate: Arc::new(tokio::sync::Semaphore::new(16)),
+            upload_gate: Arc::new(tokio::sync::Semaphore::new(2)),
             metrics: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -229,6 +237,11 @@ impl AppState {
         self
     }
 
+    pub fn with_edge(mut self, edge: bool) -> Self {
+        self.edge = edge;
+        self
+    }
+
     /// Only loopback/private peers (or explicitly configured CIDRs) may set
     /// X-Forwarded-Proto.
     pub fn trusted_peer(&self, ip: &str) -> bool {
@@ -256,8 +269,10 @@ impl AppState {
             if let Some(d) = &a.domain {
                 hosts.insert(d.clone());
             }
-            if let Some(b) = &self.base_domain {
-                hosts.insert(format!("{}.{}", a.name, b));
+            if a.domain.is_none() {
+                if let Some(b) = &self.base_domain {
+                    hosts.insert(format!("{}.{}", a.name, b));
+                }
             }
             for h in self.db.domains_for(&a.name).unwrap_or_default() {
                 hosts.insert(h);
@@ -350,6 +365,11 @@ impl AppState {
             return true;
         }
         let loopback = |h: &str| h == "localhost" || h == "127.0.0.1" || h == "[::1]" || h == "::1";
+        // A local operator can always reach the dashboard over loopback, even
+        // when the public origin is a domain (useful before DNS/TLS is ready).
+        if loopback(&host) {
+            return true;
+        }
         (loopback(&host) && dash.as_deref().map(loopback).unwrap_or(false))
             || (loopback(&host) && origin.as_deref().map(loopback).unwrap_or(false))
     }

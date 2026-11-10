@@ -26,10 +26,15 @@ Tiny self-hosted deploy platform in one Rust binary. Think "Vercel/Coolify, but 
 On the server:
 
 ```bash
-./install.sh                       # binary + systemd user service + token
-# or: DOMAIN=dok.example.com BASE_DOMAIN=apps.example.com ./install.sh
+DOMAIN=dok.example.com BASE_DOMAIN=apps.example.com ./install.sh
+# local try-out: DOMAIN=localhost BASE_DOMAIN=apps.localhost ./install.sh
+# built-in TLS edge: SELF_EDGE=1 ACME_EMAIL=you@example.com DOMAIN=dok.example.com BASE_DOMAIN=apps.example.com ./install.sh
 # no Rust toolchain? DOK_BIN_URL=https://…/dok ./install.sh downloads a prebuilt binary
 ```
+
+`install.sh` requires `DOMAIN` and `BASE_DOMAIN`; it no longer assumes the
+author's domain. Behind Traefik/Caddy, set `TRUSTED_PROXY=100.64.0.0/10`
+(or your proxy CIDR) so client IPs and `X-Forwarded-Proto` are trusted.
 
 The installer prints the initial token. First run: open the dashboard URL
 (`http://localhost:8080` for a bare `dok serve`, or your
@@ -143,13 +148,13 @@ they never touch the production pointer.
 `git push` deploy:
 
 ```bash
-dok git-init my-app            # prints ssh://<user>@<host>/<data>/repos/my-app.git
-git remote add dok ssh://<user>@<host>/<data>/repos/my-app.git
+dok git-init my-app            # prints the bare repo path and an ssh_remote hint
+git remote add dok /home/you/.local/share/dok/repos/my-app.git
 git push dok main              # post-receive hook builds and deploys
 ```
 
-The hook runs `dok deploy-git <app> --data <dir>`; the ssh user needs read/write
-access to that directory (or use the `file://` path locally).
+The hook runs `dok deploy-git <app> --data <dir>`; a remote ssh user needs
+read/write access to the data directory (or use the `file://` path locally).
 
 GitHub webhook (per-project secret + branch filter):
 
@@ -204,9 +209,14 @@ download, access log), **Environment** (production / preview / development),
 Environment secrets are write-only: values are masked in the dashboard and the
 API even for owners, `KEY=` in the bulk editor keeps the current value, and a
 secret can only be declassified by explicitly clearing its per-row checkbox.
+Non-secret production values are inherited by preview/development; secrets are
+not, so a public preview URL never receives production credentials implicitly.
 Write-only is deliberate: there is no reveal endpoint. Keep your own copy (a
 password manager or `dok env pull` for non-secret keys) before marking a value
 secret, and re-enter secrets after migrating the database to another host.
+Secrets live in SQLite in plaintext and are protected by the data directory
+(0700) and database/backup file permissions (0600); anyone who can copy the
+database or a backup can read them. Encrypt or restrict backups accordingly.
 Every write returns a flash message and validation errors redirect back to the
 form with an inline banner. Sessions and CSRF tokens live in SQLite, so a
 restart does not log you out; every dashboard write is CSRF-protected.

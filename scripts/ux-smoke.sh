@@ -45,13 +45,8 @@ grep -q 'Request id' /tmp/dok-ux-404.html
 rid=$(curl -s -D - -o /dev/null -H 'Host: uxapp.127.0.0.1' "$URL/missing.js" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-request-id"{print $2}')
 [ -n "$rid" ] || { echo "missing x-request-id header" >&2; exit 1; }
 
-# The dashboard Renew button must bump the same watchdog the edge supervisor reads.
-python3 - "$DATA" <<'PY'
-import sqlite3, sys
-db = sqlite3.connect(sys.argv[1] + "/dok.db")
-row = db.execute("SELECT value FROM settings WHERE key='cert_renew'").fetchone()
-assert row and int(row[0]) > 0, "dashboard renew did not set cert_renew"
-PY
+# Without --edge the certificate table is managed by the external proxy and
+# must not offer a fake renew action; the dashboard e2e asserts that.
 
 # CLI parity for teams, metrics and primary domains.
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" teams | grep -q 'E2E Team'

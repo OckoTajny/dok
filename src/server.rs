@@ -144,7 +144,8 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     .with_auth(auth)
     .with_dashboard_origin(Some(origin.clone()))
     .with_traefik_dir(args.traefik_dir.clone())
-    .with_trusted_proxies(trusted);
+    .with_trusted_proxies(trusted)
+    .with_edge(args.edge || !args.acme_domain.is_empty());
 
     st.sync_traefik();
     // The post-receive hook runs in a separate process without the CLI flags;
@@ -153,6 +154,14 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .db
         .set_setting("base_domain", args.base_domain.as_deref().unwrap_or(""));
     let _ = st.db.set_setting("public_url", &public_url);
+    let _ = st.db.set_setting(
+        "traefik_dir",
+        args.traefik_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+            .as_str(),
+    );
     sweep_tmp(&data);
     spawn_metrics_sampler(st.clone());
 
@@ -313,12 +322,6 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(0);
             let renew = renew_at > last_renew;
-            let renew_host = supervisor_st
-                .db
-                .get_setting("cert_renew_host")
-                .ok()
-                .flatten()
-                .unwrap_or_default();
             if hosts.is_empty() {
                 // Keep the HTTP dashboard alive; TLS starts as soon as a
                 // project or custom domain is registered.
@@ -338,7 +341,9 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             if hosts != current_hosts || renew {
                 if renew {
                     last_renew = renew_at;
-                    clear_cert_cache_for(&acme_dir, &renew_host);
+                    // Keep the cached certificate: the old listener serves it
+                    // until ACME deploys a replacement. Deleting it first would
+                    // drop TLS for every host in the shared order.
                 }
                 current_hosts = hosts.clone();
                 tracing::info!(
@@ -537,15 +542,17 @@ fn bind_tls_listener(port: u16, reuseport: bool) -> std::io::Result<std::net::Tc
 fn desired_hosts(st: &AppState, extra: &[String], base: &Option<String>) -> Vec<String> {
     let mut hosts: Vec<String> = extra.to_vec();
     for a in st.db.list_apps().unwrap_or_default() {
-        if let Some(d) = a.domain {
-            if !hosts.contains(&d) {
-                hosts.push(d);
+        if let Some(d) = a.domain.as_ref() {
+            if !hosts.contains(d) {
+                hosts.push(d.clone());
             }
         }
-        if let Some(b) = base {
-            let h = format!("{}.{}", a.name, b);
-            if !hosts.contains(&h) {
-                hosts.push(h);
+        if a.domain.is_none() {
+            if let Some(b) = base {
+                let h = format!("{}.{}", a.name, b);
+                if !hosts.contains(&h) {
+                    hosts.push(h);
+                }
             }
         }
         for h in st.db.domains_for(&a.name).unwrap_or_default() {
@@ -569,29 +576,6 @@ fn desired_hosts(st: &AppState, extra: &[String], base: &Option<String>) -> Vec<
     hosts.sort();
     hosts.dedup();
     hosts
-}
-
-fn clear_cert_cache_for(dir: &std::path::Path, host: &str) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in rd.flatten() {
-        let name = entry.file_name();
-        if !name.to_string_lossy().starts_with("cached_cert_") {
-            continue;
-        }
-        if host.is_empty() {
-            let _ = std::fs::remove_file(entry.path());
-            continue;
-        }
-        let matches = name.to_string_lossy().contains(host)
-            || std::fs::read(entry.path())
-                .map(|b| String::from_utf8_lossy(&b).contains(host))
-                .unwrap_or(false);
-        if matches {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
 }
 
 fn parse_cert_expiry(bytes: &[u8]) -> Option<i64> {

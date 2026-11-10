@@ -85,7 +85,7 @@ label{display:block;color:#999;font-size:12px;margin:12px 0 4px}
 input[type=checkbox]{width:auto;min-height:0}
 .form{max-width:460px}
 .form .btn{margin-top:16px}
-table{width:100%;border-collapse:collapse;font-size:13px}
+table{width:100%;min-width:640px;border-collapse:collapse;font-size:13px}
 th{text-align:left;color:#888;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid #222}
 td{padding:10px;border-bottom:1px solid #161616;vertical-align:middle}
 tr:last-child td{border-bottom:0}
@@ -178,6 +178,7 @@ const SETUP_JS: &str = r#"
 async function setup(){
   const go=document.getElementById('go');go.disabled=true;go.textContent='Waiting for passkey…';
   try{
+    if(!window.isSecureContext||!window.PublicKeyCredential){fail(new Error('Passkeys need HTTPS or localhost. Open the dashboard on its https:// address (or localhost).'));return}
     const email=document.getElementById('email').value.trim();
     const name=document.getElementById('name').value.trim();
     const team=document.getElementById('team').value.trim()||'Personal';
@@ -197,6 +198,7 @@ const LOGIN_JS: &str = r#"
 async function login(){
   const go=document.getElementById('go');go.disabled=true;go.textContent='Waiting for passkey…';
   try{
+    if(!window.isSecureContext||!window.PublicKeyCredential){fail(new Error('Passkeys need HTTPS or localhost. Open the dashboard on its https:// address (or localhost).'));return}
     const opts=await post('/auth/login/start',{});
     if(opts.setup){location.href='/';return}
     const id=opts.id;const pk=opts.publicKey||opts;
@@ -209,10 +211,30 @@ async function login(){
 }
 "#;
 
+const PASSKEY_JS: &str = r#"
+async function addPasskey(){
+  const btn=document.getElementById('add-passkey');const err=document.getElementById('passkey-err');
+  if(err)err.hidden=true;
+  if(!window.isSecureContext||!window.PublicKeyCredential){if(err){err.textContent='Passkeys need HTTPS or localhost.';err.hidden=false}return}
+  btn.disabled=true;btn.textContent='Waiting for passkey…';
+  try{
+    const opts=await post('/auth/passkey/start',{});
+    const id=opts.id;const pk=opts.publicKey||opts;
+    pk.challenge=b64.toBuf(pk.challenge);
+    pk.user.id=b64.toBuf(pk.user.id);
+    (pk.excludeCredentials||[]).forEach(c=>c.id=b64.toBuf(c.id));
+    const cred=await navigator.credentials.create({publicKey:pk});
+    await post('/auth/passkey/finish',{id,credential:encCred(cred)});
+    btn.textContent='Passkey added';setTimeout(()=>location.reload(),600);
+  }catch(e){btn.disabled=false;btn.textContent='Add passkey';if(err){err.textContent=e.message||String(e);err.hidden=false}}
+}
+"#;
+
 const JOIN_JS: &str = r#"
 async function join(){
   const go=document.getElementById('go');go.disabled=true;go.textContent='Waiting for passkey…';
   try{
+    if(!window.isSecureContext||!window.PublicKeyCredential){fail(new Error('Passkeys need HTTPS or localhost. Open the dashboard on its https:// address (or localhost).'));return}
     const token=document.getElementById('token').value;
     const email=document.getElementById('email').value.trim();
     const name=document.getElementById('name').value.trim();
@@ -785,6 +807,32 @@ fn status_badge(status: &str) -> String {
     format!("<span class=\"badge {class}\">{}</span>", esc(status))
 }
 
+fn http_badge(status: u16) -> String {
+    let class = match status {
+        200..=299 => "ok",
+        300..=399 => "env",
+        400..=499 => "run",
+        _ => "failed",
+    };
+    let label = match status {
+        200 => "200 OK",
+        301 | 302 | 307 | 308 => "redirect",
+        401 => "401 unauthorized",
+        403 => "403 forbidden",
+        404 => "404 not found",
+        429 => "429 rate limited",
+        500 => "500 server error",
+        502 => "502 bad gateway",
+        503 => "503 unavailable",
+        504 => "504 timeout",
+        _ => "request",
+    };
+    format!(
+        "<span class=\"badge {class}\" title=\"{}\">{status}</span>",
+        esc(label)
+    )
+}
+
 fn env_badge(env: &str) -> String {
     let cls = if env == "production" { "env" } else { "" };
     format!("<span class=\"badge {cls}\">{}</span>", esc(env))
@@ -879,7 +927,7 @@ fn sidebar(
         .unwrap_or_default();
     s.push_str(&format!(
         "<div class=side-title>Account</div><div class=muted style=\"padding:0 8px;margin-left:-8px;font-size:12px\">{}</div>\
-<a class=\"{}\" href=\"/dashboard/account{team_q}\"{}>API tokens</a>\
+<a class=\"{}\" href=\"/dashboard/account{team_q}\"{}>Account &amp; API tokens</a>\
 <form method=post action=/dashboard/logout class=inline><input type=hidden name=csrf value=\"{csrf}\"><button class=\"btn link\">Sign out</button></form>",
         esc(&user.email),
         if account_on { "on" } else { "" },
@@ -926,7 +974,11 @@ else{{var b=document.querySelector('button.menu');if(b)b.focus();}}}}\
 function toggleNav(){{setNav(!document.body.classList.contains('nav-open'));}}\
 document.addEventListener('keydown',function(e){{if(e.key==='Escape'&&document.body.classList.contains('nav-open'))setNav(false);}});\
 function copyText(t,b){{if(!navigator.clipboard)return;navigator.clipboard.writeText(t).then(function(){{if(!b)return;var o=b.textContent;b.textContent='Copied';setTimeout(function(){{b.textContent=o}},1500)}});}}\
-if(document.querySelector('.badge.run')){{setTimeout(function(){{location.reload()}},5000);}}\
+if(document.querySelector('[data-status-app],[data-deploy-status]')){{setTimeout(pollStatus,5000);}}\
+function pollStatus(){{var nodes=document.querySelectorAll('[data-status-app],[data-deploy-status]');if(!nodes.length)return;\
+fetch('/dashboard/status',{{headers:{{'accept':'application/json'}},credentials:'same-origin'}}).then(function(r){{if(!r.ok)throw 0;return r.json()}}).then(function(j){{\
+nodes.forEach(function(el){{var html=el.dataset.statusApp?(j.apps[el.dataset.statusApp]||{{}}).badge:(j.deploys[el.dataset.deployStatus]||{{}}).badge;if(html&&el.innerHTML!==html)el.innerHTML=html;}});\
+if(document.querySelector('.badge.run'))setTimeout(pollStatus,5000);else if(document.querySelector('[data-status-app],[data-deploy-status]'))setTimeout(pollStatus,15000);}}).catch(function(){{setTimeout(pollStatus,10000);}});}}\
 </script>",
         user = esc(&user.name),
         team = esc(selected.map(|t| t.name.as_str()).unwrap_or("")),
@@ -1089,16 +1141,8 @@ fn render_dashboard(
                     .trim_start_matches("http://")
             })
             .unwrap_or("not routed yet");
-        let host_html = if latest.is_some() {
-            url.as_deref()
-                .map(|u| {
-                    format!(
-                        "<a href=\"{}\" target=_blank rel=noreferrer>{}</a>",
-                        esc(u),
-                        esc(host)
-                    )
-                })
-                .unwrap_or_else(|| esc(host))
+        let host_text = if latest.is_some() {
+            esc(host)
         } else {
             format!(
                 "{} <span class=muted>· awaiting first deploy</span>",
@@ -1157,16 +1201,13 @@ fn render_dashboard(
             })
             .unwrap_or_default();
         cards.push_str(&format!(
-            "<div class=card><div class=\"row between\"><a class=name href=\"/dashboard/project/{n}\">{n}</a><span class=row>{badge}{prod}{alarm}</span></div>\
-<div class=\"muted small\" style=\"margin:6px 0 10px\">{host}</div>{meta}\
-<div class=\"row small\" style=\"margin-top:12px\"><a href=\"/dashboard/project/{n}/deployments\">Deployments</a>\
-<a href=\"/dashboard/project/{n}/logs\">Logs</a><a href=\"/dashboard/project/{n}/env\">Environment</a>\
-<a href=\"/dashboard/project/{n}/settings\">Settings</a></div></div>",
+            "<a class=card href=\"/dashboard/project/{n}\"><div class=\"row between\"><span class=name>{n}</span><span class=row><span data-status-app=\"{n}\">{badge}</span>{prod}{alarm}</span></div>\
+<div class=\"muted small\" style=\"margin:6px 0 10px\">{host}</div>{meta}</a>",
             n = esc(&a.name),
             badge = badge,
             prod = prod,
             alarm = alarm,
-            host = host_html,
+            host = host_text,
             meta = meta
         ));
     }
@@ -1283,17 +1324,26 @@ fn cert_table(st: &AppState, app: &App, csrf: &str, can: bool) -> String {
     let mut rows = String::new();
     for host in hosts {
         let info = crate::api::cert_info(st, &host);
-        let status = info["status"].as_str().unwrap_or("pending");
+        let status = if st.edge {
+            info["status"].as_str().unwrap_or("pending")
+        } else {
+            "external proxy"
+        };
         let cls = match status {
             "issued" => "ok",
             "error" => "failed",
             "expiring" => "run",
+            "external proxy" => "env",
             _ => "",
         };
-        let expires = info["expires"]
-            .as_i64()
-            .map(fmt_time)
-            .unwrap_or_else(|| "-".into());
+        let expires = if st.edge {
+            info["expires"]
+                .as_i64()
+                .map(fmt_time)
+                .unwrap_or_else(|| "-".into())
+        } else {
+            "managed by proxy".into()
+        };
         let detail = info["error"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -1305,7 +1355,7 @@ fn cert_table(st: &AppState, app: &App, csrf: &str, can: bool) -> String {
                 )
             })
             .unwrap_or_default();
-        let renew = if can {
+        let renew = if can && st.edge {
             format!(
                 "<form class=inline method=post action=/dashboard/certificates/renew>{csrf}<input type=hidden name=app value=\"{app}\"><input type=hidden name=host value=\"{host}\">\
 <button class=\"btn link\">Renew</button></form>",
@@ -1408,7 +1458,7 @@ async fn render_project(
                     "<option value=\"{id}\"{sel}>{} · {} · {} · {} · {}</option>",
                     short,
                     d.env,
-                    d.branch.as_deref().unwrap_or("-"),
+                    esc(d.branch.as_deref().unwrap_or("-")),
                     d.status,
                     fmt_time(d.created_at),
                     id = esc(&d.id),
@@ -1436,7 +1486,7 @@ async fn render_project(
                     when(r.ts),
                     esc(&r.method),
                     esc(&r.path),
-                    status_badge(&r.status.to_string()),
+                    http_badge(r.status),
                     esc(&r.latency_ms.to_string()),
                     esc(r.ip.as_deref().unwrap_or("-"))
                 ));
@@ -1939,6 +1989,9 @@ liveCtl=null;b.textContent='Live stream';}}\
                         ))
                     ));
                 }
+                if !deployer {
+                    actions = "<span class=\"muted small\">read-only role</span>".to_string();
+                }
                 let mut meta = esc(d
                     .commit_author
                     .as_deref()
@@ -1966,7 +2019,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                     ));
                 }
                 rows.push_str(&format!(
-                    "<tr><td><a href=\"/dashboard/project/{app}/logs?deploy={id}\"><code>{short}</code></a>{live}<div class=\"muted small\">{meta}</div></td><td>{env}</td><td>{status}</td><td>{age}</td><td style=\"text-align:right\">{actions}</td></tr>",
+                    "<tr><td><a href=\"/dashboard/project/{app}/logs?deploy={id}\"><code>{short}</code></a>{live}<div class=\"muted small\">{meta}</div></td><td>{env}</td><td data-deploy-status=\"{id}\">{status}</td><td>{age}</td><td style=\"text-align:right\">{actions}</td></tr>",
                     app = esc(&app.name),
                     id = esc(&d.id),
                     short = esc(short),
@@ -2149,10 +2202,14 @@ fn render_account(
 <form class=\"row\" method=post action=/dashboard/tokens style=\"max-width:560px\">{csrf}\
 <label class=sr for=token-name>Token name</label><input id=token-name name=name placeholder=\"laptop\" maxlength=64>\
 <button class=\"btn primary\">Create token</button></form>\
+<h2 style=\"margin-top:34px\">Passkeys</h2>\
+<div class=card><div class=muted small>Add a backup passkey so losing one device does not lock you out.</div>\
+<div id=passkey-err class=error hidden role=alert></div>\
+<button id=add-passkey class=\"btn\" type=button onclick=\"addPasskey()\">Add passkey</button></div>\
 <h2 style=\"margin-top:34px\">Your tokens</h2>\
 <div style=\"overflow:auto\"><table><thead><tr><th>Name</th><th>Created</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>\
 <form method=post action=/dashboard/logout-all style=\"margin-top:28px\">{csrf}\
-<button class=btn>Sign out everywhere</button></form>",
+<button class=btn>Sign out everywhere</button></form><script>{B64_JS}{PASSKEY_JS}</script>",
         notice = token_notice,
         csrf = csrf,
         rows = rows
@@ -2320,7 +2377,9 @@ fn render_team(
             revoke = revoke
         ));
     }
-    let invite_table = if invite_rows.is_empty() {
+    let invite_table = if !can_manage {
+        "<div class=empty><strong>Invite links are private</strong><div class=\"small\" style=\"margin-top:6px\">Only owners and admins can view or create invite links.</div></div>".to_string()
+    } else if invite_rows.is_empty() {
         "<div class=empty><strong>No invite links</strong><div class=\"small\" style=\"margin-top:6px\">Create one above; it is valid for seven days and can be used once.</div></div>".to_string()
     } else {
         format!("<div style=\"overflow:auto\"><table><thead><tr><th>Invite</th><th>Role</th><th>Status</th><th>Created</th><th>Expires</th><th></th></tr></thead><tbody>{invite_rows}</tbody></table></div><p class=\"muted small\">Active links can be copied below; anyone with a link can join until it expires or is revoked.</p>")
@@ -2397,9 +2456,40 @@ fn render_team(
 async fn read_form(req: Request<Body>) -> Result<HashMap<String, String>, Response<Body>> {
     let bytes = axum::body::to_bytes(req.into_body(), 1024 * 1024)
         .await
-        .map_err(|_| forbidden("body too large"))?;
-    serde_urlencoded::from_bytes::<HashMap<String, String>>(&bytes)
-        .map_err(|_| forbidden("bad form body"))
+        .map_err(|_| {
+            status_html(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                page(
+                    "Form too large",
+                    &error_body(
+                        "413",
+                        "Form too large",
+                        "That form was too large. Use the bulk editor with fewer lines and try again.",
+                        None,
+                        None,
+                        "-",
+                        Some("/dashboard"),
+                    ),
+                ),
+            )
+        })?;
+    serde_urlencoded::from_bytes::<HashMap<String, String>>(&bytes).map_err(|_| {
+        status_html(
+            StatusCode::BAD_REQUEST,
+            page(
+                "Bad form",
+                &error_body(
+                    "400",
+                    "Bad form",
+                    "The form could not be read. Reload the page and submit it again.",
+                    None,
+                    None,
+                    "-",
+                    Some("/dashboard"),
+                ),
+            ),
+        )
+    })
 }
 
 fn check_csrf(session: &Session, form: &HashMap<String, String>) -> Result<(), Response<Body>> {
@@ -2565,15 +2655,42 @@ pub async fn handle(
         return None;
     }
     let Some(session) = session else {
-        return Some(redirect_flash(
-            "/",
-            false,
-            "Your session expired — sign in again.",
-        ));
+        let had_cookie = req
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.contains("dok_session="))
+            .unwrap_or(false);
+        return Some(if had_cookie {
+            redirect_flash("/", false, "Your session expired — sign in again.")
+        } else {
+            auth::redirect("/")
+        });
     };
     let user = session.user.clone();
 
     if method == Method::GET {
+        if path == "/dashboard/status" {
+            let mut apps = serde_json::Map::new();
+            let mut deploys = serde_json::Map::new();
+            for team in st.db.teams_for(&user.id).unwrap_or_default() {
+                for app in st.db.apps_for_team(&team.id).unwrap_or_default() {
+                    apps.insert(
+                        app.name.clone(),
+                        serde_json::json!({"status": app.status, "badge": status_badge(&app.status)}),
+                    );
+                    for d in st.db.deploys(&app.name, 20).unwrap_or_default() {
+                        deploys.insert(
+                            d.id.clone(),
+                            serde_json::json!({"status": d.status, "badge": status_badge(&d.status)}),
+                        );
+                    }
+                }
+            }
+            return Some(
+                axum::Json(serde_json::json!({"apps": apps, "deploys": deploys})).into_response(),
+            );
+        }
         if let Some(rest) = path.strip_prefix("/dashboard/stream/") {
             let app_name = rest.split('/').next().unwrap_or("");
             let Some(app) = project_for(&st.db, &user, app_name) else {
@@ -2683,6 +2800,20 @@ pub async fn handle(
     }
 
     // All dashboard writes are CSRF-protected.
+    let referer = req
+        .headers()
+        .get(header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| url::Url::parse(v).ok())
+        .map(|u| {
+            let mut s = u.path().to_string();
+            if let Some(q) = u.query() {
+                s.push('?');
+                s.push_str(q);
+            }
+            s
+        })
+        .filter(|p| p == "/dashboard" || p.starts_with("/dashboard/"));
     let rest = path.trim_start_matches("/dashboard/").to_string();
     let form = match read_form(req).await {
         Ok(f) => f,
@@ -2690,7 +2821,7 @@ pub async fn handle(
     };
     if check_csrf(&session, &form).is_err() {
         return Some(redirect_flash(
-            "/dashboard",
+            referer.as_deref().unwrap_or("/dashboard"),
             false,
             "Your session changed — reload the page and try again.",
         ));
@@ -2923,6 +3054,12 @@ pub async fn handle(
                 &back,
             ));
         }
+        if !st.edge {
+            return Some(unprocessable(
+                "Certificates are managed by your external proxy; use its renewal flow.",
+                &back,
+            ));
+        }
         return match crate::api::request_cert_renewal(st, &host) {
             Ok(_) => Some(redirect_flash(
                 &back,
@@ -2944,8 +3081,14 @@ pub async fn handle(
             "/dashboard",
         ));
     };
-    if !can_write(&st.db, &user, &app) {
-        return Some(forbidden("you need owner or admin rights for this project"));
+    let deploy_action = matches!(action, "redeploy" | "promote" | "rollback");
+    let permitted = if deploy_action {
+        can_deploy(&st.db, &user, &app)
+    } else {
+        can_write(&st.db, &user, &app)
+    };
+    if !permitted {
+        return Some(forbidden("you need the right role for this project action"));
     }
     let deployments = format!("/dashboard/project/{}/deployments", app.name);
 

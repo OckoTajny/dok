@@ -554,6 +554,21 @@ async fn upload(
         )
             .into_response();
     }
+    let _upload_gate = match st.upload_gate.acquire().await {
+        Ok(g) => g,
+        Err(_) => {
+            return (StatusCode::SERVICE_UNAVAILABLE, "server shutting down\n").into_response()
+        }
+    };
+    if let Ok(free) = fs2::available_space(&st.data) {
+        if free < 1024 * 1024 * 1024 {
+            return (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "not enough free disk space to accept an upload (need at least 1 GB)\n",
+            )
+                .into_response();
+        }
+    }
     let env = match normalize_env(q.env.as_deref().unwrap_or("production")) {
         Some(e) => e,
         None => return bad("env must be production or preview"),
@@ -594,6 +609,13 @@ async fn upload(
     let archive = tmp.join(format!("{}.tar.gz", uuid::Uuid::new_v4().simple()));
     if let Err(e) = save_body(req, &archive).await {
         let _ = tokio::fs::remove_file(&archive).await;
+        if e.to_string().contains("exceeds") {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("upload exceeds {} MB\n", MAX_UPLOAD / (1024 * 1024)),
+            )
+                .into_response();
+        }
         return internal(e);
     }
     let dir = match deploy::new_build_dir(&st, &app) {
@@ -611,7 +633,11 @@ async fn upload(
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             let _ = tokio::fs::remove_dir_all(&dir).await;
-            return internal(e);
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("archive rejected: {e}\n"),
+            )
+                .into_response();
         }
         Err(e) => {
             let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -656,7 +682,18 @@ async fn upload(
     }
 
     let author = author_of(&st, &caller);
-    match deploy::deploy_dir(&st, &app, &dir, q.port, q.domain, env, author.as_deref()).await {
+    match deploy::deploy_dir(
+        &st,
+        &app,
+        &dir,
+        q.port,
+        q.domain,
+        env,
+        author.as_deref(),
+        existing.is_some(),
+    )
+    .await
+    {
         Ok(out) => Json(out).into_response(),
         Err(e) => {
             if env == "production" {
@@ -1613,8 +1650,10 @@ pub(crate) fn hosts_for_app(st: &AppState, app: &crate::db::App) -> Vec<String> 
     if let Some(d) = &app.domain {
         set.insert(d.clone());
     }
-    if let Some(base) = &st.base_domain {
-        set.insert(format!("{}.{}", app.name, base));
+    if app.domain.is_none() {
+        if let Some(base) = &st.base_domain {
+            set.insert(format!("{}.{}", app.name, base));
+        }
     }
     for h in st.db.domains_for(&app.name).unwrap_or_default() {
         set.insert(h);
@@ -1685,6 +1724,13 @@ async fn renew_certificate(
         }
     } else {
         return not_found();
+    }
+    if !st.edge {
+        return (
+            StatusCode::CONFLICT,
+            "certificates are managed by the external proxy; renewal is not available\n",
+        )
+            .into_response();
     }
     match request_cert_renewal(&st, &host) {
         Ok(status) => Json(json!({"ok": true, "host": host, "status": status, "renewing": true}))
@@ -1821,7 +1867,11 @@ async fn put_member(
         Ok(r) => r,
         Err(r) => return r,
     };
-    if actor.as_deref() != Some("owner") {
+    let current = st.db.role(&t.id, &user).ok().flatten();
+    if matches!(current.as_deref(), Some("owner" | "admin")) && actor.as_deref() != Some("owner") {
+        return forbidden();
+    }
+    if !crate::db::can_grant(actor.as_deref(), &b.role) {
         return forbidden();
     }
     if !matches!(b.role.as_str(), "owner" | "admin" | "member" | "viewer") {
@@ -2156,7 +2206,15 @@ async fn redeploy(
     }
     match deploy_from_repo(&st, &app).await {
         Ok(out) => Json(out).into_response(),
-        Err(e) => internal(e),
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if msg.contains("app has no repo") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            };
+            (status, Json(json!({"error": msg}))).into_response()
+        }
     }
 }
 
@@ -2453,7 +2511,7 @@ pub async fn deploy_from_repo_branch_env(
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "main".into());
-    let out = deploy::deploy_dir(st, app, &dir, None, None, env, None).await?;
+    let out = deploy::deploy_dir(st, app, &dir, None, None, env, None, true).await?;
     if !sha.is_empty() {
         let _ = st
             .db
@@ -2584,10 +2642,15 @@ fn ip_is_public(ip: std::net::IpAddr) -> bool {
                 || v4.octets()[0] == 0)
         }
         std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return ip_is_public(std::net::IpAddr::V4(v4));
+            }
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_unique_local()
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
+                || v6.segments()[0] == 0x2002
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0)
                 || v6.is_multicast())
         }
     }
@@ -2753,6 +2816,11 @@ mod tests {
         assert!(!super::valid_repo_url("https://10.0.0.5/a.git"));
         assert!(!super::valid_repo_url("https://192.168.1.10/a.git"));
         assert!(!super::valid_repo_url("ssh://git@[::1]/a.git"));
+        assert!(!super::valid_repo_url("ssh://git@[::ffff:127.0.0.1]/a.git"));
+        assert!(!super::valid_repo_url(
+            "ssh://git@[::ffff:169.254.169.254]/a.git"
+        ));
+        assert!(!super::valid_repo_url("ssh://git@[2002:7f00:1::]/a.git"));
         assert!(!super::valid_repo_url("ssh://git@10.0.0.5/a.git"));
         assert!(!super::valid_repo_url("https://user:pw@192.168.0.2/a.git"));
         assert!(!super::valid_repo_url("git@localhost:a/b.git"));
