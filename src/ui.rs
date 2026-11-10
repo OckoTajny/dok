@@ -56,7 +56,7 @@ h3{font-size:13px;margin:20px 0 8px;color:#bbb;font-weight:500}
 .between{justify-content:space-between}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
 .card{display:block;border:1px solid #222;border-radius:10px;padding:16px;background:#050505}
-.card:hover{border-color:#444}
+a.card:hover{border-color:#444;cursor:pointer}
 .card .name{font-weight:600;font-size:14px}
 .badge{display:inline-flex;align-items:center;gap:5px;border:1px solid #333;border-radius:999px;padding:1px 8px;font-size:11px;color:#bbb;background:#0a0a0a;white-space:nowrap}
 .badge.ok{color:#7ee787;border-color:#1f4426;background:#07130a}
@@ -130,6 +130,8 @@ pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;
  .tabs::-webkit-scrollbar-thumb{background:#444;border-radius:2px}
  .tabs a{display:flex;align-items:center;justify-content:center;flex:0 0 auto}
  .grid{grid-template-columns:1fr}
+ table{min-width:0}
+ .empty{padding:24px 12px}
  input,select,textarea{font-size:16px}
  .head{padding-top:18px}
  .errpage{margin:8vh auto}
@@ -170,7 +172,7 @@ const b64={
 };
 function encCred(c){return{id:c.id,rawId:b64.fromBuf(c.rawId),type:c.type,response:{clientDataJSON:b64.fromBuf(c.response.clientDataJSON),attestationObject:b64.fromBuf(c.response.attestationObject),transports:c.response.getTransports?c.response.getTransports():undefined},clientExtensionResults:c.getClientExtensionResults()}}
 function encAssertion(c){return{id:c.id,rawId:b64.fromBuf(c.rawId),type:c.type,response:{clientDataJSON:b64.fromBuf(c.response.clientDataJSON),authenticatorData:b64.fromBuf(c.response.authenticatorData),signature:b64.fromBuf(c.response.signature),userHandle:c.response.userHandle?b64.fromBuf(c.response.userHandle):null},clientExtensionResults:c.getClientExtensionResults()}}
-function fail(e){const el=document.getElementById('err');let msg=e&&e.message?e.message:String(e);if(e&&(e.name==='NotAllowedError'||e.name==='AbortError'))msg='The passkey prompt was cancelled or timed out. Try again.';if(el){el.textContent=msg;el.hidden=false}const go=document.getElementById('go');if(go){go.disabled=false;if(go.textContent==='Waiting for passkey…')go.textContent='Try again'}}
+function fail(e){const el=document.getElementById('err');let msg=e&&e.message?e.message:String(e);if(e&&(e.name==='NotAllowedError'||e.name==='AbortError'))msg='The passkey prompt was cancelled or timed out. Try again.';if(msg.indexOf('too many attempts')>=0)msg='Too many attempts — wait a minute and try again.';if(msg.indexOf('expired')>=0)msg='That sign-in attempt expired. Reload and try again.';if(el){el.textContent=msg;el.hidden=false}const go=document.getElementById('go');if(go){go.disabled=false;if(go.textContent==='Waiting for passkey…')go.textContent='Try again'}}
 async function post(url,body){const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});if(!r.ok)throw new Error(await r.text()||('HTTP '+r.status));return r.json()}
 "#;
 
@@ -280,7 +282,8 @@ fn login_page(flash: Option<&Flash>) -> Response<Body> {
     let inner = format!(
         r#"{}{}<p class=small style="margin:0 0 14px">Use the passkey you registered for this instance.</p>
 <form onsubmit="login();return false"><button id=go class="btn primary" type=submit style="width:100%">Sign in with passkey</button></form>
-<p class="small muted" style="margin:18px 0 0">New here? You need an invite link from a teammate — ask an owner for a <code>/join/…</code> link. Lost your passkey or need another account? An owner can send you a fresh invite.</p>"#,
+<p class="small muted" style="margin:18px 0 0">New here? You need an invite link from a teammate — ask an owner for a <code>/join/…</code> link. Lost your passkey or need another account? An owner can send you a fresh invite. <a href=\"https://github.com/OckoTajny/dok#quick-start\" target=_blank rel=noreferrer>Docs</a></p>\
+<noscript><p class=error role=alert>Signing in needs JavaScript for the passkey prompt. Enable JavaScript and reload this page.</p></noscript>"#,
         flash_banner(flash),
         err_box()
     );
@@ -889,7 +892,9 @@ fn sidebar(
 ) -> String {
     let mut s = String::from("<aside class=side id=sidebar aria-label=Sidebar>");
     s.push_str("<button class=\"btn link close\" id=nav-close type=button onclick=\"toggleNav()\">Close menu</button>");
-    s.push_str("<div class=side-title>Teams</div>");
+    if !teams.is_empty() {
+        s.push_str("<div class=side-title>Teams</div>");
+    }
     for t in teams {
         let on = active_section != Some("team") && selected.map(|x| x.id == t.id).unwrap_or(false);
         s.push_str(&format!(
@@ -1238,7 +1243,7 @@ fn render_dashboard(
         String::new()
     } else {
         format!(
-            "<div class=notice>New here? <a href=\"/dashboard/account\">Create an API token</a> in Account → API tokens, then run <code>dok login {url} &lt;token&gt;</code> before <code>dok push</code>. Need the CLI? <a href=\"https://github.com/OckoTajny/dok#quickstart\" target=_blank rel=noreferrer>Install dok</a>.</div>",
+            "<div class=notice>New here? <a href=\"/dashboard/account\">Create an API token</a> in Account → API tokens, then run <code>dok login {url} &lt;token&gt;</code> before <code>dok push</code>. Need the CLI? <a href=\"https://github.com/OckoTajny/dok#quick-start\" target=_blank rel=noreferrer>Install dok</a>.</div>",
             url = esc(&st.public_url)
         )
     };
@@ -1477,15 +1482,52 @@ async fn render_project(
                 ));
             }
             let status_filter = q.get("status").and_then(|s| s.parse::<u16>().ok());
-            let access_rows = st
+            let page = q
+                .get("page")
+                .and_then(|p| p.parse::<usize>().ok())
+                .unwrap_or(0);
+            let per_page = 100usize;
+            let all_access = st
                 .db
                 .access_logs_filtered(&app.name, 5000, status_filter, None)
                 .unwrap_or_default();
             let access_total = st
                 .db
                 .access_log_count(&app.name, status_filter, None)
-                .unwrap_or(access_rows.len() as i64);
+                .unwrap_or(all_access.len() as i64);
+            let access_rows: Vec<_> = all_access
+                .into_iter()
+                .skip(page * per_page)
+                .take(per_page)
+                .collect();
             let access_shown = access_rows.len();
+            let pages = ((access_total as usize).saturating_add(per_page - 1)) / per_page;
+            let mut pager = String::new();
+            if pages > 1 {
+                let base = format!(
+                    "/dashboard/project/{}/logs?deploy={}&status={}&page=",
+                    app.name,
+                    effective.map(|d| d.id.as_str()).unwrap_or(""),
+                    status_filter.map(|s| s.to_string()).unwrap_or_default()
+                );
+                if page > 0 {
+                    pager.push_str(&format!(
+                        "<a class=btn href=\"{base}{}\">Newer</a> ",
+                        page - 1
+                    ));
+                }
+                pager.push_str(&format!(
+                    "<span class=\"muted small\">Page {} of {}</span>",
+                    page + 1,
+                    pages
+                ));
+                if page + 1 < pages {
+                    pager.push_str(&format!(
+                        " <a class=btn href=\"{base}{}\">Older</a>",
+                        page + 1
+                    ));
+                }
+            }
             let mut access = String::new();
             for r in access_rows {
                 access.push_str(&format!(
@@ -1560,6 +1602,7 @@ async fn render_project(
 <div class=\"row between\" style=\"margin-bottom:8px\"><div class=\"muted small\">Showing the newest {access_shown} of {access_total} retained requests.</div>\
 <form class=row method=get action=\"/dashboard/project/{app}/logs\"><input type=hidden name=deploy value=\"{deploy_id}\"><label class=sr for=status-filter>Status filter</label>\
 <select id=status-filter name=status onchange=\"this.form.submit()\" style=\"width:auto\"><option value=\"\">All statuses</option><option value=\"400\"{f400}>4xx and 5xx</option><option value=\"500\"{f500}>5xx only</option></select></form></div>\
+<div class=row style=\"margin-bottom:8px\">{pager}</div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>When</th><th>Request</th><th>Status</th><th>Latency</th><th>IP</th></tr></thead><tbody>{access}</tbody></table></div>\
 <script>\
 var liveCtl=null;\
@@ -1585,6 +1628,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                 stats_line = stats_line,
                 access = access,
                 access_shown = access_shown,
+                pager = pager,
                 access_total = access_total,
                 deploy_id = esc(&deploy_id_for_filter),
                 f400 = if status_filter == Some(400) { " selected" } else { "" },
@@ -2100,13 +2144,14 @@ liveCtl=null;b.textContent='Live stream';}}\
                 }
             );
             content.push_str(&format!(
-                "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Deployments</h2><div>{redeploy}</div></div>\
+                "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Overview</h2><div>{redeploy}</div></div>\
 <div class=\"grid\" style=\"margin:12px 0 20px\">\
 <div class=card><div class=muted small>Deployments</div><div class=name>{total}</div><div class=\"muted small\">{prod_n} production · {preview_n} preview</div></div>\
 <div class=card><div class=muted small>Domains</div><div class=name>{domain_n}</div><div class=\"muted small\">custom + primary</div></div>\
 <div class=card><div class=muted small>Environment keys</div><div class=name>{env_total}</div><div class=\"muted small\">across all environments</div></div>\
 <div class=card><div class=muted small>Traffic (1h)</div><div class=name>{traffic}</div><div class=\"muted small\">from the access log</div></div>\
 <div class=card><div class=muted small>Runtime</div><div class=name>{runtime}</div>{spark}<div class=\"muted small\">{runtime_note}</div></div></div>\
+<h2 style=\"margin-top:26px\">Deployment history</h2>\
 <div class=\"muted small\" style=\"margin:0 0 8px\">Showing {shown} retained deployments (older builds are pruned).</div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>Deploy</th><th>Env</th><th>Status</th><th>Deployed</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>",
                 redeploy = redeploy,

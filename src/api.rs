@@ -52,10 +52,10 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response {
                 StatusCode::NOT_FOUND,
                 "Page not found",
                 None,
-                "This dashboard page does not exist. Open your projects or use the sidebar.",
+                "This page does not exist on this dok instance. Sign in or open your projects.",
                 None,
                 &request_id,
-                Some("/dashboard"),
+                Some("/"),
             )
         }
     } else {
