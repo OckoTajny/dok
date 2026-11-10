@@ -233,6 +233,8 @@ pub enum TeamCmd {
 pub enum DomainsCmd {
     /// List domains for a project.
     List { app: String },
+    /// Check whether a domain's DNS points at this server.
+    Check { app: String, host: String },
     /// Remove a domain from a project.
     Rm { app: String, host: String },
 }
@@ -489,6 +491,19 @@ fn render_scalar(value: &serde_json::Value) -> String {
 
 fn detail_row(label: &str, value: impl std::fmt::Display) {
     println!("  {}  {value}", term::dim(&format!("{label:<12}")));
+}
+
+fn print_dns(dns: &serde_json::Value) {
+    let hint = field(dns, "hint");
+    if hint.is_empty() {
+        return;
+    }
+    let marker = match field(dns, "status") {
+        "ok" => term::green("✓"),
+        "missing" | "mismatch" => term::yellow("!"),
+        _ => term::dim("·"),
+    };
+    println!("  {} {} {hint}", term::dim("DNS"), marker);
 }
 
 fn apps_table(items: &[serde_json::Value]) {
@@ -1105,6 +1120,13 @@ fn render(value: &serde_json::Value) {
             "Domain {} now points at this project",
             term::cyan(field(value, "domain"))
         ));
+        if let Some(dns) = obj.get("dns") {
+            print_dns(dns);
+        }
+        return;
+    }
+    if let Some(dns) = obj.get("dns") {
+        print_dns(dns);
         return;
     }
     if let Some(removed) = obj.get("removed").and_then(|v| v.as_str()) {
@@ -1424,6 +1446,16 @@ pub fn run(cmd: Cmd, json: bool) -> Result<()> {
                 DomainsCmd::List { app } => {
                     let resp = client()?
                         .get(format!("{}/api/v1/projects/{app}/domains", base(&cfg)))
+                        .bearer_auth(&cfg.token)
+                        .send()?;
+                    handle(resp)
+                }
+                DomainsCmd::Check { app, host } => {
+                    let resp = client()?
+                        .get(format!(
+                            "{}/api/v1/projects/{app}/domains/{host}/check",
+                            base(&cfg)
+                        ))
                         .bearer_auth(&cfg.token)
                         .send()?;
                     handle(resp)
