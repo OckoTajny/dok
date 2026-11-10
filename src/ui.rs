@@ -23,119 +23,379 @@ fn cookie_secure() -> &'static str {
 }
 
 const CSS: &str = r#"
-:root{color-scheme:dark}
-*{box-sizing:border-box}
+/* Obsidian precision: graphite surfaces, amber signal, hairline structure. */
+:root{
+ color-scheme:dark;
+ --bg:#08080a;
+ --surface:#0d0d11;
+ --surface-2:#101015;
+ --raised:#15151b;
+ --raised-2:#1d1d25;
+ --line:#23232b;
+ --line-soft:#191920;
+ --line-strong:#34343f;
+ --ink:#f4f3ef;
+ --ink-2:#d8d7d1;
+ --muted:#95959f;
+ --faint:#7f7f8a;
+ --accent:#ffb454;
+ --accent-hi:#ffc678;
+ --accent-ink:#1a1000;
+ --accent-soft:rgba(255,180,84,.12);
+ --accent-line:rgba(255,180,84,.38);
+ --danger:#ff7264;
+ --danger-soft:rgba(255,114,100,.1);
+ --success:#7fe0a0;
+ --success-soft:rgba(127,224,160,.09);
+ --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,"Helvetica Neue",system-ui,sans-serif;
+ --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+ --r:9px;
+ --r-lg:14px;
+ --shadow:0 24px 60px -34px rgba(0,0,0,.95);
+}
+*,*::before,*::after{box-sizing:border-box}
 html,body{margin:0;padding:0}
-body{background:#000;color:#ededed;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-a{color:#ededed;text-decoration:none}
-a:hover{color:#fff;text-decoration:underline}
-code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.skip{position:absolute;left:-9999px;top:0;background:#ededed;color:#000;padding:10px 14px;border-radius:0 0 8px 0;z-index:100}
+html{-webkit-text-size-adjust:100%}
+body{
+ min-height:100vh;
+ background:radial-gradient(1100px 520px at 22% -8%,rgba(255,180,84,.07),transparent 62%),radial-gradient(900px 600px at 100% 0,rgba(255,255,255,.025),transparent 55%),var(--bg);
+ color:var(--ink);
+ font:16px/1.6 var(--sans);
+ -webkit-font-smoothing:antialiased;
+ text-rendering:optimizeLegibility;
+}
+body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.028;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")}
+a{color:var(--ink-2);text-decoration:none;transition:color .15s ease}
+a:hover{color:var(--ink)}
+code,pre{font-family:var(--mono)}
+code{font-size:.92em}
+.skip{position:absolute;left:-9999px;top:0;background:var(--accent);color:var(--accent-ink);padding:10px 16px;border-radius:0 0 8px 0;z-index:100;font-weight:600}
 .skip:focus{left:0}
-:focus-visible{outline:2px solid #79c0ff;outline-offset:2px}
-::placeholder{color:#8f8f8f;opacity:1}
-.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
-.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 0;border-bottom:1px solid #222}
-.brand{font-weight:600;letter-spacing:-.02em;font-size:15px}
-.muted{color:#888}
-.small{font-size:12px}
-.layout{display:grid;grid-template-columns:230px minmax(0,1fr);gap:36px;padding:28px 0 80px}
-main{grid-column:2;grid-row:1;min-width:0}
-aside{grid-column:1;grid-row:1;font-size:13px}
-.side-title{color:#777;text-transform:uppercase;letter-spacing:.08em;font-size:10px;margin:22px 0 8px}
-.side a{display:block;padding:6px 8px;margin-left:-8px;border-radius:6px;color:#bbb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.side a:hover{background:#111;color:#fff;text-decoration:none}
-.side a.on{background:#171717;color:#fff}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+::placeholder{color:var(--faint);opacity:1}
+::selection{background:rgba(255,180,84,.32);color:#fff}
+.wrap{position:relative;z-index:1;max-width:1280px;margin:0 auto;padding:0 32px}
+
+/* ---------- topbar ---------- */
+.top{position:sticky;top:0;z-index:40;display:flex;align-items:center;justify-content:space-between;gap:18px;height:60px;margin:0 -32px;padding:0 32px;border-bottom:1px solid var(--line-soft);background:rgba(8,8,10,.78);backdrop-filter:blur(16px) saturate(140%)}
+.brand{display:inline-flex;align-items:center;gap:9px;font-weight:650;font-size:16px;letter-spacing:-.025em;color:var(--ink)}
+.brand:hover{color:var(--ink);text-decoration:none}
+.mark{position:relative;width:18px;height:18px;border-radius:5px;background:var(--accent);box-shadow:0 0 18px -5px rgba(255,180,84,.7);flex:0 0 auto}
+.mark::after{content:"";position:absolute;inset:5px;border-radius:1.5px;background:var(--accent-ink)}
+.brand.small{font-size:14px}
+.brand.small .mark{width:16px;height:16px;border-radius:4px}
+.brand.small .mark::after{inset:4.5px}
+.top-meta{display:flex;align-items:center;gap:16px;min-width:0}
+.top-link{font:10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.top-link:hover{color:var(--ink);text-decoration:none}
+.who{display:flex;align-items:center;gap:9px;padding-left:16px;border-left:1px solid var(--line);min-width:0}
+.avatar{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--raised);border:1px solid var(--line-strong);font:600 11px/1 var(--mono);color:var(--accent);flex:0 0 auto}
+.who-text{line-height:1.3;min-width:0}
+.who-name{font-size:12.5px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+.who-team{font:9.5px/1.5 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+
+/* ---------- shell ---------- */
+.layout{display:grid;grid-template-columns:248px minmax(0,1fr);gap:44px;padding:36px 0 96px;align-items:start}
+main{grid-column:2;grid-row:1;min-width:0;animation:rise .45s cubic-bezier(.22,.61,.36,1) both}
+aside{grid-column:1;grid-row:1;position:sticky;top:84px;font-size:13.5px;min-width:0}
+.side-head{display:none}
+.side-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:26px 0 8px;padding:0 10px;color:var(--faint);font:10px/1.4 var(--mono);letter-spacing:.16em;text-transform:uppercase}
+.side-title:first-of-type{margin-top:0}
+.side-count{color:var(--muted);letter-spacing:0;border:1px solid var(--line);border-radius:999px;padding:0 6px;font-size:9.5px;line-height:15px}
+.side a{position:relative;display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background .15s,color .15s}
+.side a:hover{background:rgba(255,255,255,.04);color:var(--ink);text-decoration:none}
+.side a.on{background:linear-gradient(90deg,rgba(255,180,84,.14),rgba(255,180,84,.03));color:var(--ink)}
+.side a.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--accent)}
+.sdot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+.sdot.ok{background:var(--success);box-shadow:0 0 0 3px rgba(127,224,160,.12)}
+.sdot.failed{background:var(--danger);box-shadow:0 0 0 3px rgba(255,114,100,.12)}
+.sdot.run{background:var(--accent);box-shadow:0 0 0 3px rgba(255,180,84,.14)}
+.side-foot{margin-top:28px;padding-top:18px;border-top:1px solid var(--line-soft)}
+.side-user{display:flex;align-items:center;gap:9px;padding:0 10px;margin-bottom:10px;min-width:0}
+.side-user .avatar{width:26px;height:26px;font-size:10px}
+.side-user div{min-width:0}
+.side-user b{display:block;font-size:12.5px;font-weight:600;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-user span{display:block;font:10px/1.5 var(--mono);color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-ver{margin-top:16px;padding:0 10px;font:10px/1.4 var(--mono);color:var(--faint);letter-spacing:.08em}
 .side .close{display:none}
 .scrim{display:none}
-.menu{display:none;border:1px solid #333;background:#111;color:#eee;border-radius:7px;padding:6px 11px;font:inherit;font-size:12px;cursor:pointer}
-h1{font-size:24px;letter-spacing:-.03em;margin:0 0 6px;font-weight:600}
-h2{font-size:15px;margin:32px 0 12px;font-weight:600}
-h3{font-size:13px;margin:20px 0 8px;color:#bbb;font-weight:500}
+.menu{display:none;border:1px solid var(--line-strong);background:var(--raised);color:var(--ink);border-radius:8px;padding:0 12px;min-height:36px;font:500 12.5px var(--sans);cursor:pointer;align-items:center}
+.menu:hover{background:var(--raised-2)}
+
+/* ---------- type ---------- */
+h1{font-size:clamp(30px,3.4vw,44px);line-height:1.06;letter-spacing:-.035em;font-weight:600;margin:0 0 10px}
+h2{display:flex;align-items:center;gap:10px;font-size:19px;line-height:1.3;letter-spacing:-.02em;font-weight:600;margin:36px 0 14px}
+h3{font-size:13.5px;font-weight:600;letter-spacing:-.005em;color:var(--ink-2);margin:18px 0 8px}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font:10.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 14px}
+.eyebrow .tick{width:14px;height:1px;background:var(--accent);box-shadow:0 0 8px rgba(255,180,84,.55);flex:0 0 auto}
+.lede{color:var(--muted);font-size:15px;line-height:1.6;margin:0;max-width:64ch}
+.muted{color:var(--muted)}
+.small{font-size:12.5px}
+.mono{font-family:var(--mono)}
+.head{padding:4px 0 0}
 .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .between{justify-content:space-between}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
-.card{display:block;border:1px solid #222;border-radius:10px;padding:16px;background:#050505}
-a.card:hover{border-color:#444;cursor:pointer}
-.card .name{font-weight:600;font-size:14px}
-.badge{display:inline-flex;align-items:center;gap:5px;border:1px solid #333;border-radius:999px;padding:1px 8px;font-size:11px;color:#bbb;background:#0a0a0a;white-space:nowrap}
-.badge.ok{color:#7ee787;border-color:#1f4426;background:#07130a}
-.badge.failed{color:#ff7b72;border-color:#4b1f1f;background:#170808}
-.badge.run{color:#e3b341;border-color:#4a3a16;background:#151004}
-.badge.env{color:#79c0ff;border-color:#1f3a5f;background:#07111d}
-.badge.new{color:#d2a8ff;border-color:#3c2a52;background:#120a18}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #333;background:#111;color:#eee;border-radius:7px;padding:7px 12px;font:inherit;font-size:12px;cursor:pointer;min-height:32px}
-.btn:hover{background:#1a1a1a;border-color:#555}
-.btn.primary{background:#ededed;color:#000;border-color:#ededed;font-weight:500}
-.btn.primary:hover{background:#fff}
-.btn.danger{color:#ff7b72;border-color:#4b1f1f}
-.btn.danger:hover{background:#170808;border-color:#7a2e2e}
-.btn:disabled{opacity:.55;cursor:not-allowed;pointer-events:none}
-.btn.link{background:none;border:0;padding:2px 4px;color:#bbb;font-size:12px;min-height:0}
-.btn.link:hover{color:#fff;text-decoration:underline}
-.btn.link.danger{color:#ff7b72}
-.envitem{border:1px solid #222;border-radius:10px;padding:12px;margin:0 0 8px;background:#030303}
-.envitem .k{font-weight:600}
-.row > input:not([type=checkbox]):not([type=hidden]){width:auto;flex:1 1 220px}
-input,select,textarea{background:#0a0a0a;border:1px solid #333;color:#eee;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px;width:100%}
-input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #79c0ff;outline-offset:1px;border-color:#666}
-input:focus:not(:focus-visible),select:focus:not(:focus-visible),textarea:focus:not(:focus-visible){outline:none;border-color:#666}
-textarea{min-height:130px;resize:vertical}
-label{display:block;color:#999;font-size:12px;margin:12px 0 4px}
-input[type=checkbox]{width:auto;min-height:0}
-.form{max-width:460px}
-.form .btn{margin-top:16px}
-table{width:100%;min-width:640px;border-collapse:collapse;font-size:13px}
-th{text-align:left;color:#888;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid #222}
-td{padding:10px;border-bottom:1px solid #161616;vertical-align:middle}
-tr:last-child td{border-bottom:0}
-pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;overflow:auto;max-height:420px;font-size:12px;color:#ccc;white-space:pre-wrap;margin:0}
-.tabs{display:flex;gap:2px;border-bottom:1px solid #222;margin:20px 0 0;flex-wrap:wrap}
-.tabs a{padding:9px 12px;color:#999;font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px}
-.tabs a:hover{color:#fff;text-decoration:none}
-.tabs a.on{color:#fff;border-bottom-color:#ededed}
-.head{padding:26px 0 4px}
-.empty{border:1px dashed #333;border-radius:10px;padding:36px 20px;text-align:center;color:#999}
-.notice{border:1px solid #1f4426;background:#07130a;color:#7ee787;border-radius:8px;padding:10px 12px;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
 .inline{display:inline}
-.error{border:1px solid #4b1f1f;background:#170808;color:#ff7b72;border-radius:8px;padding:10px 12px;margin:12px 0;font-size:12px}
-.auth{max-width:400px;margin:11vh auto;padding:0 24px}
-.auth h1{font-size:26px;margin-bottom:8px}
-.auth p{color:#999;margin:0 0 24px}
-.auth .card{padding:22px}
-.toggle{display:flex;gap:10px;align-items:center;margin-top:14px;font-size:12px;color:#999}
-.invite{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all}
-.foot{margin-top:40px;color:#999;font-size:11px}
-.errpage{max-width:620px;margin:12vh auto;padding:0 24px}
-.errpage .code{font-size:12px;color:#999;letter-spacing:.14em;text-transform:uppercase}
-.errpage h1{font-size:30px;margin:8px 0 10px}
-.errpage .meta{border-top:1px solid #222;margin-top:24px;padding-top:14px;font-size:12px;color:#999}
-.errpage .meta div{margin:4px 0;overflow-wrap:anywhere}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:28px;flex-wrap:wrap;padding:2px 0 0;margin-bottom:30px}
+.page-head h1{margin-bottom:8px}
+.head-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+/* ---------- stat strip ---------- */
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line-soft);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;margin:0 0 36px;box-shadow:var(--shadow)}
+.stat{padding:18px 20px 16px;background:linear-gradient(180deg,rgba(255,255,255,.022),transparent 72%),var(--surface);min-width:0;animation:rise .45s cubic-bezier(.22,.61,.36,1) both}
+.stat-label{display:flex;align-items:center;gap:6px;font:10px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.stat-num{margin-top:9px;font-size:34px;line-height:1;letter-spacing:-.04em;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink)}
+.stat-num em{font-style:normal;font-size:15px;color:var(--muted);letter-spacing:-.01em;margin-left:3px}
+.stat-sub{margin-top:7px;font-size:11.5px;line-height:1.5;color:var(--muted)}
+.stat.hot .stat-num{color:var(--accent)}
+.stat.warn .stat-num{color:var(--danger)}
+
+/* ---------- cards ---------- */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(286px,1fr));gap:14px}
+.grid>.start,.grid>.empty{grid-column:1/-1}
+.card{display:block;border:1px solid var(--line);border-radius:var(--r-lg);padding:18px;background:linear-gradient(180deg,rgba(255,255,255,.022),transparent 60%),var(--surface);box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
+a.card:hover{border-color:var(--line-strong);text-decoration:none}
+.card .name{font-weight:600;font-size:17px;letter-spacing:-.02em;margin-top:6px;font-variant-numeric:tabular-nums}
+.pcard{display:flex;flex-direction:column;gap:11px;padding:18px 18px 0;border:1px solid var(--line);border-radius:var(--r-lg);background:linear-gradient(180deg,rgba(255,255,255,.025),transparent 58%),var(--surface);transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease;animation:rise .45s cubic-bezier(.22,.61,.36,1) both}
+.pcard:hover{transform:translateY(-2px);border-color:#3b3b47;box-shadow:0 22px 44px -30px #000,0 0 0 1px rgba(255,180,84,.1)}
+.pcard-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
+.pcard-id{display:flex;align-items:center;gap:9px;min-width:0}
+.pcard-name{font-size:16px;font-weight:600;letter-spacing:-.02em;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pcard-name a{color:var(--ink)}
+.pcard-host{font:12px/1.5 var(--mono);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcard-host a{color:var(--muted)}
+.pcard-host a:hover{color:var(--accent);text-decoration:none}
+.pcard-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
+.pcard-meta code{font-size:11px;color:var(--ink-2)}
+.pcard-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:3px -18px 0;padding:10px 18px;border-top:1px solid var(--line-soft);font-size:11.5px;min-width:0}
+.pcard-foot a{color:var(--muted)}
+.pcard-foot a:hover{color:var(--ink);text-decoration:none}
+.pcard-links{display:flex;gap:14px;flex:0 0 auto}
+.pcard-author{font:10px/1.5 var(--mono);color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{position:relative;width:8px;height:8px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+.dot.ok{background:var(--success);box-shadow:0 0 0 3px rgba(127,224,160,.12)}
+.dot.failed{background:var(--danger);box-shadow:0 0 0 3px rgba(255,114,100,.12)}
+.dot.run{background:var(--accent);box-shadow:0 0 0 3px rgba(255,180,84,.14);animation:pulse 1.8s ease-in-out infinite}
+.dot.new{background:var(--faint)}
+
+/* ---------- dashboard layout ---------- */
+.dash-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start;margin-top:6px}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px}
+.section-head h2{margin:0}
+.count{font:10px var(--mono);letter-spacing:.1em;color:var(--faint);border:1px solid var(--line);border-radius:999px;padding:2px 8px}
+.rail{position:sticky;top:84px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.panel{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:hidden}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:13px 16px;border-bottom:1px solid var(--line-soft)}
+.panel-head h2{margin:0;font:500 11.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2)}
+.panel-head .count{font-size:9.5px}
+.timeline{list-style:none;margin:0;padding:6px 0}
+.tl{position:relative;display:flex;gap:10px;padding:9px 16px}
+.tl+.tl::before{content:"";position:absolute;left:19.5px;top:-10px;height:13px;width:1px;background:var(--line)}
+.tl .dot{margin-top:5px}
+.tl-body{flex:1;min-width:0}
+.tl-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-2)}
+.tl-title a{font-weight:600;color:var(--ink)}
+.tl-meta{font:10.5px/1.5 var(--mono);color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl-time{font:10px var(--mono);color:var(--faint);white-space:nowrap;margin-top:3px}
+
+/* ---------- empty + start ---------- */
+.empty{border:1px dashed var(--line-strong);border-radius:var(--r-lg);padding:38px 22px;text-align:center;color:var(--muted);background:radial-gradient(400px 160px at 50% 0,rgba(255,180,84,.05),transparent 70%)}
+.empty strong{display:block;color:var(--ink);font-size:16px;letter-spacing:-.01em}
+.empty code{display:inline-block;margin-top:10px;font:12px var(--mono);color:var(--ink-2);background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:5px;padding:3px 7px}
+.start{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:30px;align-items:center;border:1px solid var(--line);border-radius:var(--r-lg);padding:28px;background:radial-gradient(420px 200px at 0 0,rgba(255,180,84,.06),transparent 70%),linear-gradient(160deg,rgba(255,255,255,.025),transparent 60%),var(--surface)}
+.start h2{display:block;margin:0 0 8px;font-size:22px}
+.steps{list-style:none;margin:0;padding:0;counter-reset:s}
+.steps li{position:relative;padding:0 0 16px 36px;color:var(--muted);font-size:13px;line-height:1.55}
+.steps li::before{counter-increment:s;content:counter(s,decimal-leading-zero);position:absolute;left:0;top:0;font:10px var(--mono);color:var(--accent);border:1px solid var(--accent-line);border-radius:5px;padding:2px 5px;background:var(--accent-soft)}
+.steps li:last-child{padding-bottom:0}
+.steps strong{color:var(--ink-2);font-weight:500}
+.steps code{display:block;width:fit-content;max-width:100%;margin-top:6px;font:11.5px/1.7 var(--mono);color:var(--ink-2);background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:5px;padding:3px 7px;overflow-wrap:anywhere;white-space:normal}
+
+/* ---------- badges ---------- */
+.badge{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line-strong);border-radius:6px;padding:2px 7px;font:10px/1.6 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-2);background:rgba(255,255,255,.03);white-space:nowrap}
+.badge::before{content:"";width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.85}
+.badge.ok{color:var(--success);border-color:rgba(127,224,160,.28);background:var(--success-soft)}
+.badge.failed{color:var(--danger);border-color:rgba(255,114,100,.3);background:var(--danger-soft)}
+.badge.run{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+.badge.env{color:#a8c8e8;border-color:rgba(130,175,225,.26);background:rgba(130,175,225,.08)}
+.badge.new{color:#c9b3f5;border-color:rgba(190,150,255,.26);background:rgba(190,150,255,.08)}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:0 14px;border:1px solid var(--line-strong);border-radius:8px;background:linear-gradient(180deg,var(--raised-2),var(--raised));color:var(--ink);font:500 13px/1 var(--sans);letter-spacing:-.005em;cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s,transform .1s,box-shadow .15s}
+.btn:hover{background:var(--raised-2);border-color:#43434f;color:var(--ink);text-decoration:none}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600;box-shadow:0 10px 26px -16px rgba(255,180,84,.85)}
+.btn.primary:hover{background:var(--accent-hi);border-color:var(--accent-hi);color:var(--accent-ink)}
+.btn.danger{color:var(--danger);border-color:rgba(255,114,100,.34);background:transparent;box-shadow:none}
+.btn.danger:hover{background:var(--danger-soft);border-color:rgba(255,114,100,.55);color:#ff9d92}
+.btn:disabled{opacity:.5;cursor:not-allowed;pointer-events:none}
+.btn.link{background:none;border:0;padding:0 2px;min-height:0;color:var(--muted);font:12.5px var(--sans);box-shadow:none}
+.btn.link:hover{color:var(--ink);text-decoration:underline;background:none}
+.btn.link.danger{color:var(--danger)}
+.btn.link.danger:hover{color:#ff9d92}
+
+/* ---------- forms ---------- */
+input,select,textarea{width:100%;background:var(--surface-2);border:1px solid var(--line-strong);color:var(--ink);border-radius:8px;padding:9px 11px;font:14px/1.5 var(--sans);min-height:40px;transition:border-color .15s,box-shadow .15s,background .15s}
+input[type=checkbox]{width:16px;height:16px;min-height:0;accent-color:var(--accent)}
+input[type=checkbox]:focus-visible{outline:2px solid var(--accent);outline-offset:2px;box-shadow:none}
+select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 15px) calc(50% + 1px),calc(100% - 10px) calc(50% + 1px);background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
+textarea{min-height:130px;resize:vertical;font:12.5px/1.65 var(--mono)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,180,84,.17);background:var(--surface)}
+label{display:block;color:var(--muted);font:10.5px/1.45 var(--mono);letter-spacing:.1em;text-transform:uppercase;margin:16px 0 6px}
+label.toggle{display:flex;align-items:center;gap:7px;margin:0;font:12px var(--sans);letter-spacing:0;text-transform:none;color:var(--muted)}
+label.toggle input{width:16px;flex:0 0 16px}
+.form{max-width:520px}
+.form .btn{margin-top:18px}
+.row>input:not([type=checkbox]):not([type=hidden]){width:auto;flex:1 1 220px}
+.create-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0}
+.create-form input{width:200px;min-height:36px;padding:7px 11px;font-size:13px}
+details{margin:0}
+summary{cursor:pointer;color:var(--muted);font-size:12.5px}
+summary:hover{color:var(--ink)}
+summary::marker{color:var(--faint)}
+
+/* ---------- tables ---------- */
+table{width:100%;min-width:680px;border-collapse:collapse;font-size:13px}
+th{position:relative;text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);color:var(--faint);font:10px var(--mono);letter-spacing:.12em;text-transform:uppercase;font-weight:500;background:var(--surface);white-space:nowrap}
+td{padding:11px 12px;border-bottom:1px solid var(--line-soft);vertical-align:middle;overflow-wrap:anywhere}
+tbody tr:last-child td{border-bottom:0}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:rgba(255,255,255,.022)}
+td code{font-size:12px;color:var(--ink-2);background:rgba(255,255,255,.03);border:1px solid var(--line-soft);border-radius:4px;padding:1px 5px}
+
+/* ---------- tabs ---------- */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:28px 0 0;padding:0;flex-wrap:wrap}
+.tabs a{position:relative;display:inline-flex;align-items:center;gap:6px;padding:11px 14px;color:var(--muted);font-size:13px;font-weight:500;border-radius:7px 7px 0 0;margin-bottom:-1px;border-bottom:2px solid transparent}
+.tabs a:hover{color:var(--ink);background:rgba(255,255,255,.03);text-decoration:none}
+.tabs a.on{color:var(--ink);border-bottom-color:var(--accent);background:linear-gradient(180deg,transparent,rgba(255,180,84,.05))}
+.tab-body{padding-top:2px}
+
+/* ---------- project hero + KPIs ---------- */
+.phero{position:relative;display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap;padding:26px 28px;border:1px solid var(--line);border-radius:18px;background:radial-gradient(620px 220px at 0 0,rgba(255,180,84,.07),transparent 65%),linear-gradient(180deg,rgba(255,255,255,.025),transparent 72%),var(--surface);overflow:hidden}
+.phero::after{content:"";position:absolute;left:0;right:0;top:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,180,84,.5),transparent)}
+.phero h1{margin:0 0 6px;font-size:clamp(28px,3vw,38px)}
+.phero .eyebrow{margin-bottom:12px}
+.phero-domain{font:12.5px/1.6 var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.phero-domain a{color:var(--muted)}
+.phero-domain a:hover{color:var(--accent);text-decoration:none}
+.phero-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
+.phero-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:6px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(172px,1fr));gap:12px;margin:16px 0 26px}
+.kpi{padding:16px 18px;border:1px solid var(--line);border-radius:var(--r);background:linear-gradient(180deg,rgba(255,255,255,.022),transparent 72%),var(--surface);min-width:0;animation:rise .45s cubic-bezier(.22,.61,.36,1) both}
+.kpi-label{font:10px/1.4 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.kpi-val{margin-top:8px;font-size:30px;line-height:1.05;letter-spacing:-.035em;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.kpi-val.sm{font-size:17px;line-height:1.35;letter-spacing:-.01em;color:var(--ink-2);font-weight:500}
+.kpi-sub{margin-top:5px;font-size:11.5px;line-height:1.5;color:var(--muted)}
+
+/* ---------- env / logs / details ---------- */
+.envitem{border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;margin:0 0 10px;background:var(--surface);transition:border-color .15s}
+.envitem:hover{border-color:var(--line-strong)}
+.envitem .k{font:600 12.5px var(--mono);color:var(--ink)}
+.env-row{flex-wrap:wrap}
+pre.log{margin:0;padding:16px 18px;background:#07070a;border:1px solid var(--line);border-radius:var(--r);overflow:auto;max-height:440px;font:12.5px/1.65 var(--mono);color:#c9c9d2;white-space:pre-wrap;tab-size:2;box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
+.log-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:22px 0 8px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
+.log-head h3{margin:0}
+.danger-zone{border:1px solid rgba(255,114,100,.22);border-radius:var(--r-lg);padding:18px 20px;background:linear-gradient(180deg,rgba(255,114,100,.05),transparent 72%),var(--surface);margin-top:14px}
+.danger-zone strong{font-size:14px;color:#ffb3ab}
+
+/* ---------- banners ---------- */
+.notice,.error{border:1px solid var(--line);border-left:2px solid var(--success);background:var(--success-soft);color:#c8f3d7;border-radius:8px;padding:11px 14px;margin:0 0 18px;font-size:12.5px;line-height:1.6;overflow-wrap:anywhere}
+.error{border-left-color:var(--danger);background:var(--danger-soft);color:#ffcac4}
+.notice a,.error a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+.notice code,.error code{background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);border-radius:4px;padding:1px 5px;color:inherit}
+
+/* ---------- auth ---------- */
+.auth{position:relative;z-index:1;display:flex;flex-direction:column;justify-content:center;max-width:470px;min-height:100vh;margin:0 auto;padding:48px 24px}
+.auth-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:30px}
+.auth-kicker{font:10px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--faint)}
+.auth h1{font-size:clamp(28px,5vw,36px);margin:0 0 8px}
+.auth p.lede{margin:0 0 8px;font-size:14px}
+.auth .card{margin-top:22px;padding:24px;background:linear-gradient(180deg,rgba(255,255,255,.03),transparent 72%),var(--surface);border-color:var(--line);box-shadow:var(--shadow)}
+.auth .card .small{color:var(--muted);line-height:1.65}
+.auth .card .small a{color:var(--ink-2);text-decoration:underline;text-underline-offset:2px}
+.auth .card .small a:hover{color:var(--accent)}
+.foot{margin-top:30px;color:var(--faint);font:10.5px/1.7 var(--mono);letter-spacing:.04em}
+.invite{font:11.5px/1.6 var(--mono);word-break:break-all;color:var(--ink-2);background:rgba(255,255,255,.03);border:1px solid var(--line);border-radius:5px;padding:2px 6px}
+
+/* ---------- error pages ---------- */
+.errpage{position:relative;z-index:1;max-width:680px;margin:0 auto;padding:12vh 24px 10vh}
+.err-code{font:11px var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--accent);margin:30px 0 10px}
+.errpage h1{font-size:clamp(30px,5vw,46px);margin-bottom:12px}
+.errpage .lede{font-size:14.5px}
+.errpage .meta{border-top:1px solid var(--line);margin-top:30px;padding-top:16px;font:11.5px/1.8 var(--mono);color:var(--muted)}
+.errpage .meta div{margin:5px 0;overflow-wrap:anywhere}
+.errpage .meta code{color:var(--ink-2)}
+
+/* ---------- motion ---------- */
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.pcard:nth-child(2){animation-delay:.04s}
+.pcard:nth-child(3){animation-delay:.08s}
+.pcard:nth-child(4){animation-delay:.12s}
+.pcard:nth-child(5){animation-delay:.16s}
+.pcard:nth-child(6){animation-delay:.2s}
+.stat:nth-child(2){animation-delay:.03s}
+.stat:nth-child(3){animation-delay:.06s}
+.stat:nth-child(4){animation-delay:.09s}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 .sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ---------- responsive ---------- */
+@media(max-width:1080px){
+ .layout{grid-template-columns:224px minmax(0,1fr);gap:30px}
+ .dash-grid{grid-template-columns:1fr}
+ .rail{position:static}
+}
 @media(max-width:760px){
- .wrap{padding:0 16px}
- .top{padding:10px 0}
+ .wrap{padding:0 18px}
+ .top{height:56px;margin:0 -18px;padding:0 18px}
  .menu{display:inline-flex}
- .layout{grid-template-columns:1fr;gap:12px;padding:18px 0 60px}
+ .top-link{display:none}
+ .who{padding-left:12px}
+ .who-text{display:none}
+ .layout{grid-template-columns:1fr;gap:16px;padding:20px 0 72px}
  main{grid-column:1;grid-row:1}
- aside{position:fixed;top:0;bottom:0;left:0;width:280px;max-width:86vw;background:#050505;border-right:1px solid #222;padding:18px 16px;z-index:60;transform:translateX(-102%);visibility:hidden;transition:transform .18s ease,visibility .18s;overflow:auto}
+ aside{position:fixed;top:0;bottom:0;left:0;width:288px;max-width:86vw;background:#0a0a0d;border-right:1px solid var(--line);padding:16px 14px;z-index:60;transform:translateX(-102%);visibility:hidden;transition:transform .2s ease,visibility .2s;overflow:auto;box-shadow:40px 0 90px -40px #000}
  body.nav-open aside{transform:none;visibility:visible}
- .side .close{display:inline-flex;margin-bottom:10px}
- .scrim{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;border:0}
+ .side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+ .side .close{display:inline-flex}
+ .side-title{margin-top:20px}
+ .scrim{display:none;position:fixed;inset:0;background:rgba(0,0,0,.68);z-index:50;border:0;backdrop-filter:blur(2px)}
  body.nav-open .scrim{display:block}
- .btn,.menu,.tabs a,.side a,.btn.link{min-height:44px}
  body.nav-open{overflow:hidden}
- .tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#444 transparent;padding-bottom:4px}
- .tabs::-webkit-scrollbar{height:4px}
- .tabs::-webkit-scrollbar-thumb{background:#444;border-radius:2px}
- .tabs a{display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+ .btn,.menu,.tabs a,.side a,.side .close{min-height:44px}
+ .btn.link{min-height:44px;padding:0 4px}
+ .tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;position:sticky;top:56px;z-index:30;background:rgba(8,8,10,.93);backdrop-filter:blur(12px);margin-top:20px}
+ .tabs::-webkit-scrollbar{display:none}
+ .tabs a{display:flex;align-items:center;justify-content:center;flex:0 0 auto;padding:12px 14px}
+ .page-head{gap:18px;margin-bottom:22px;align-items:flex-start}
+ .head-actions{width:100%}
+ .create-form{display:grid;grid-template-columns:minmax(0,1fr) auto;width:100%}
+ .create-form input{width:100%;min-width:0}
+ .stats{grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:26px}
+ .stat{padding:15px 16px 14px}
+ .stat-num{font-size:28px}
+ .dash-grid{gap:18px}
  .grid{grid-template-columns:1fr}
- table{min-width:520px}
- table:has(.empty){min-width:0}
- .empty{padding:24px 12px}
- input,select,textarea{font-size:16px}
- .head{padding-top:18px}
- .errpage{margin:8vh auto}
+ .phero{padding:20px 18px;border-radius:14px}
+ .phero-actions{width:100%;padding-top:2px}
+ .kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+ .kpi{padding:14px 15px}
+ .kpi-val{font-size:26px}
+ .kpi:last-child:nth-child(odd){grid-column:1/-1}
+ .start{grid-template-columns:1fr;padding:22px 18px;gap:20px}
+ .start h2{font-size:20px}
+ table{min-width:0;font-size:12.5px}
+ th,td{padding:9px 8px}
+ .tabs a{font-size:12.5px}
+ .auth{padding:30px 18px}
+ .errpage{padding:8vh 18px}
+ pre.log{font-size:11.5px;padding:12px 13px;max-height:360px}
+ .pcard-foot{margin:3px -16px 0;padding:10px 16px}
+ h1{font-size:30px}
+ h2{font-size:17px;margin-top:30px}
+ .head{padding-top:0}
+ input:not([type=checkbox]),select,textarea{font-size:16px;min-height:44px}
 }
 @media (prefers-reduced-motion:reduce){aside{transition:none}}
 "#;
@@ -147,7 +407,8 @@ pub fn esc(s: &str) -> String {
 fn page(title: &str, body: &str) -> String {
     format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
-<link rel=icon href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='19' fill='%2379c0ff' text-anchor='middle'%3Ed%3C/text%3E%3C/svg%3E\">\
+<meta name=theme-color content=\"#08080a\"><meta name=color-scheme content=dark>\
+<link rel=icon href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23ffb454'/%3E%3Crect x='9' y='9' width='14' height='14' rx='2' fill='%231a1000'/%3E%3C/svg%3E\">\
 <title>{t} · dok</title><style>{css}</style></head><body>{body}</body></html>",
         t = esc(title),
         css = CSS,
@@ -157,7 +418,9 @@ fn page(title: &str, body: &str) -> String {
 
 fn auth_page(title: &str, subtitle: &str, inner: &str, script: &str) -> String {
     let body = format!(
-        "<main class=auth><div class=brand>dok</div><h1>{t}</h1><p>{s}</p><div class=card>{inner}</div>\
+        "<main class=auth><div class=auth-top><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span>\
+<span class=auth-kicker>Passkey access</span></div>\
+<h1>{t}</h1><p class=lede>{s}</p><div class=card>{inner}</div>\
 <div class=foot>Passkeys only — nothing to remember, nothing to leak.</div></main><script>{script}</script>",
         t = esc(title),
         s = esc(subtitle),
@@ -352,8 +615,8 @@ pub fn page_join_invalid() -> Response<Body> {
         StatusCode::GONE,
         page(
             "Invite not valid",
-            "<main class=errpage><div class=brand>dok</div><div class=code>Invite link</div>\
-<h1>This invite link is not valid</h1><p class=muted>It may have expired, already been used, or been revoked. Ask a team owner or admin for a new link.</p>\
+            "<main class=errpage><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span><div class=err-code>Invite link</div>\
+<h1>This invite link is not valid</h1><p class=lede>It may have expired, already been used, or been revoked. Ask a team owner or admin for a new link.</p>\
 <p><a class=btn href=/>Back to sign in</a></p></main>",
         ),
     )
@@ -383,8 +646,8 @@ The token API keeps working at <code>/api/v1/health</code>."
         page(
             "Dashboard not configured",
             &format!(
-                "<main class=errpage><div class=brand>dok</div><div class=code>503</div>\
-<h1>Dashboard not configured</h1><p class=muted>{msg}</p>\
+                "<main class=errpage><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span><div class=err-code>503 · Not configured</div>\
+<h1>Dashboard not configured</h1><p class=lede>{msg}</p>\
 <div class=meta><div>Listening on <code>{}</code></div></div></main>",
                 esc(&st.public_url)
             ),
@@ -442,8 +705,8 @@ fn error_body(
         .map(|b| format!("<p><a class=btn href=\"{}\">Back</a></p>", esc(b)))
         .unwrap_or_default();
     format!(
-        "<main class=errpage><div class=brand>dok</div><div class=code>{code}</div>\
-<h1>{title}</h1><p class=muted>{msg}</p>{back}<div class=meta>{meta}</div></main>",
+        "<main class=errpage><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span>\
+<div class=err-code>{code} · dok</div><h1>{title}</h1><p class=lede>{msg}</p>{back}<div class=meta>{meta}</div></main>",
         code = esc(code),
         title = esc(title),
         msg = message,
@@ -807,6 +1070,22 @@ fn when(ts: i64) -> String {
     )
 }
 
+fn dot_class(status: &str) -> &'static str {
+    match status {
+        "ok" | "ready" => "ok",
+        "failed" | "error" => "failed",
+        "running" | "building" => "run",
+        _ => "new",
+    }
+}
+
+fn initial_of(name: &str) -> String {
+    name.chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "D".into())
+}
+
 fn status_badge(status: &str) -> String {
     let class = match status {
         "ok" | "ready" => "ok",
@@ -894,10 +1173,16 @@ fn sidebar(
     active_app: Option<&str>,
     active_section: Option<&str>,
 ) -> String {
-    let mut s = String::from("<aside class=side id=sidebar aria-label=Sidebar>");
-    s.push_str("<button class=\"btn link close\" id=nav-close type=button onclick=\"toggleNav()\">Close menu</button>");
+    let mut s = String::from(
+        "<aside class=side id=sidebar aria-label=Sidebar>\
+<div class=side-head><span class=\"brand small\"><span class=mark aria-hidden=true></span>dok</span>\
+<button class=\"btn link close\" id=nav-close type=button onclick=\"toggleNav()\">Close</button></div>",
+    );
     if !teams.is_empty() {
-        s.push_str("<div class=side-title>Teams</div>");
+        s.push_str(&format!(
+            "<div class=side-title>Workspace<span class=side-count>{}</span></div>",
+            teams.len()
+        ));
     }
     for t in teams {
         let on = active_section != Some("team") && selected.map(|x| x.id == t.id).unwrap_or(false);
@@ -917,20 +1202,24 @@ fn sidebar(
             esc(&team.slug),
             if team_on { " aria-current=page" } else { "" }
         ));
-        s.push_str("<div class=side-title>Projects</div>");
         let mut apps = db.apps_for_team(&team.id).unwrap_or_default();
         apps.sort_by(|a, b| a.name.cmp(&b.name));
+        s.push_str(&format!(
+            "<div class=side-title>Projects<span class=side-count>{}</span></div>",
+            apps.len()
+        ));
         if apps.is_empty() {
-            s.push_str("<span class=muted style=\"padding-left:8px\">No projects yet</span>");
+            s.push_str("<span class=\"muted small\" style=\"display:block;padding:2px 10px\">No projects yet</span>");
         }
         for a in &apps {
             let on = active_app == Some(a.name.as_str());
             s.push_str(&format!(
-                "<a class=\"{}\" href=\"/dashboard/project/{}\"{}>{}</a>",
+                "<a class=\"{}\" href=\"/dashboard/project/{}\"{}><span class=\"sdot {dot}\" aria-hidden=true></span>{}</a>",
                 if on { "on" } else { "" },
                 esc(&a.name),
                 if on { " aria-current=page" } else { "" },
-                esc(&a.name)
+                esc(&a.name),
+                dot = dot_class(&a.status)
             ));
         }
     }
@@ -938,20 +1227,22 @@ fn sidebar(
     let team_q = selected
         .map(|t| format!("?team={}", t.slug))
         .unwrap_or_default();
+    s.push_str("<div class=side-title>Account</div>");
     s.push_str(&format!(
-        "<div class=side-title>Account</div><div class=muted style=\"padding:0 8px;margin-left:-8px;font-size:12px\">{}</div>\
+        "<div class=side-foot style=\"margin-top:0;padding-top:0;border-top:0\">\
+<div class=side-user><span class=avatar aria-hidden=true>{initial}</span><div><b>{name}</b><span>{email}</span></div></div>\
 <a class=\"{}\" href=\"/dashboard/account{team_q}\"{}>Account &amp; API tokens</a>\
-<form method=post action=/dashboard/logout class=inline><input type=hidden name=csrf value=\"{csrf}\"><button class=\"btn link\">Sign out</button></form>",
-        esc(&user.email),
+<form method=post action=/dashboard/logout class=inline><input type=hidden name=csrf value=\"{csrf}\"><button class=\"btn link\">Sign out</button></form>\
+<div class=side-ver>dok {version}</div></div>",
         if account_on { "on" } else { "" },
         if account_on { " aria-current=page" } else { "" },
-        csrf = esc(csrf)
+        initial = esc(&initial_of(&user.name)),
+        name = esc(&user.name),
+        email = esc(&user.email),
+        csrf = esc(csrf),
+        version = env!("CARGO_PKG_VERSION")
     ));
     let _ = st;
-    s.push_str(&format!(
-        "<div class=\"muted small\" style=\"margin-top:20px;padding:0 8px;margin-left:-8px\">dok {}</div>",
-        env!("CARGO_PKG_VERSION")
-    ));
     s.push_str("</aside>");
     s
 }
@@ -972,13 +1263,12 @@ fn layout_with_sidebar(
     let team_q = selected
         .map(|t| format!("?team={}", t.slug))
         .unwrap_or_default();
-    let who = selected
-        .map(|t| format!("{} · {}", esc(&user.name), esc(&t.name)))
-        .unwrap_or_else(|| esc(&user.name));
+    let team_name = selected.map(|t| t.name.as_str()).unwrap_or("Workspace");
     let body = format!(
         "<a class=skip href=\"#main\">Skip to content</a>\
-<div class=wrap><header class=top><a class=brand href=\"/dashboard{team_q}\">dok</a>\
-<div class=row><a class=\"muted small\" href=\"https://github.com/OckoTajny/dok#readme\" target=_blank rel=noreferrer>Docs</a><span class=\"muted small\">{who}</span>\
+<div class=wrap><header class=top><a class=brand href=\"/dashboard{team_q}\"><span class=mark aria-hidden=true></span>dok</a>\
+<div class=top-meta><a class=top-link href=\"https://dok.djt-group.com\" target=_blank rel=noreferrer>Docs</a>\
+<div class=who><span class=avatar aria-hidden=true>{initial}</span><div class=who-text><div class=who-name>{user}</div><div class=who-team>{team}</div></div></div>\
 <button class=menu type=button aria-controls=sidebar aria-expanded=false onclick=\"toggleNav(this)\">Menu</button></div></header>\
 <div class=layout><main id=main tabindex=-1>{flash}{main}</main>\
 <button class=scrim type=button aria-label=\"Close menu\" onclick=\"toggleNav()\"></button>{side}</div></div>\
@@ -996,7 +1286,9 @@ fetch('/dashboard/status',{{headers:{{'accept':'application/json'}},credentials:
 nodes.forEach(function(el){{var html=el.dataset.statusApp?(j.apps[el.dataset.statusApp]||{{}}).badge:(j.deploys[el.dataset.deployStatus]||{{}}).badge;if(html&&el.innerHTML!==html)el.innerHTML=html;}});\
 if(document.querySelector('.badge.run'))setTimeout(pollStatus,5000);else if(document.querySelector('[data-status-app],[data-deploy-status]'))setTimeout(pollStatus,15000);}}).catch(function(){{setTimeout(pollStatus,10000);}});}}\
 </script>",
-        who = who,
+        user = esc(&user.name),
+        team = esc(team_name),
+        initial = esc(&initial_of(&user.name)),
         flash = flash_banner(flash),
         side = sidebar(
             st,
@@ -1077,7 +1369,7 @@ fn sparkline(samples: &[crate::state::MetricSample]) -> String {
             .map(|v| format!("{v:.1}% CPU"))
             .unwrap_or_else(|| "n/a".into());
         bars.push_str(&format!(
-            "<span title=\"{}\" style=\"display:inline-block;width:2px;margin-right:1px;height:{}px;background:#79c0ff;opacity:.75;vertical-align:bottom\"></span>",
+            "<span title=\"{}\" style=\"display:inline-block;width:2px;margin-right:1px;height:{}px;background:#ffb454;opacity:.7;vertical-align:bottom\"></span>",
             esc(&label),
             height
         ));
@@ -1092,10 +1384,12 @@ fn no_team_page(
     flash: Option<&Flash>,
 ) -> Response<Body> {
     let main = format!(
-        "<div class=head><h1>No team yet</h1><div class=muted>You are not a member of any team. Create one, or ask a teammate for an invite link.</div></div>\
-<h2>Create a team</h2><form class=\"row\" method=post action=/dashboard/team/create style=\"max-width:560px\">{csrf}\
-<label class=sr for=team-name>Team name</label><input id=team-name name=name placeholder=\"Personal\" maxlength=60 required>\
-<button class=\"btn primary\">Create team</button></form>",
+        "<div class=page-head><div><div class=eyebrow><span class=tick></span>Getting started</div><h1>No team yet</h1>\
+<p class=lede>You are not a member of any team. Create one, or ask a teammate for an invite link. Teams group projects, environments and members.</p></div></div>\
+<div class=start><div><h2>Create a team</h2><p class=lede>One team is enough for a solo setup; add members later with an invite link.</p></div>\
+<form class=form method=post action=/dashboard/team/create>{csrf}\
+<label for=team-name>Team name</label><input id=team-name name=name placeholder=\"Personal\" maxlength=60 required>\
+<button class=\"btn primary\">Create team</button></form></div>",
         csrf = csrf_input(session)
     );
     status_html(
@@ -1137,8 +1431,28 @@ fn render_dashboard(
         .unwrap_or(false);
 
     let mut cards = String::new();
+    let mut activity: Vec<(String, crate::db::Deploy)> = Vec::new();
+    let mut total_deploys = 0usize;
+    let mut live = 0usize;
+    let mut failing = 0usize;
+    let mut requests_hour = 0i64;
     for a in &apps {
-        let deploys = st.db.deploys(&a.name, 5).unwrap_or_default();
+        let deploys = st.db.deploys(&a.name, 200).unwrap_or_default();
+        total_deploys += deploys.len();
+        if a.production_deploy.is_some() {
+            live += 1;
+        }
+        if a.status == "failed" {
+            failing += 1;
+        }
+        requests_hour += st
+            .db
+            .access_stats(&a.name, crate::db::now() - 3600)
+            .map(|(r, _, _)| r)
+            .unwrap_or(0);
+        for d in deploys.iter().take(12) {
+            activity.push((a.name.clone(), d.clone()));
+        }
         let latest = deploys.first();
         let url = a
             .domain
@@ -1156,8 +1470,15 @@ fn render_dashboard(
                     .trim_start_matches("http://")
             })
             .unwrap_or("not routed yet");
-        let host_text = if latest.is_some() {
-            esc(host)
+        let host_html = if latest.is_some() {
+            match url.as_deref() {
+                Some(u) => format!(
+                    "<a href=\"{}\" target=_blank rel=noreferrer>{}</a>",
+                    esc(u),
+                    esc(host)
+                ),
+                None => esc(host),
+            }
         } else {
             format!(
                 "{} <span class=muted>· awaiting first deploy</span>",
@@ -1171,13 +1492,8 @@ fn render_dashboard(
                     .commit_message
                     .as_deref()
                     .map(|m| {
-                        let branch = d
-                            .branch
-                            .as_deref()
-                            .map(|b| format!(" <span class=\"badge\">{}</span>", esc(b)))
-                            .unwrap_or_default();
                         format!(
-                            "<div class=muted small style=\"margin-top:4px\">{} <code>{}</code>{branch}</div>",
+                            "<div class=\"mono small\" style=\"color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\">{} <code>{}</code></div>",
                             esc(&m.chars().take(52).collect::<String>()),
                             esc(d.commit_sha.as_deref().unwrap_or("").chars().take(7).collect::<String>().as_str())
                         )
@@ -1186,10 +1502,11 @@ fn render_dashboard(
                 (
                     status_badge(&d.status),
                     format!(
-                        "{} <span class=muted>·</span> {} <span class=muted>·</span> <code>{}</code>{commit}",
-                        env_badge(&d.env),
-                        when(d.created_at),
-                        esc(&short)
+                        "{env} <span class=muted>·</span> <span title=\"{abs}\">{ago}</span> <span class=muted>·</span> <code>{short}</code>{commit}",
+                        env = env_badge(&d.env),
+                        abs = esc(&fmt_time(d.created_at)),
+                        ago = esc(&age(d.created_at)),
+                        short = esc(&short)
                     ),
                 )
             }
@@ -1215,29 +1532,86 @@ fn render_dashboard(
                 )
             })
             .unwrap_or_default();
+        let author = latest
+            .and_then(|d| {
+                d.commit_author
+                    .as_deref()
+                    .or(d.author.as_deref())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "no deploy".into());
         cards.push_str(&format!(
-            "<a class=card href=\"/dashboard/project/{n}\"><div class=\"row between\"><span class=name>{n}</span><span class=row><span data-status-app=\"{n}\" aria-live=polite>{badge}</span>{prod}{alarm}</span></div>\
-<div class=\"muted small\" style=\"margin:6px 0 10px\">{host}</div>{meta}</a>",
+            "<article class=pcard>\
+<div class=pcard-head><div class=pcard-id><span class=\"dot {dot}\" aria-hidden=true></span><h3 class=pcard-name><a href=\"/dashboard/project/{n}\">{n}</a></h3></div>\
+<div class=row><span data-status-app=\"{n}\" aria-live=polite>{badge}</span>{prod}{alarm}</div></div>\
+<div class=pcard-host>{host}</div>\
+<div class=pcard-meta>{meta}</div>\
+<div class=pcard-foot><span class=pcard-links><a href=\"/dashboard/project/{n}\">Overview</a><a href=\"/dashboard/project/{n}/logs\">Logs</a><a href=\"/dashboard/project/{n}/deployments\">Deploys</a></span><span class=pcard-author>{author}</span></div></article>",
             n = esc(&a.name),
+            dot = dot_class(&a.status),
             badge = badge,
             prod = prod,
             alarm = alarm,
-            host = host_text,
-            meta = meta
+            host = host_html,
+            meta = meta,
+            author = esc(&author)
         ));
     }
     if cards.is_empty() {
         if can_create_here {
-            cards.push_str("<div class=empty><strong>No projects yet</strong><div class=small style=\"margin-top:6px\">Push from the CLI or create one above. Your first deploy appears here.</div><div class=small style=\"margin-top:10px\"><code>dok push ./my-app --app my-app</code></div></div>");
+            cards.push_str(&format!(
+                "<div class=start><div><div class=eyebrow><span class=tick></span>Get started</div>\
+<h2>No projects yet</h2>\
+<p class=lede>Projects appear here after the first push. A project is one deployable site with its own domains, environments and deployment history.</p></div>\
+<ol class=steps>\
+<li><strong>Create a project</strong> with the form above or from a push.</li>\
+<li><strong>Sign the CLI in</strong><code>dok login {url} &lt;token&gt;</code></li>\
+<li><strong>Ship it</strong><code>dok push ./my-app --app my-app</code></li>\
+</ol></div>",
+                url = esc(&st.public_url)
+            ));
         } else {
-            cards.push_str("<div class=empty><strong>No projects yet</strong><div class=small style=\"margin-top:6px\">You have read-only access to this team. Ask an owner or admin to create a project or grant you a deploy role.</div></div>");
+            cards.push_str("<div class=empty><strong>No projects yet</strong><div class=\"small\" style=\"margin-top:6px\">You have read-only access to this team. Ask an owner or admin to create a project or grant you a deploy role.</div></div>");
         }
+    }
+
+    activity.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
+    let mut timeline = String::new();
+    for (app_name, d) in activity.iter().take(8) {
+        let short: String = d.id.chars().take(8).collect();
+        let detail = d
+            .commit_message
+            .as_deref()
+            .map(|m| m.chars().take(34).collect::<String>())
+            .or_else(|| d.branch.clone())
+            .unwrap_or_else(|| short.clone());
+        timeline.push_str(&format!(
+            "<li class=tl><span class=\"dot {dot}\" aria-hidden=true></span>\
+<div class=tl-body><div class=tl-title><a href=\"/dashboard/project/{app}/deployments\">{app}</a>{env}</div>\
+<div class=tl-meta title=\"{detail_full}\">{detail}</div></div>\
+<span class=tl-time title=\"{abs}\">{ago}</span></li>",
+            dot = dot_class(&d.status),
+            app = esc(app_name),
+            env = env_badge(&d.env),
+            detail = esc(&detail),
+            detail_full = esc(&format!("{} {}", short, detail)),
+            abs = esc(&fmt_time(d.created_at)),
+            ago = esc(&age(d.created_at))
+        ));
+    }
+    if timeline.is_empty() {
+        timeline.push_str("<li class=tl><span class=\"dot new\" aria-hidden=true></span><div class=tl-body><div class=tl-meta>Deploys show up here as they happen.</div></div></li>");
     }
 
     let team_name = selected
         .as_ref()
         .map(|t| t.name.clone())
         .unwrap_or_else(|| "Workspace".into());
+    let members_n = selected
+        .as_ref()
+        .map(|t| st.db.members(&t.id).map(|m| m.len()).unwrap_or(0))
+        .unwrap_or(0);
+    let member_word = if members_n == 1 { "member" } else { "members" };
     let can_create = can_create_here;
     let csrf = csrf_input(session);
     let has_tokens = !st
@@ -1255,7 +1629,7 @@ fn render_dashboard(
     };
     let create = if can_create {
         format!(
-            "<form id=project-create class=\"row\" method=post action=/dashboard/projects style=\"margin:22px 0 18px;max-width:520px\">{csrf}\
+            "<form id=project-create class=create-form method=post action=/dashboard/projects>{csrf}\
 <input name=team type=hidden value=\"{slug}\"><label class=sr for=new-project>Project name</label>\
 <input id=new-project name=name placeholder=\"new-project\" pattern=\"[a-z0-9][a-z0-9-]*\" maxlength=63 required>\
 <button class=\"btn primary\">New project</button></form>",
@@ -1263,18 +1637,48 @@ fn render_dashboard(
             slug = esc(&team_slug)
         )
     } else {
-        "<p class=muted>You have read-only access to this team. Ask an owner or admin to create projects or change settings.</p>".to_string()
+        "<span class=badge>read-only</span>".to_string()
+    };
+    let failed_sub = if failing > 0 {
+        format!(" · {failing} failing")
+    } else {
+        String::new()
     };
     let main = format!(
-        "<div class=head><div class=\"row between\"><div><h1>{team}</h1><div class=muted>Projects deployed from this team.</div></div>\
-<a class=btn href=\"/dashboard/team?team={slug}\">Team &amp; invites</a></div></div>\
-{onboarding}{create}\
-<h2>All projects</h2><div class=grid>{cards}</div>",
+        "<div class=page-head><div><div class=eyebrow><span class=tick></span>Workspace</div><h1>{team}</h1>\
+<p class=lede>Projects, deployments and previews for this team.</p></div>\
+<div class=head-actions><a class=btn href=\"/dashboard/team?team={slug}\">Team &amp; invites</a>{create}</div></div>\
+{onboarding}\
+<div class=stats>\
+<div class=stat><div class=stat-label>Projects</div><div class=stat-num>{projects}</div><div class=stat-sub>in {team}</div></div>\
+<div class=\"stat hot\"><div class=stat-label><span class=\"dot ok\" aria-hidden=true></span>Live</div><div class=stat-num>{live}</div><div class=stat-sub>production deploys{failed_sub}</div></div>\
+<div class=stat><div class=stat-label>Deployments</div><div class=stat-num>{total_deploys}</div><div class=stat-sub>retained in this team</div></div>\
+<div class=stat><div class=stat-label>Requests · 1h</div><div class=stat-num>{requests_hour}</div><div class=stat-sub>from the access log</div></div>\
+</div>\
+<div class=dash-grid><section><div class=section-head><h2>All projects</h2><span class=count>{projects} total</span></div><div class=grid>{cards}</div></section>\
+<div class=rail>\
+<div class=panel><div class=panel-head><h2>Recent activity</h2><span class=count>{events}</span></div><ul class=timeline>{timeline}</ul></div>\
+<div class=panel><div class=panel-head><h2>Team</h2><span class=count>{members_n}</span></div>\
+<div style=\"padding:14px 16px\"><div class=\"muted small\" style=\"margin-bottom:12px\">{members_n} {member_word} · owner, admin, member and viewer roles.</div>\
+<a class=\"btn\" style=\"width:100%\" href=\"/dashboard/team?team={slug}\">Manage members &amp; invites</a></div></div>\
+<div class=panel><div class=panel-head><h2>Deploy from CLI</h2></div>\
+<div style=\"padding:14px 16px\"><code style=\"display:block;font:11.5px/1.7 var(--mono);color:var(--ink-2);overflow-wrap:anywhere\">dok push ./my-app --app my-app</code>\
+<div class=\"muted small\" style=\"margin-top:8px\">Production by default; add <code>--env preview</code> for a preview URL.</div></div></div>\
+</div></div>",
         team = esc(&team_name),
         slug = esc(&team_slug),
         onboarding = onboarding,
         create = create,
-        cards = cards
+        projects = apps.len(),
+        live = live,
+        failed_sub = failed_sub,
+        total_deploys = total_deploys,
+        requests_hour = requests_hour,
+        cards = cards,
+        timeline = timeline,
+        events = activity.len().min(8),
+        members_n = members_n,
+        member_word = member_word
     );
     status_html(
         StatusCode::OK,
@@ -1604,8 +2008,8 @@ async fn render_project(
 <div class=\"muted small\" style=\"margin:0 0 6px\">Newest {deploys_len} deploys are selectable here; older builds remain available through the API.</div>\
 <form class=\"row\" method=get action=\"/dashboard/project/{app}/logs\" style=\"margin:10px 0 16px\">\
 <label class=sr for=deploy-select>Deploy</label><select id=deploy-select name=deploy onchange=\"this.form.submit()\" style=\"max-width:420px\">{selector}</select><button class=\"btn\">Show deploy</button></form>\
-<div class=\"row small\" style=\"margin-bottom:4px\"><h3 style=\"margin:0\">Build log</h3>{copy_btn}</div>{build_body}\
-<div class=\"row small\" style=\"margin:18px 0 4px\"><h3 style=\"margin:0\">Runtime log</h3>{runtime_btns}</div>{runtime_body}\
+<div class=log-head><h3>Build log</h3><div class=row>{copy_btn}</div></div>{build_body}\
+<div class=log-head><h3>Runtime log</h3><div class=row>{runtime_btns}</div></div>{runtime_body}\
 {stats_line}\
 <h3 style=\"margin-top:24px\">Recent requests</h3>\
 <div class=\"row between\" style=\"margin-bottom:8px\"><div class=\"muted small\">Showing the newest {access_shown} of {access_total} retained requests.</div>\
@@ -2004,7 +2408,7 @@ if(document.querySelector('[data-deploy-running]'))setTimeout(refreshBuildLog,50
             let danger = if can {
                 format!(
                     "<h2 style=\"margin-top:36px\">Danger zone</h2>\
-<div class=error style=\"background:#120606\"><strong>Delete this project</strong><div class=small style=\"margin:6px 0 12px\">Removes {deploy_count} deployments, {domain_count} custom domains and {env_count} environment variables. It cannot be undone.</div>\
+<div class=danger-zone><strong>Delete this project</strong><div class=small style=\"margin:6px 0 12px;color:var(--muted)\">Removes {deploy_count} deployments, {domain_count} custom domains and {env_count} environment variables. It cannot be undone.</div>\
 <form method=post action=\"/dashboard/delete/{app}\" {confirm}>{csrf}\
 <button class=\"btn danger\">Delete {app}</button></form></div>",
                     deploy_count = deploy_count,
@@ -2186,15 +2590,15 @@ if(document.querySelector('[data-deploy-running]'))setTimeout(refreshBuildLog,50
                 }
             );
             content.push_str(&format!(
-                "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Overview</h2><div>{redeploy}</div></div>\
-<div class=\"grid\" style=\"margin:12px 0 20px\">\
-<div class=card><div class=muted small>Deployments</div><div class=name>{total}</div><div class=\"muted small\">{prod_n} production · {preview_n} preview</div></div>\
-<div class=card><div class=muted small>Domains</div><div class=name>{domain_n}</div><div class=\"muted small\">custom + primary</div></div>\
-<div class=card><div class=muted small>Environment keys</div><div class=name>{env_total}</div><div class=\"muted small\">across all environments</div></div>\
-<div class=card><div class=muted small>Traffic (1h)</div><div class=name>{traffic}</div><div class=\"muted small\">from the access log</div></div>\
-<div class=card><div class=muted small>Runtime</div><div class=name>{runtime}</div>{spark}<div class=\"muted small\">{runtime_note}</div></div></div>\
-<h2 style=\"margin-top:26px\">Deployment history</h2>\
-<div class=\"muted small\" style=\"margin:0 0 8px\">Showing {shown} retained deployments (older builds are pruned).</div>\
+                "<div class=\"row between\" style=\"margin-top:24px\"><h2 style=\"margin:0\">Overview</h2><div>{redeploy}</div></div>\
+<div class=kpis>\
+<div class=kpi><div class=kpi-label>Deployments</div><div class=kpi-val>{total}</div><div class=kpi-sub>{prod_n} production · {preview_n} preview</div></div>\
+<div class=kpi><div class=kpi-label>Custom domains</div><div class=kpi-val>{domain_n}</div><div class=kpi-sub>custom + primary</div></div>\
+<div class=kpi><div class=kpi-label>Environment keys</div><div class=kpi-val>{env_total}</div><div class=kpi-sub>across all environments</div></div>\
+<div class=kpi><div class=kpi-label>Traffic · 1h</div><div class=\"kpi-val sm\">{traffic}</div><div class=kpi-sub>from the access log</div></div>\
+<div class=kpi><div class=kpi-label>Runtime</div><div class=\"kpi-val sm\">{runtime}</div>{spark}<div class=kpi-sub>{runtime_note}</div></div></div>\
+<div class=section-head><h2>Deployment history</h2><span class=count>{shown} retained</span></div>\
+<div class=\"muted small\" style=\"margin:0 0 10px\">Older builds are pruned automatically; the current production deploy is always kept.</div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>Deploy</th><th>Env</th><th>Status</th><th>Deployed</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>",
                 redeploy = redeploy,
                 rows = rows,
@@ -2232,10 +2636,24 @@ if(document.querySelector('[data-deploy-running]'))setTimeout(refreshBuildLog,50
         ),
         None => esc(&domain_of(st, app)),
     };
+    let team_label = selected
+        .as_ref()
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| "Team".into());
+    let kind_label = if app.kind == "docker" {
+        "container"
+    } else {
+        "static"
+    };
     let main = format!(
-        "<div class=head><div class=\"row between\"><div><h1>{n}</h1><div class=muted>{domain}</div></div><div class=row>{open_btn}{badge}{prod}</div></div></div>\
-{tabs}{content}",
+        "<div class=phero><div><div class=eyebrow><span class=tick></span>{team} · Project</div><h1>{n}</h1>\
+<div class=phero-domain>{domain}</div>\
+<div class=phero-meta>{badge}{prod}<span class=badge>{kind}</span><span class=badge>{team}</span></div></div>\
+<div class=phero-actions>{open_btn}<a class=btn href=\"/dashboard/project/{n}/logs\">Logs</a><a class=btn href=\"/dashboard/project/{n}/settings\">Settings</a></div></div>\
+{tabs}<div class=tab-body>{content}</div>",
         n = esc(&app.name),
+        team = esc(&team_label),
+        kind = kind_label,
         domain = domain_html,
         badge = format!(
             "<span data-status-app=\"{}\" aria-live=polite>{}</span>",
@@ -2324,7 +2742,9 @@ fn render_account(
         })
         .unwrap_or_default();
     let main = format!(
-        "<div class=head><h1>Account</h1><div class=muted>Personal API tokens for the CLI and your passkey session.</div></div>\
+        "<div class=page-head><div><div class=eyebrow><span class=tick></span>Settings</div><h1>Account</h1>\
+<p class=lede>Personal API tokens for the CLI, and the passkeys that sign you in.</p></div>\
+<div class=head-actions><span class=badge>{name}</span></div></div>\
 {notice}<h2>Create a token</h2>\
 <form class=\"row\" method=post action=/dashboard/tokens style=\"max-width:560px\">{csrf}\
 <label class=sr for=token-name>Token name</label><input id=token-name name=name placeholder=\"laptop\" maxlength=64>\
@@ -2341,7 +2761,8 @@ fn render_account(
         notice = token_notice,
         csrf = csrf,
         rows = rows,
-        passkey_rows = passkey_rows
+        name = esc(&user.name)
+        passkey_rows = passkey_rows,
     );
     let resp = status_html(
         StatusCode::OK,
@@ -2545,7 +2966,7 @@ fn render_team(
         "<p class=muted>Only owners and admins can invite members or manage roles.</p>".into()
     };
     let create_team = format!(
-        "<h2>Create a team</h2><form class=\"row\" method=post action=/dashboard/team/create style=\"max-width:560px\">{csrf}\
+        "<h2 style=\"margin-top:0\">Create a team</h2><form class=\"row\" method=post action=/dashboard/team/create style=\"max-width:560px\">{csrf}\
 <input type=hidden name=from value=\"{slug}\"><label class=sr for=team-name>Team name</label>\
 <input id=team-name name=name placeholder=\"New team\" maxlength=60 required><button class=\"btn\">Create team</button></form>",
         csrf = csrf,
@@ -2553,11 +2974,16 @@ fn render_team(
     );
 
     let main = format!(
-        "<div class=head><h1>{name}</h1><div class=muted>Members, roles and invite links.</div></div>{notice}\
-<h2>Members</h2><div style=\"overflow:auto\"><table><thead><tr><th>User</th><th>Role</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>\
-{invite_form}<h2 style=\"margin-top:36px\">Invite links</h2>{invite_table}\
-{create_team}",
+        "<div class=page-head><div><div class=eyebrow><span class=tick></span>{slug} · Team</div><h1>{name}</h1>\
+<p class=lede>Members, roles and single-use invite links.</p></div>\
+<div class=head-actions><a class=btn href=\"/dashboard?team={slug}\">Projects</a></div></div>{notice}\
+<div class=section-head><h2>Members</h2><span class=count>{member_count}</span></div>\
+<div style=\"overflow:auto\"><table><thead><tr><th>User</th><th>Role</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>\
+{invite_form}<div class=section-head style=\"margin-top:36px\"><h2>Invite links</h2></div>{invite_table}\
+<div class=panel style=\"margin-top:34px;padding:20px\">{create_team}</div>",
         name = esc(&team.name),
+        slug = esc(&team.slug),
+        member_count = members.len(),
         notice = notice,
         rows = rows,
         invite_form = invite_form,
