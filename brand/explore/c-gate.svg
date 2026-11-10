@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Direction C — threshold / gate: two jambs, a lintel, the app square inside,
+       one open side as the way out.
+       Rejected: reads as a corner bracket with a dot; the frame disappears at 16px. -->
+  <g fill="#EDEDED">
+    <rect x="5.5" y="7" width="4.5" height="20" rx="0.6"/>
+    <rect x="5.5" y="7" width="21" height="4.5" rx="0.6"/>
+    <rect x="22" y="18" width="4.5" height="9" rx="0.6"/>
+  </g>
+  <rect x="13" y="16" width="6" height="6" rx="1" fill="#E9A23B"/>
+</svg>

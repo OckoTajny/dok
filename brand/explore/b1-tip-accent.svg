@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Direction B, variant 1 — chiselled ascender tip lit with the accent. -->
+  <circle cx="14" cy="19.6" r="7.4" fill="none" stroke="#EDEDED" stroke-width="4.6"/>
+  <path d="M23.3 27.8 V9.6 L27.9 5.2 V27.8 Z" fill="#EDEDED"/>
+  <path d="M23.3 9.6 L27.9 5.2 V9.6 Z" fill="#E9A23B"/>
+</svg>
