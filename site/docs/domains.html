@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Domains &amp; TLS — dok docs</title>
+<meta name="description" content="dok domains: default hostnames, exact CNAME and A records, DNS verification, Let&#x27;s Encrypt certificate issuance and DNS troubleshooting.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("dok-theme");if(t==="dark")document.documentElement.setAttribute("data-theme","dark");}catch(e){}</script>
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/search-index.js"></script>
+<script defer src="../assets/app.js"></script>
+<meta property="og:title" content="Domains &amp; TLS — dok docs">
+<meta property="og:description" content="dok domains: default hostnames, exact CNAME and A records, DNS verification, Let&#x27;s Encrypt certificate issuance and DNS troubleshooting.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="dok">
+<meta property="og:image" content="https://dok.djt-group.com/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../index.html" aria-label="dok home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+      <span class="brand-name">dok</span>
+      <span class="brand-tag">self-hosted deploys</span>
+    </a>
+    <nav class="site-nav" aria-label="Main navigation">
+      <a class="nav-link" href="../index.html#product">Product</a>
+      <a class="nav-link" href="../index.html#features">Features</a>
+      <a class="nav-link" href="../index.html#compare">Compare</a>
+      <a class="nav-link" href="../docs/index.html" aria-current="page">Docs</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-btn search-trigger" type="button" data-search-open aria-expanded="false" aria-controls="search-modal" aria-haspopup="dialog" aria-label="Search documentation">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg><span class="label">Search</span><kbd class="kbd">/</kbd>
+      </button>
+      <a class="icon-btn" href="https://github.com/OckoTajny/dok" aria-label="dok on GitHub" title="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">
+        <svg class="i-moon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M15 11.2A6.4 6.4 0 0 1 6.8 3a6.6 6.6 0 1 0 8.2 8.2Z"/></svg><svg class="i-sun" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.7 3.7l1.4 1.4M12.9 12.9l1.4 1.4M14.3 3.7l-1.4 1.4M5.1 12.9l-1.4 1.4"/></svg>
+      </button>
+      <a class="btn btn-primary btn-sm header-cta" href="../docs/quickstart.html">Get started</a>
+      <button class="icon-btn menu-btn" type="button" data-menu-toggle aria-expanded="false" aria-controls="mobile-menu" aria-label="Open menu"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 5h14M2 9h14M2 13h14"/></svg></button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu">
+    <div class="wrap">
+      <a href="../index.html#product">Product</a>
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#compare">Compare</a>
+      <a href="../docs/index.html">Documentation</a>
+      <a href="../docs/quickstart.html">Quickstart</a>
+      <a href="../install.sh">install.sh</a>
+      <a href="https://github.com/OckoTajny/dok">GitHub</a>
+    </div>
+  </div>
+</header>
+<div class="wrap">
+  <div class="docs-layout">
+    <div class="docs-side-wrap">
+      <button class="docs-mobile-btn" type="button" data-docs-toggle aria-expanded="false" aria-controls="docs-nav">
+        <span>Browse docs</span><span aria-hidden="true">+</span>
+      </button>
+      <aside class="docs-side" id="docs-nav" aria-label="Documentation">
+  <div class="side-group"><h2>Start here</h2><ul class="side-links"><li><a class="side-link" href="index.html">Overview</a></li><li><a class="side-link" href="quickstart.html">Quickstart</a></li></ul></div><div class="side-group"><h2>Using dok</h2><ul class="side-links"><li><a class="side-link" href="cli.html">CLI reference</a></li><li><a class="side-link" href="deploy.html">Deploying apps</a></li><li><a class="side-link" href="domains.html" aria-current="page">Domains & TLS</a></li></ul></div><div class="side-group"><h2>Operating</h2><ul class="side-links"><li><a class="side-link" href="teams.html">Teams & tokens</a></li><li><a class="side-link" href="self-hosting.html">Self-hosting</a></li><li><a class="side-link" href="api.html">API</a></li><li><a class="side-link" href="troubleshooting.html">Troubleshooting</a></li></ul></div>
+  <div class="side-note"><strong>dok 2.0.0</strong>Single binary. SQLite. MIT.</div>
+</aside>
+    </div>
+    <main class="docs-main" id="main">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a href="../index.html">Home</a><span aria-hidden="true">/</span>
+        <a href="index.html">Docs</a><span aria-hidden="true">/</span>
+        <span aria-current="page">Domains & TLS</span>
+      </nav>
+      <div class="page-meta">
+        <span>Guide 05 / 09</span>
+        <a href="https://github.com/OckoTajny/dok" rel="noopener">Edit on GitHub</a>
+      </div>
+      <h1>Domains &amp; TLS</h1>
+      <p class="lede">Default hosts need no DNS. Custom domains are one command plus one record; certificates follow automatically once the name resolves to the machine that terminates TLS.</p>
+      <details class="toc-mobile"><summary>On this page</summary><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#default-hostname">The default hostname</a></li><li><a class="toc-link" href="#add-a-domain">Add a custom domain</a></li><li><a class="toc-link" href="#dns-records">The DNS records</a></li><li><a class="toc-link" href="#verify-dns">Verify DNS</a></li><li><a class="toc-link" href="#certificates">Certificate issuance</a></li><li><a class="toc-link" href="#apex-and-www">Apex, www and redirects</a></li><li><a class="toc-link" href="#removing-a-domain">Remove a domain</a></li><li><a class="toc-link" href="#troubleshooting">Troubleshooting</a></li></ol>
+</nav></details>
+      <article class="prose">
+        
+<h2 id="default-hostname">The default hostname</h2>
+<p>Every project gets <code>&lt;app&gt;.&lt;base-domain&gt;</code> unless a primary custom domain is set, where the base domain is whatever you passed to <code>dok serve --base-domain</code>. If you started dok with <code>--base-domain apps.example.com</code>, a project named <code>hello</code> is live at <code>https://hello.apps.example.com</code>.</p>
+<ul>
+  <li>The default host is created with the project; no DNS record is needed when the base domain already has a wildcard <code>A</code>/<code>AAAA</code> record pointing at the server.</li>
+  <li>The dashboard host and the base-domain apex are reserved and never proxied to an app.</li>
+  <li>A custom domain cannot be added on <code>*.&lt;base-domain&gt;</code>; that namespace belongs to dok's own routing.</li>
+  <li>Setting a primary custom domain replaces the default host: <code>&lt;app&gt;.&lt;base-domain&gt;</code> is no longer routed while a primary custom domain is active. Add extra domains instead if you want to keep both.</li>
+</ul>
+
+<h2 id="add-a-domain">Add a custom domain</h2>
+<p>Three ways, same result:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok domain hello hello.example.com        # set the primary domain
+dok domains list hello</code></pre></div>
+<p>Or open the project in the dashboard, choose <strong>Domains</strong>, and add the host. Or call the API directly:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>curl -fsS -X POST https://dok.example.com/api/v1/projects/hello/domains \
+  -H "Authorization: Bearer $DOK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"hello.example.com"}'</code></pre></div>
+<p>dok validates the hostname, refuses a domain already owned by another project, writes the route and adds the host to the certificate set. There is no separate “verify” button to wait for.</p>
+<div class="callout">
+  <span class="callout-title">What dok checks — and what it does not</span>
+  <p>dok cannot see your DNS provider, so it does not pretend to run a DNS preflight. Adding a domain succeeds immediately; what you watch afterwards is the <strong>certificate state</strong>. If DNS is wrong, the domain exists but the certificate stays pending until the host resolves to this server. The exact records to create are below.</p>
+</div>
+
+<h2 id="dns-records">The DNS records</h2>
+<p>For the reference deployment, point the hostname at <code>dok.solta.tech</code> with a CNAME, or directly at the server IPv4 with an A record:</p>
+<div class="table-scroll">
+  <table class="table">
+    <caption>Reference deployment DNS records</caption>
+    <thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Use when</th></tr></thead>
+    <tbody>
+      <tr><td>CNAME</td><td><code>dok.example.com</code></td><td><code>dok.solta.tech</code></td><td>Any non-apex hostname. Preferred: the target can move without changing your record.</td></tr>
+      <tr><td>A</td><td><code>dok.example.com</code></td><td><code>130.61.16.91</code></td><td>Apex domains, or providers that flatten or forbid CNAME.</td></tr>
+      <tr><td>CNAME</td><td><code>www.example.com</code></td><td><code>dok.example.com</code></td><td>Optional <code>www</code> alias; pair it with a redirect below.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>For your own installation, replace the target with <strong>your</strong> dashboard host (the machine terminating TLS) and the IPv4 with your server's address. <code>dok.solta.tech</code> currently resolves to <code>130.61.16.91</code>; both forms reach the same edge.</p>
+<div class="callout warn">
+  <span class="callout-title">Apex records cannot be CNAMEs</span>
+  <p><code>example.com</code> itself must use an <code>A</code> record (or an ALIAS/ANAME if your provider supports flattening). Use a CNAME for <code>www</code> and other subdomains. TTL 300 is a good default while you are setting things up.</p>
+</div>
+
+<h2 id="verify-dns">Verify DNS before you blame the certificate</h2>
+<p>From any machine, ask the public resolver directly rather than trusting a browser cache:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dig +short hello.example.com A
+dig +short hello.example.com AAAA
+dig +short hello.example.com CNAME
+dig +trace hello.example.com | tail -20</code></pre></div>
+<p>The <code>A</code> answer must be the server that terminates TLS. An old <code>AAAA</code> record is a common cause of “it works on IPv4 but not IPv6”; remove it if the server has no IPv6 address. To query a specific resolver:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dig @1.1.1.1 +short hello.example.com
+dig @8.8.8.8 +short hello.example.com</code></pre></div>
+<p>Once the record resolves, request the host and watch the response and the certificate:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>curl -I https://hello.example.com
+echo | openssl s_client -connect hello.example.com:443 -servername hello.example.com 2&gt;/dev/null | openssl x509 -noout -subject -dates
+dok certs list</code></pre></div>
+
+<h2 id="certificates">Certificate issuance</h2>
+<p>In built-in edge mode, dok answers ACME HTTP-01 challenges on <code>:80</code> and TLS-ALPN-01 on <code>:443</code>, and stores certificates under <code>&lt;data&gt;/acme</code>. The host set is recomputed every 15 seconds, so a newly added domain is picked up without a restart; the TLS listener is swapped with <code>SO_REUSEPORT</code> so existing connections are not dropped.</p>
+<p>When dok runs behind Traefik or Caddy, the external proxy owns TLS. dok writes exact <code>Host()</code> routers (when <code>--traefik-dir</code> is set) so the proxy can request a certificate on first request. In that mode <code>dok certs renew</code> returns a conflict explaining that renewal belongs to the proxy.</p>
+<div class="table-scroll">
+  <table class="table">
+    <caption>What certificate states mean</caption>
+    <thead><tr><th scope="col">State</th><th scope="col">Meaning</th><th scope="col">What to do</th></tr></thead>
+    <tbody>
+      <tr><td>Issued</td><td>A certificate exists and is not close to expiry.</td><td>Nothing. Renewal is automatic.</td></tr>
+      <tr><td>Expiring</td><td>Expires within 14 days; dok marks it in the UI.</td><td>Check that ports 80/443 are reachable; request a renewal.</td></tr>
+      <tr><td>Pending</td><td>No certificate yet, or the last order failed.</td><td>Verify DNS, firewall, and any proxy in front of dok.</td></tr>
+      <tr><td>External</td><td>TLS is terminated by Traefik/Caddy, not dok.</td><td>Look at the proxy's certificate resolver and logs.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>Issuance is usually seconds after DNS resolves. Let's Encrypt applies rate limits, so repeated forced renewals can delay a fix. A staging certificate (<code>--acme-staging</code>) is deliberately untrusted by browsers; it is only for testing.</p>
+
+<h2 id="apex-and-www">Apex, www and redirects</h2>
+<p>Add both hostnames to the project, then choose one canonical direction:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok domain hello example.com
+dok domain hello www.example.com
+dok proxy set hello --redirect www-to-apex --force-https
+dok proxy show hello</code></pre></div>
+<ul>
+  <li><code>--redirect www-to-apex</code> sends <code>www.example.com</code> to <code>example.com</code>.</li>
+  <li><code>--redirect apex-to-www</code> does the reverse.</li>
+  <li><code>--force-https</code> redirects HTTP to HTTPS at the proxy.</li>
+  <li><code>--header "Name: value"</code> adds response headers; <code>--basic-user</code>/<code>--basic-password</code> protect a staging site.</li>
+</ul>
+<p>Both hostnames still need their own DNS record and their own certificate. A redirect does not make the second hostname resolve.</p>
+
+<h2 id="removing-a-domain">Remove a domain</h2>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok domains list hello
+dok domains rm hello old.example.com</code></pre></div>
+<p><code>dok domains rm</code> removes an extra domain or clears the primary. Once the primary is cleared, the default <code>&lt;app&gt;.&lt;base-domain&gt;</code> host is routed again. The route stops immediately; the certificate file is left in place and expires naturally. You can delete the DNS record after traffic has drained.</p>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+<div class="table-scroll">
+  <table class="table">
+    <caption>Common domain and certificate failures</caption>
+    <thead><tr><th scope="col">Symptom</th><th scope="col">Likely cause</th><th scope="col">Check / fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>NXDOMAIN</code></td><td>Record missing, typo, or wrong zone.</td><td><code>dig +short</code> the exact name; confirm the registrar's nameservers with <code>dig NS</code>.</td></tr>
+      <tr><td>Resolves to the wrong IP</td><td>Stale A/AAAA, CNAME flattening, or a CDN proxy.</td><td>Compare <code>dig A</code> and <code>dig AAAA</code> with the server address. Remove stale records.</td></tr>
+      <tr><td>Works for some people only</td><td>Propagation or a low-TTL cache.</td><td>Query <code>@1.1.1.1</code> and the authoritative nameserver; wait for the old TTL.</td></tr>
+      <tr><td>Certificate stays pending</td><td>Ports 80/443 blocked, DNS points elsewhere, or a proxy intercepts ACME.</td><td><code>curl -I http://host/.well-known/acme-challenge/x</code>; open the firewall; use DNS-only mode at the CDN.</td></tr>
+      <tr><td>CAA forbids issuance</td><td>The zone has a CAA record that excludes Let's Encrypt.</td><td><code>dig CAA example.com</code>; allow <code>letsencrypt.org</code> or remove the restriction.</td></tr>
+      <tr><td>Cloudflare shows 52x</td><td>Orange-cloud proxy cannot reach the origin or blocks TLS-ALPN-01.</td><td>Set the record to DNS-only while issuing; re-enable the proxy afterwards if the origin supports it.</td></tr>
+      <tr><td>Wildcard certificate wanted</td><td>dok does not implement DNS-01.</td><td>Use an external Traefik/Caddy with a DNS-01 wildcard and run dok behind it.</td></tr>
+      <tr><td>“host is reserved”</td><td>You targeted the dashboard host or the base-domain apex.</td><td>Choose a different hostname; those names belong to the control plane.</td></tr>
+      <tr><td>“domain belongs to another project”</td><td>The host is already attached elsewhere.</td><td><code>dok domains list</code> on the other project, then remove it there first.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>More failures, including 502s and expired tokens, are in <a href="troubleshooting.html">Troubleshooting <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4"/></svg></a>.</p>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages"><a class="pager-link prev" href="deploy.html"><span>Previous</span><strong>Deploying apps</strong></a><a class="pager-link next" href="teams.html"><span>Next</span><strong>Teams & tokens</strong></a></nav>
+    </main>
+    <aside class="docs-toc"><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#default-hostname">The default hostname</a></li><li><a class="toc-link" href="#add-a-domain">Add a custom domain</a></li><li><a class="toc-link" href="#dns-records">The DNS records</a></li><li><a class="toc-link" href="#verify-dns">Verify DNS</a></li><li><a class="toc-link" href="#certificates">Certificate issuance</a></li><li><a class="toc-link" href="#apex-and-www">Apex, www and redirects</a></li><li><a class="toc-link" href="#removing-a-domain">Remove a domain</a></li><li><a class="toc-link" href="#troubleshooting">Troubleshooting</a></li></ol>
+</nav></aside>
+  </div>
+</div>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="../index.html" aria-label="dok home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+          <span class="brand-name">dok</span>
+        </a>
+        <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="../index.html#product">How it works</a></li>
+          <li><a href="../index.html#features">Features</a></li>
+          <li><a href="../index.html#compare">Comparison</a></li>
+          <li><a href="../index.html#security">Security</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Documentation</h4>
+        <ul>
+          <li><a href="../docs/quickstart.html">Quickstart</a></li>
+          <li><a href="../docs/cli.html">CLI reference</a></li>
+          <li><a href="../docs/api.html">API</a></li>
+          <li><a href="../docs/troubleshooting.html">Troubleshooting</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/OckoTajny/dok">GitHub</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/releases">Releases</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/issues">Issues</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/blob/main/LICENSE">MIT license</a></li>
+          <li><a href="../install.sh">install.sh</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="left">
+        <span>© <span id="year">2026</span> dok</span>
+        <span>MIT licensed</span>
+        <span>v2.0.0</span>
+        <span>No trackers</span>
+      </div>
+      <div class="left">
+        <a href="../docs/self-hosting.html">Self-hosting</a>
+        <a href="../sitemap.xml">Sitemap</a>
+        <a href="https://dok.solta.tech">Live instance</a>
+      </div>
+    </div>
+  </div>
+</footer>
+<div class="search-modal" id="search-modal" hidden>
+  <div class="search-panel" role="dialog" aria-modal="true" aria-labelledby="search-title">
+    <div class="search-field">
+      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg>
+      <label class="sr-only" for="search-input" id="search-title">Search documentation</label>
+      <input id="search-input" type="search" placeholder="Search docs — deploy, domains, tokens, backups…" autocomplete="off" spellcheck="false">
+      <kbd class="kbd">esc</kbd>
+    </div>
+    <div class="search-results" id="search-results" aria-live="polite"></div>
+    <p class="search-hint"><span>↑ ↓ to move</span><span>↵ to open</span><span>/ anywhere</span><span>esc to close</span></p>
+  </div>
+</div>
+
+</body>
+</html>

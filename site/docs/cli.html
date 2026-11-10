@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLI reference — dok docs</title>
+<meta name="description" content="Every dok CLI command and flag: login, push, logs, env, domains, git, teams, tokens, proxy, certificates and serve.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("dok-theme");if(t==="dark")document.documentElement.setAttribute("data-theme","dark");}catch(e){}</script>
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/search-index.js"></script>
+<script defer src="../assets/app.js"></script>
+<meta property="og:title" content="CLI reference — dok docs">
+<meta property="og:description" content="Every dok CLI command and flag: login, push, logs, env, domains, git, teams, tokens, proxy, certificates and serve.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="dok">
+<meta property="og:image" content="https://dok.djt-group.com/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../index.html" aria-label="dok home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+      <span class="brand-name">dok</span>
+      <span class="brand-tag">self-hosted deploys</span>
+    </a>
+    <nav class="site-nav" aria-label="Main navigation">
+      <a class="nav-link" href="../index.html#product">Product</a>
+      <a class="nav-link" href="../index.html#features">Features</a>
+      <a class="nav-link" href="../index.html#compare">Compare</a>
+      <a class="nav-link" href="../docs/index.html" aria-current="page">Docs</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-btn search-trigger" type="button" data-search-open aria-expanded="false" aria-controls="search-modal" aria-haspopup="dialog" aria-label="Search documentation">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg><span class="label">Search</span><kbd class="kbd">/</kbd>
+      </button>
+      <a class="icon-btn" href="https://github.com/OckoTajny/dok" aria-label="dok on GitHub" title="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">
+        <svg class="i-moon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M15 11.2A6.4 6.4 0 0 1 6.8 3a6.6 6.6 0 1 0 8.2 8.2Z"/></svg><svg class="i-sun" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.7 3.7l1.4 1.4M12.9 12.9l1.4 1.4M14.3 3.7l-1.4 1.4M5.1 12.9l-1.4 1.4"/></svg>
+      </button>
+      <a class="btn btn-primary btn-sm header-cta" href="../docs/quickstart.html">Get started</a>
+      <button class="icon-btn menu-btn" type="button" data-menu-toggle aria-expanded="false" aria-controls="mobile-menu" aria-label="Open menu"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 5h14M2 9h14M2 13h14"/></svg></button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu">
+    <div class="wrap">
+      <a href="../index.html#product">Product</a>
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#compare">Compare</a>
+      <a href="../docs/index.html">Documentation</a>
+      <a href="../docs/quickstart.html">Quickstart</a>
+      <a href="../install.sh">install.sh</a>
+      <a href="https://github.com/OckoTajny/dok">GitHub</a>
+    </div>
+  </div>
+</header>
+<div class="wrap">
+  <div class="docs-layout">
+    <div class="docs-side-wrap">
+      <button class="docs-mobile-btn" type="button" data-docs-toggle aria-expanded="false" aria-controls="docs-nav">
+        <span>Browse docs</span><span aria-hidden="true">+</span>
+      </button>
+      <aside class="docs-side" id="docs-nav" aria-label="Documentation">
+  <div class="side-group"><h2>Start here</h2><ul class="side-links"><li><a class="side-link" href="index.html">Overview</a></li><li><a class="side-link" href="quickstart.html">Quickstart</a></li></ul></div><div class="side-group"><h2>Using dok</h2><ul class="side-links"><li><a class="side-link" href="cli.html" aria-current="page">CLI reference</a></li><li><a class="side-link" href="deploy.html">Deploying apps</a></li><li><a class="side-link" href="domains.html">Domains & TLS</a></li></ul></div><div class="side-group"><h2>Operating</h2><ul class="side-links"><li><a class="side-link" href="teams.html">Teams & tokens</a></li><li><a class="side-link" href="self-hosting.html">Self-hosting</a></li><li><a class="side-link" href="api.html">API</a></li><li><a class="side-link" href="troubleshooting.html">Troubleshooting</a></li></ul></div>
+  <div class="side-note"><strong>dok 2.0.0</strong>Single binary. SQLite. MIT.</div>
+</aside>
+    </div>
+    <main class="docs-main" id="main">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a href="../index.html">Home</a><span aria-hidden="true">/</span>
+        <a href="index.html">Docs</a><span aria-hidden="true">/</span>
+        <span aria-current="page">CLI reference</span>
+      </nav>
+      <div class="page-meta">
+        <span>Guide 03 / 09</span>
+        <a href="https://github.com/OckoTajny/dok" rel="noopener">Edit on GitHub</a>
+      </div>
+      <h1>CLI reference</h1>
+      <p class="lede">Every command, grouped by the job you are doing. Global <code>--json</code> prints raw API responses for scripts.</p>
+      <details class="toc-mobile"><summary>On this page</summary><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#global-options">Global options</a></li><li><a class="toc-link" href="#setup">Setup and identity</a></li><li><a class="toc-link" href="#deploy">Deploy and operate</a></li><li><a class="toc-link" href="#projects">Projects, domains and git</a></li><li><a class="toc-link" href="#environment">Environment variables</a></li><li><a class="toc-link" href="#proxy-and-tls">Proxy and certificates</a></li><li><a class="toc-link" href="#teams">Teams</a></li><li><a class="toc-link" href="#server">Server</a></li></ol>
+</nav></details>
+      <article class="prose">
+        
+<p>Every command in the 2.0 CLI, grouped the way you use them. Run <code>dok --help</code> or <code>dok &lt;command&gt; --help</code> for the same information on your machine.</p>
+<div class="callout">
+  <span class="callout-title">Global options</span>
+  <p><code>--json</code> prints the raw API response instead of the human table. It works before or after the subcommand: <code>dok --json apps</code>. Commands exit non-zero on a failed request and print the server's error text.</p>
+</div>
+
+<h2 id="global-options">Global options and configuration</h2>
+<p><code>dok login</code> saves the server URL and token to <code>~/.config/dok/config.toml</code> with mode 0600. Two environment variables override the file, which is how CI usually runs:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>export DOK_SERVER="https://dok.example.com"
+export DOK_TOKEN="$(cat /run/secrets/dok-token)"
+dok whoami</code></pre></div>
+<ul>
+  <li><code>DOK_SERVER</code> — base URL, for example <code>https://dok.example.com</code>.</li>
+  <li><code>DOK_TOKEN</code> — API token. Prefer this or <code>--token-file</code> over argv.</li>
+  <li><code>--json</code> — machine-readable output for every command.</li>
+</ul>
+
+<h2 id="setup">Setup and identity</h2>
+
+<div class="cmd">
+<h3 id="login">dok login <span class="sig">&lt;url&gt; [token]</span></h3>
+<p>Verify the token against the server and save it. With no token argument, dok reads <code>DOK_TOKEN</code>; with <code>--token-file</code>, it reads the first line of a file.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok login https://dok.example.com
+dok login https://dok.example.com --token-file ~/.config/dok/token</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="whoami">dok whoami</h3>
+<p>Show the user and teams behind the saved token. Use it after rotating a token or when a request starts returning 401.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok whoami</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="tokens">dok tokens list | create | revoke</h3>
+<p>Manage personal API tokens. <code>create</code> prints the secret once; the server stores only a hash. <code>revoke</code> takes the id/hash shown by <code>list</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok tokens list
+dok tokens create --name laptop
+dok tokens revoke 4f2c9a1b8e70</code></pre></div>
+<ul class="flags">
+  <li><code>--name N</code> — label for <code>create</code>; defaults to <code>cli</code>.</li>
+</ul>
+</div>
+
+<h2 id="deploy">Deploy and operate</h2>
+
+<div class="cmd">
+<h3 id="push">dok push <span class="sig">[dir]</span></h3>
+<p>Pack a directory, upload it, build on the server and deploy. Defaults to the current directory. The app name comes from <code>dok.toml</code>, then the directory name, then <code>--app</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok push ./my-app --app my-app
+dok push . --env preview
+dok push . --domain app.example.com --port 8080</code></pre></div>
+<ul class="flags">
+  <li><code>--app N</code> — project name. Lowercase letters, digits and hyphens, up to 63 characters.</li>
+  <li><code>--domain H</code> — set the project's primary domain in the same request.</li>
+  <li><code>--port P</code> — container port; otherwise <code>dok.toml</code>, Dockerfile <code>EXPOSE</code>, then 3000.</li>
+  <li><code>--env production|preview</code> — defaults to production.</li>
+</ul>
+<p>The CLI never packs <code>.git</code>, <code>node_modules</code>, <code>target</code>, <code>.venv</code>, <code>__pycache__</code>, dotfiles (except <code>.well-known</code>) or <code>.env*</code>.</p>
+</div>
+
+<div class="cmd">
+<h3 id="logs">dok logs <span class="sig">&lt;app&gt;</span></h3>
+<p>Print the last build log and the runtime log for an environment. <code>-f</code> follows the live container stream until Ctrl-C.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok logs my-app
+dok logs my-app -f
+dok logs my-app --env preview --deploy 9f3c2a1b</code></pre></div>
+<ul class="flags">
+  <li><code>-f, --follow</code> — stream runtime output.</li>
+  <li><code>--env E</code> — production (default), preview or development.</li>
+  <li><code>--deploy ID</code> — select one deploy id, useful for a preview container.</li>
+</ul>
+</div>
+
+<div class="cmd">
+<h3 id="deploys">dok deploys <span class="sig">&lt;app&gt;</span></h3>
+<p>List recent deploys with id, environment, commit and status. Use the id with <code>promote</code> or <code>rollback</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok deploys my-app</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="promote">dok promote <span class="sig">&lt;app&gt; &lt;deploy-id&gt;</span></h3>
+<p>Run an earlier successful build on production. If its image still exists it is reused; otherwise dok rebuilds the retained build tree. The deploy must have finished with status <code>ok</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok promote my-app 4f2c9a1b</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="rollback">dok rollback <span class="sig">&lt;app&gt; &lt;deploy-id&gt;</span></h3>
+<p>Alias for <code>promote</code>. Roll back by pointing production at an earlier deploy; the ten most recent builds per environment are kept, and the current production deploy is protected from cleanup.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok deploys my-app
+dok rollback my-app 4f2c9a1b</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="open">dok open <span class="sig">&lt;app&gt;</span></h3>
+<p>Print the project's public URL without opening a browser.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok open my-app</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="stats">dok stats <span class="sig">&lt;app&gt;</span></h3>
+<p>Deploy counts, domain count, current status, container CPU/memory and one-hour traffic (requests, 5xx, p95 latency).</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok stats my-app</code></pre></div>
+</div>
+
+<h2 id="projects">Projects, domains and git</h2>
+
+<div class="cmd">
+<h3 id="apps">dok apps <span class="sig">| dok projects</span></h3>
+<p>List projects visible to your user. <code>apps</code> is an alias kept for compatibility; both print the same table.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok apps
+dok --json projects</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="project-create">dok projects create <span class="sig">&lt;name&gt;</span> · dok projects rm <span class="sig">&lt;name&gt;</span></h3>
+<p>Create an empty project, or delete one and stop its containers. Creation defaults to your first writable team; pass <code>--team</code> to choose another.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok projects create billing --team acme
+dok projects rm billing</code></pre></div>
+<ul class="flags">
+  <li><code>--team T</code> — team slug or id for <code>create</code>.</li>
+</ul>
+</div>
+
+<div class="cmd">
+<h3 id="rm">dok rm <span class="sig">&lt;app&gt;</span></h3>
+<p>Stop the container and delete the project. This is the short form of <code>dok projects rm</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok rm old-landing-page</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="domain">dok domain <span class="sig">&lt;app&gt; &lt;host&gt;</span></h3>
+<p>Set the project's primary custom domain. While it is set, the default <code>&lt;app&gt;.&lt;base&gt;</code> host is no longer routed. To keep the default and add extras instead, use the dashboard's Domains tab or <code>POST /api/v1/projects/{app}/domains</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok domain my-app app.example.com</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="domains">dok domains list <span class="sig">&lt;app&gt;</span> · dok domains rm <span class="sig">&lt;app&gt; &lt;host&gt;</span></h3>
+<p>List or remove custom domains attached to a project. Removing a host stops routing it; the certificate is left to expire unless it is re-requested elsewhere.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok domains list my-app
+dok domains rm my-app old.example.com</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="git">dok git <span class="sig">&lt;app&gt; &lt;repo-url&gt;</span></h3>
+<p>Set the repository used by <code>dok redeploy</code> and the GitHub webhook. Only public <code>https://</code>, <code>ssh://</code> and <code>git@host:path</code> remotes are accepted; loopback, private, link-local and metadata addresses are refused.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok git my-app https://github.com/acme/my-app.git</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="git-init">dok git-init <span class="sig">&lt;app&gt;</span></h3>
+<p>Create a bare repository on the server and print the path, an SSH remote hint and a webhook secret. A <code>post-receive</code> hook deploys every push.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok git-init my-app
+git remote add dok /home/you/.local/share/dok/repos/my-app.git
+git push dok main</code></pre></div>
+<p>For a remote SSH user, that user needs read/write access to the data directory. Details in <a href="deploy.html#git-deploys">Deploying apps</a>.</p>
+</div>
+
+<div class="cmd">
+<h3 id="redeploy">dok redeploy <span class="sig">&lt;app&gt;</span></h3>
+<p>Clone the configured repository and deploy the configured branch again. This is the same path used by the webhook.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok redeploy my-app</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="webhook">dok webhook <span class="sig">&lt;app&gt;</span></h3>
+<p>Show the GitHub webhook settings, or rotate the secret and production branch. The endpoint verifies <code>X-Hub-Signature-256</code> over the raw body and ignores pushes outside the configured branch.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok webhook my-app
+dok webhook my-app --secret "$(openssl rand -hex 24)" --branch main</code></pre></div>
+<ul class="flags">
+  <li><code>--secret S</code> — per-project HMAC secret.</li>
+  <li><code>--branch B</code> — branch that triggers production deploys.</li>
+</ul>
+</div>
+
+<h2 id="environment">Environment variables</h2>
+
+<div class="cmd">
+<h3 id="env">dok env <span class="sig">&lt;app&gt; KEY=VALUE ...</span></h3>
+<p>Set one or more variables for an environment. <code>--secret</code> stores values write-only: the API never returns them again, and only the owner/admin can see non-secret values. An empty value keeps the stored value; it does not erase it.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok env my-app API_URL=https://api.example.com
+dok env my-app STRIPE_KEY=sk_live_... --secret
+dok env my-app DEBUG=1 --env preview</code></pre></div>
+<ul class="flags">
+  <li><code>-e, --env E</code> — production (default), preview or development.</li>
+  <li><code>--secret</code> — mark every value in this call as write-only.</li>
+</ul>
+</div>
+
+<div class="cmd">
+<h3 id="env-pull">dok env pull <span class="sig">&lt;app&gt; [env]</span></h3>
+<p>Print variables as <code>KEY=VALUE</code>. Secret values are printed as <code>***</code>; this is for inspection, not for exporting a full secret environment.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok env pull my-app
+dok env pull my-app preview</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="env-rm">dok env rm <span class="sig">&lt;app&gt; &lt;KEY&gt; [env]</span></h3>
+<p>Remove one key. The environment defaults to production.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok env rm my-app OLD_FLAG
+dok env rm my-app OLD_FLAG preview</code></pre></div>
+</div>
+
+<h2 id="proxy-and-tls">Proxy, certificates and access logs</h2>
+
+<div class="cmd">
+<h3 id="proxy-show">dok proxy show <span class="sig">&lt;app&gt;</span></h3>
+<p>Print per-project proxy settings: headers, basic auth user, redirect mode, compression, max body and force-HTTPS.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok proxy show my-app</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="proxy-set">dok proxy set <span class="sig">&lt;app&gt;</span></h3>
+<p>Change proxy settings. Unspecified flags keep their current values; <code>--header</code> replaces the whole header list when supplied.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok proxy set my-app --header "X-Frame-Options: DENY" --header "Referrer-Policy: strict-origin-when-cross-origin"
+dok proxy set my-app --basic-user acme --basic-password "correct horse"
+dok proxy set my-app --redirect www-to-apex --force-https
+dok proxy set my-app --max-body-mb 32 --no-compression</code></pre></div>
+<ul class="flags">
+  <li><code>--header "Name: value"</code> — repeatable, max 20 headers.</li>
+  <li><code>--basic-user U</code> / <code>--basic-password P</code> — argon2-hashed basic auth.</li>
+  <li><code>--redirect off|www-to-apex|apex-to-www</code>.</li>
+  <li><code>--compression</code> / <code>--no-compression</code>.</li>
+  <li><code>--force-https</code> / <code>--no-force-https</code>.</li>
+  <li><code>--max-body-mb N</code> — request body cap, clamped to 64 MB.</li>
+</ul>
+</div>
+
+<div class="cmd">
+<h3 id="certs">dok certs list <span class="sig">| dok certs renew &lt;host&gt;</span></h3>
+<p>List certificates with their project owners and status, or request a fresh certificate. Renewal is only available in built-in edge mode; when an external proxy owns TLS, the API returns a conflict telling you so.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok certs list
+dok certs renew app.example.com</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="access-log">dok access-log <span class="sig">&lt;app&gt;</span></h3>
+<p>Show recent proxy requests: time, method, path, status, latency and client IP. The proxy keeps the last 5,000 requests per project in SQLite.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok access-log my-app
+dok access-log my-app --limit 200</code></pre></div>
+<ul class="flags">
+  <li><code>--limit N</code> — defaults to 50; the API caps it at 500.</li>
+</ul>
+</div>
+
+<h2 id="teams">Teams</h2>
+
+<div class="cmd">
+<h3 id="teams-list">dok teams</h3>
+<p>List the teams your user belongs to, with your role.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok teams</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="team-create">dok team create <span class="sig">&lt;name&gt;</span></h3>
+<p>Create a team. The creator becomes its owner.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team create "Acme Studio"</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="team-members">dok team members <span class="sig">&lt;team&gt;</span></h3>
+<p>List members and their roles.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team members acme-studio</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="team-invite">dok team invite <span class="sig">&lt;team&gt;</span></h3>
+<p>Create a single-use invite link that expires after seven days. The default role is <code>member</code>; only an owner may grant <code>admin</code> or <code>owner</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team invite acme-studio --role member</code></pre></div>
+<ul class="flags">
+  <li><code>--role R</code> — owner, admin, member or viewer; defaults to member.</li>
+</ul>
+</div>
+
+<div class="cmd">
+<h3 id="team-invites">dok team invites <span class="sig">&lt;team&gt;</span> · dok team revoke <span class="sig">&lt;team&gt; &lt;token&gt;</span></h3>
+<p>List unused invite links, including creator, role and expiry, or revoke one immediately.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team invites acme-studio
+dok team revoke acme-studio 8c1f0d2e</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="team-role">dok team role <span class="sig">&lt;team&gt; &lt;user&gt; &lt;role&gt;</span></h3>
+<p>Change a member's role. Only owners can grant admin or owner, and the last owner cannot be demoted.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team role acme-studio sam admin</code></pre></div>
+</div>
+
+<div class="cmd">
+<h3 id="team-remove">dok team remove <span class="sig">&lt;team&gt; &lt;user&gt;</span></h3>
+<p>Remove a member from the team. Their personal tokens remain valid for other teams they belong to.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team remove acme-studio sam</code></pre></div>
+</div>
+
+<h2 id="server">Server</h2>
+
+<div class="cmd">
+<h3 id="serve">dok serve</h3>
+<p>Run the API, dashboard, proxy and deploy worker. Every flag also has an environment variable, which is convenient for systemd.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok serve \
+  --data ~/.local/share/dok \
+  --http-port 8080 \
+  --base-domain apps.example.com \
+  --public-host dok.example.com \
+  --dashboard-origin https://dok.example.com \
+  --backup-keep 7</code></pre></div>
+<ul class="flags">
+  <li><code>--data DIR</code> — data directory; default <code>~/.local/share/dok</code> (<code>DOK_DATA</code>).</li>
+  <li><code>--http-port P</code> — plain HTTP port, default 8080 (<code>DOK_HTTP_PORT</code>).</li>
+  <li><code>--tls-port P</code> — HTTPS port with ACME, default 443 (<code>DOK_TLS_PORT</code>).</li>
+  <li><code>--base-domain D</code> — default app hosts <code>&lt;app&gt;.D</code> (<code>DOK_BASE_DOMAIN</code>).</li>
+  <li><code>--public-host H</code> — host shown in CLI output (<code>DOK_PUBLIC_HOST</code>).</li>
+  <li><code>--dashboard-origin URL</code> — WebAuthn origin for the dashboard (<code>DOK_DASHBOARD_ORIGIN</code>).</li>
+  <li><code>--backup-keep N</code> — daily database backups to keep, default 7; 0 disables (<code>DOK_BACKUP_KEEP</code>).</li>
+  <li><code>--traefik-dir DIR</code> — write per-app Traefik routers here (<code>DOK_TRAEFIK_DIR</code>).</li>
+  <li><code>--token T</code> — register an API token instead of generating one (<code>DOK_TOKEN</code>).</li>
+  <li><code>--acme-domain D</code> — domain for a certificate; repeatable (<code>DOK_ACME_DOMAIN</code>).</li>
+  <li><code>--acme-email E</code> — Let's Encrypt contact; repeatable (<code>DOK_ACME_EMAIL</code>).</li>
+  <li><code>--acme-staging</code> — use the staging directory; certificates are untrusted (<code>DOK_ACME_STAGING</code>).</li>
+  <li><code>--edge</code> — bind :80/:443, redirect HTTP to HTTPS, issue certificates (<code>DOK_EDGE</code>).</li>
+  <li><code>--trusted-proxy CIDR</code> — trust <code>X-Forwarded-Proto</code> from an additional proxy; repeatable (<code>DOK_TRUSTED_PROXY</code>).</li>
+</ul>
+<p>There is one hidden command, <code>dok deploy-git</code>, invoked by the post-receive hook. You should not need to call it directly.</p>
+</div>
+
+<p>Next: <a href="deploy.html">how a push becomes a running app <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4"/></svg></a></p>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages"><a class="pager-link prev" href="quickstart.html"><span>Previous</span><strong>Quickstart</strong></a><a class="pager-link next" href="deploy.html"><span>Next</span><strong>Deploying apps</strong></a></nav>
+    </main>
+    <aside class="docs-toc"><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#global-options">Global options</a></li><li><a class="toc-link" href="#setup">Setup and identity</a></li><li><a class="toc-link" href="#deploy">Deploy and operate</a></li><li><a class="toc-link" href="#projects">Projects, domains and git</a></li><li><a class="toc-link" href="#environment">Environment variables</a></li><li><a class="toc-link" href="#proxy-and-tls">Proxy and certificates</a></li><li><a class="toc-link" href="#teams">Teams</a></li><li><a class="toc-link" href="#server">Server</a></li></ol>
+</nav></aside>
+  </div>
+</div>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="../index.html" aria-label="dok home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+          <span class="brand-name">dok</span>
+        </a>
+        <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="../index.html#product">How it works</a></li>
+          <li><a href="../index.html#features">Features</a></li>
+          <li><a href="../index.html#compare">Comparison</a></li>
+          <li><a href="../index.html#security">Security</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Documentation</h4>
+        <ul>
+          <li><a href="../docs/quickstart.html">Quickstart</a></li>
+          <li><a href="../docs/cli.html">CLI reference</a></li>
+          <li><a href="../docs/api.html">API</a></li>
+          <li><a href="../docs/troubleshooting.html">Troubleshooting</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/OckoTajny/dok">GitHub</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/releases">Releases</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/issues">Issues</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/blob/main/LICENSE">MIT license</a></li>
+          <li><a href="../install.sh">install.sh</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="left">
+        <span>© <span id="year">2026</span> dok</span>
+        <span>MIT licensed</span>
+        <span>v2.0.0</span>
+        <span>No trackers</span>
+      </div>
+      <div class="left">
+        <a href="../docs/self-hosting.html">Self-hosting</a>
+        <a href="../sitemap.xml">Sitemap</a>
+        <a href="https://dok.solta.tech">Live instance</a>
+      </div>
+    </div>
+  </div>
+</footer>
+<div class="search-modal" id="search-modal" hidden>
+  <div class="search-panel" role="dialog" aria-modal="true" aria-labelledby="search-title">
+    <div class="search-field">
+      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg>
+      <label class="sr-only" for="search-input" id="search-title">Search documentation</label>
+      <input id="search-input" type="search" placeholder="Search docs — deploy, domains, tokens, backups…" autocomplete="off" spellcheck="false">
+      <kbd class="kbd">esc</kbd>
+    </div>
+    <div class="search-results" id="search-results" aria-live="polite"></div>
+    <p class="search-hint"><span>↑ ↓ to move</span><span>↵ to open</span><span>/ anywhere</span><span>esc to close</span></p>
+  </div>
+</div>
+
+</body>
+</html>

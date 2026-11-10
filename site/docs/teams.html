@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teams &amp; tokens — dok docs</title>
+<meta name="description" content="dok teams: owner, admin, member and viewer roles, single-use invite links, personal API tokens and security guidance.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("dok-theme");if(t==="dark")document.documentElement.setAttribute("data-theme","dark");}catch(e){}</script>
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/search-index.js"></script>
+<script defer src="../assets/app.js"></script>
+<meta property="og:title" content="Teams &amp; tokens — dok docs">
+<meta property="og:description" content="dok teams: owner, admin, member and viewer roles, single-use invite links, personal API tokens and security guidance.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="dok">
+<meta property="og:image" content="https://dok.djt-group.com/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../index.html" aria-label="dok home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+      <span class="brand-name">dok</span>
+      <span class="brand-tag">self-hosted deploys</span>
+    </a>
+    <nav class="site-nav" aria-label="Main navigation">
+      <a class="nav-link" href="../index.html#product">Product</a>
+      <a class="nav-link" href="../index.html#features">Features</a>
+      <a class="nav-link" href="../index.html#compare">Compare</a>
+      <a class="nav-link" href="../docs/index.html" aria-current="page">Docs</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-btn search-trigger" type="button" data-search-open aria-expanded="false" aria-controls="search-modal" aria-haspopup="dialog" aria-label="Search documentation">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg><span class="label">Search</span><kbd class="kbd">/</kbd>
+      </button>
+      <a class="icon-btn" href="https://github.com/OckoTajny/dok" aria-label="dok on GitHub" title="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">
+        <svg class="i-moon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M15 11.2A6.4 6.4 0 0 1 6.8 3a6.6 6.6 0 1 0 8.2 8.2Z"/></svg><svg class="i-sun" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.7 3.7l1.4 1.4M12.9 12.9l1.4 1.4M14.3 3.7l-1.4 1.4M5.1 12.9l-1.4 1.4"/></svg>
+      </button>
+      <a class="btn btn-primary btn-sm header-cta" href="../docs/quickstart.html">Get started</a>
+      <button class="icon-btn menu-btn" type="button" data-menu-toggle aria-expanded="false" aria-controls="mobile-menu" aria-label="Open menu"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 5h14M2 9h14M2 13h14"/></svg></button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu">
+    <div class="wrap">
+      <a href="../index.html#product">Product</a>
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#compare">Compare</a>
+      <a href="../docs/index.html">Documentation</a>
+      <a href="../docs/quickstart.html">Quickstart</a>
+      <a href="../install.sh">install.sh</a>
+      <a href="https://github.com/OckoTajny/dok">GitHub</a>
+    </div>
+  </div>
+</header>
+<div class="wrap">
+  <div class="docs-layout">
+    <div class="docs-side-wrap">
+      <button class="docs-mobile-btn" type="button" data-docs-toggle aria-expanded="false" aria-controls="docs-nav">
+        <span>Browse docs</span><span aria-hidden="true">+</span>
+      </button>
+      <aside class="docs-side" id="docs-nav" aria-label="Documentation">
+  <div class="side-group"><h2>Start here</h2><ul class="side-links"><li><a class="side-link" href="index.html">Overview</a></li><li><a class="side-link" href="quickstart.html">Quickstart</a></li></ul></div><div class="side-group"><h2>Using dok</h2><ul class="side-links"><li><a class="side-link" href="cli.html">CLI reference</a></li><li><a class="side-link" href="deploy.html">Deploying apps</a></li><li><a class="side-link" href="domains.html">Domains & TLS</a></li></ul></div><div class="side-group"><h2>Operating</h2><ul class="side-links"><li><a class="side-link" href="teams.html" aria-current="page">Teams & tokens</a></li><li><a class="side-link" href="self-hosting.html">Self-hosting</a></li><li><a class="side-link" href="api.html">API</a></li><li><a class="side-link" href="troubleshooting.html">Troubleshooting</a></li></ul></div>
+  <div class="side-note"><strong>dok 2.0.0</strong>Single binary. SQLite. MIT.</div>
+</aside>
+    </div>
+    <main class="docs-main" id="main">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a href="../index.html">Home</a><span aria-hidden="true">/</span>
+        <a href="index.html">Docs</a><span aria-hidden="true">/</span>
+        <span aria-current="page">Teams & tokens</span>
+      </nav>
+      <div class="page-meta">
+        <span>Guide 06 / 09</span>
+        <a href="https://github.com/OckoTajny/dok" rel="noopener">Edit on GitHub</a>
+      </div>
+      <h1>Teams &amp; tokens</h1>
+      <p class="lede">Projects belong to teams; tokens belong to people. This page covers the role matrix, invite links, token lifecycle and the rules that keep secrets out of the wrong scope.</p>
+      <details class="toc-mobile"><summary>On this page</summary><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#how-teams-work">How teams work</a></li><li><a class="toc-link" href="#create-a-team">Create a team</a></li><li><a class="toc-link" href="#invite-people">Invite people</a></li><li><a class="toc-link" href="#roles">Roles and permissions</a></li><li><a class="toc-link" href="#join-flow">The join flow</a></li><li><a class="toc-link" href="#api-tokens">Personal API tokens</a></li><li><a class="toc-link" href="#token-safety">Token and secret safety</a></li><li><a class="toc-link" href="#removing-people">Removing people</a></li></ol>
+</nav></details>
+      <article class="prose">
+        
+<h2 id="how-teams-work">How teams work</h2>
+<p>Every project belongs to exactly one team. The first user created during dashboard setup owns the first team; additional teams can be created from the dashboard or the CLI. A personal API token acts as its user, so it sees exactly the projects that user can see through team membership.</p>
+<p>Roles are enforced on the server, not hidden in the UI. A viewer's token cannot deploy, and a member's token cannot change environment variables or domains.</p>
+
+<h2 id="create-a-team">Create a team</h2>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team create "Acme Studio"
+dok teams
+dok projects create billing --team acme-studio</code></pre></div>
+<p>Team names are labels; commands accept either the team slug or its id. <code>dok teams</code> shows both your role and the identifier to use. Existing projects are not moved between teams by a rename or a new team; create the project in the right team from the start.</p>
+
+<h2 id="invite-people">Invite people</h2>
+<p>Invite links are single-use and expire after seven days. The default role is <code>member</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team invite acme-studio --role member
+dok team invites acme-studio</code></pre></div>
+<p>The command prints a link like <code>https://dok.example.com/join/&lt;token&gt;</code>. Send it over a channel you trust. Opening it shows the team name and who invited you <em>before</em> the passkey prompt; an invalid or expired invite is reported immediately rather than after authentication.</p>
+<ul>
+  <li>Only owners can grant <code>admin</code> or <code>owner</code>.</li>
+  <li>Admins can invite <code>member</code> and <code>viewer</code>.</li>
+  <li>Revoke a link you no longer need: <code>dok team revoke &lt;team&gt; &lt;token&gt;</code>.</li>
+  <li>An invite is consumed when the person joins; it cannot be replayed.</li>
+</ul>
+
+<h2 id="roles">Roles and what they can do</h2>
+<div class="table-scroll">
+  <table class="table">
+    <caption>Team role permissions</caption>
+    <thead><tr><th scope="col">Action</th><th scope="col">Viewer</th><th scope="col">Member</th><th scope="col">Admin</th><th scope="col">Owner</th></tr></thead>
+    <tbody>
+      <tr><td>View projects, deploys and logs</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>See env key names</td><td>Yes, values masked</td><td>Yes</td><td>Yes; non-secret values</td><td>Yes; non-secret values</td></tr>
+      <tr><td>Push, redeploy, promote, roll back</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>Change env, domains, proxy, project settings</td><td>No</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>Invite members and viewers</td><td>No</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>Grant admin or owner</td><td>No</td><td>No</td><td>No</td><td>Yes</td></tr>
+      <tr><td>Remove members, change roles</td><td>No</td><td>No</td><td>Limited</td><td>Yes</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>Secret env values stay masked for everyone after they are written, including owners. Membership changes are checked server-side: the last owner cannot be demoted, and an admin cannot promote themselves or anyone else to owner.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team members acme-studio
+dok team role acme-studio sam admin
+dok team remove acme-studio sam</code></pre></div>
+
+<h2 id="join-flow">The join flow</h2>
+<ol>
+  <li>The invitee opens the link and sees the team and inviter.</li>
+  <li>They register a passkey (or sign in with an existing one on that dashboard host).</li>
+  <li>dok creates the membership with the role recorded on the invite and consumes the link.</li>
+  <li>The new member sees the team's projects on their next dashboard visit or API call.</li>
+</ol>
+<p>Passkeys are bound to the dashboard hostname. An invite link must use the same host as <code>--dashboard-origin</code>, or WebAuthn will reject the ceremony.</p>
+
+<h2 id="api-tokens">Personal API tokens</h2>
+<p>Tokens are personal, not team-wide. Create one in <strong>Account → API tokens</strong>, or with the CLI once you are logged in:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok tokens create --name ci
+dok tokens list
+dok tokens revoke 4f2c9a1b8e70</code></pre></div>
+<p>The secret is printed once and stored by the server as a SHA-256 hash; <code>tokens list</code> returns only ids and names. Every request uses a bearer header:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>curl -fsS https://dok.example.com/api/v1/whoami \
+  -H "Authorization: Bearer $DOK_TOKEN"</code></pre></div>
+<ul>
+  <li>The token inherits the user's current role in each team. Demoting a user takes effect on their next request; no token reissue is needed.</li>
+  <li>Rate limits are per user: 600 API requests per minute and 20 deploys per minute.</li>
+  <li>Tokens minted before first-run setup is complete stay inactive until the dashboard setup claims them. If in doubt, issue a fresh token.</li>
+</ul>
+
+<h2 id="token-safety">Token and secret safety</h2>
+<ul>
+  <li><strong>Do not put tokens in argv.</strong> They appear in shell history and <code>ps</code>. Use <code>DOK_TOKEN</code>, <code>--token-file</code>, or the saved <code>~/.config/dok/config.toml</code> (mode 0600).</li>
+  <li><strong>Give CI its own token.</strong> Name it after the pipeline, store it in the CI secret store, and revoke it when the job is retired.</li>
+  <li><strong>Rotate on offboarding.</strong> Removing a person from a team cuts access to that team, but their personal token remains valid for other teams. Tokens can only be revoked by the account that owns them, so ask the owner or revoke from their session.</li>
+  <li><strong>Secrets stay write-only.</strong> Use <code>dok env --secret</code> for API keys. Non-secret production values are inherited by preview and development; secrets are not, because preview URLs are public.</li>
+  <li><strong>Passkeys, not passwords.</strong> The dashboard has no password login. Per-project basic auth is separate, stored as an argon2 hash, and intended for staging or simple gates — not as a replacement for application auth.</li>
+  <li><strong>Trust the dashboard host only.</strong> The dashboard, passkey endpoints and token API answer only on the configured dashboard host and <code>localhost</code>. Application hosts never expose a project list.</li>
+</ul>
+<div class="callout">
+  <span class="callout-title">Least privilege in practice</span>
+  <p>Use <code>viewer</code> for stakeholders who need logs and status, <code>member</code> for developers who ship, <code>admin</code> for whoever owns domains and secrets, and keep <code>owner</code> for the smallest possible group.</p>
+</div>
+
+<h2 id="removing-people">Removing people</h2>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok team remove acme-studio sam
+dok team members acme-studio</code></pre></div>
+<p>Removal takes effect immediately for team-scoped resources. The user keeps their account and any other team memberships. If the person is leaving entirely, also revoke their personal tokens from their account and remove their passkey from the dashboard's account settings.</p>
+<p>Next: <a href="self-hosting.html">run dok as a service, back it up and upgrade it <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4"/></svg></a></p>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages"><a class="pager-link prev" href="domains.html"><span>Previous</span><strong>Domains & TLS</strong></a><a class="pager-link next" href="self-hosting.html"><span>Next</span><strong>Self-hosting</strong></a></nav>
+    </main>
+    <aside class="docs-toc"><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#how-teams-work">How teams work</a></li><li><a class="toc-link" href="#create-a-team">Create a team</a></li><li><a class="toc-link" href="#invite-people">Invite people</a></li><li><a class="toc-link" href="#roles">Roles and permissions</a></li><li><a class="toc-link" href="#join-flow">The join flow</a></li><li><a class="toc-link" href="#api-tokens">Personal API tokens</a></li><li><a class="toc-link" href="#token-safety">Token and secret safety</a></li><li><a class="toc-link" href="#removing-people">Removing people</a></li></ol>
+</nav></aside>
+  </div>
+</div>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="../index.html" aria-label="dok home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+          <span class="brand-name">dok</span>
+        </a>
+        <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="../index.html#product">How it works</a></li>
+          <li><a href="../index.html#features">Features</a></li>
+          <li><a href="../index.html#compare">Comparison</a></li>
+          <li><a href="../index.html#security">Security</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Documentation</h4>
+        <ul>
+          <li><a href="../docs/quickstart.html">Quickstart</a></li>
+          <li><a href="../docs/cli.html">CLI reference</a></li>
+          <li><a href="../docs/api.html">API</a></li>
+          <li><a href="../docs/troubleshooting.html">Troubleshooting</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/OckoTajny/dok">GitHub</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/releases">Releases</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/issues">Issues</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/blob/main/LICENSE">MIT license</a></li>
+          <li><a href="../install.sh">install.sh</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="left">
+        <span>© <span id="year">2026</span> dok</span>
+        <span>MIT licensed</span>
+        <span>v2.0.0</span>
+        <span>No trackers</span>
+      </div>
+      <div class="left">
+        <a href="../docs/self-hosting.html">Self-hosting</a>
+        <a href="../sitemap.xml">Sitemap</a>
+        <a href="https://dok.solta.tech">Live instance</a>
+      </div>
+    </div>
+  </div>
+</footer>
+<div class="search-modal" id="search-modal" hidden>
+  <div class="search-panel" role="dialog" aria-modal="true" aria-labelledby="search-title">
+    <div class="search-field">
+      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg>
+      <label class="sr-only" for="search-input" id="search-title">Search documentation</label>
+      <input id="search-input" type="search" placeholder="Search docs — deploy, domains, tokens, backups…" autocomplete="off" spellcheck="false">
+      <kbd class="kbd">esc</kbd>
+    </div>
+    <div class="search-results" id="search-results" aria-live="polite"></div>
+    <p class="search-hint"><span>↑ ↓ to move</span><span>↵ to open</span><span>/ anywhere</span><span>esc to close</span></p>
+  </div>
+</div>
+
+</body>
+</html>

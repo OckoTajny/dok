@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deploying apps — dok docs</title>
+<meta name="description" content="How dok builds static sites, Docker apps, Node, Python and Go projects; dok.toml, environments, previews, git deploys and rollback.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("dok-theme");if(t==="dark")document.documentElement.setAttribute("data-theme","dark");}catch(e){}</script>
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/search-index.js"></script>
+<script defer src="../assets/app.js"></script>
+<meta property="og:title" content="Deploying apps — dok docs">
+<meta property="og:description" content="How dok builds static sites, Docker apps, Node, Python and Go projects; dok.toml, environments, previews, git deploys and rollback.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="dok">
+<meta property="og:image" content="https://dok.djt-group.com/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../index.html" aria-label="dok home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+      <span class="brand-name">dok</span>
+      <span class="brand-tag">self-hosted deploys</span>
+    </a>
+    <nav class="site-nav" aria-label="Main navigation">
+      <a class="nav-link" href="../index.html#product">Product</a>
+      <a class="nav-link" href="../index.html#features">Features</a>
+      <a class="nav-link" href="../index.html#compare">Compare</a>
+      <a class="nav-link" href="../docs/index.html" aria-current="page">Docs</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-btn search-trigger" type="button" data-search-open aria-expanded="false" aria-controls="search-modal" aria-haspopup="dialog" aria-label="Search documentation">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg><span class="label">Search</span><kbd class="kbd">/</kbd>
+      </button>
+      <a class="icon-btn" href="https://github.com/OckoTajny/dok" aria-label="dok on GitHub" title="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">
+        <svg class="i-moon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M15 11.2A6.4 6.4 0 0 1 6.8 3a6.6 6.6 0 1 0 8.2 8.2Z"/></svg><svg class="i-sun" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.7 3.7l1.4 1.4M12.9 12.9l1.4 1.4M14.3 3.7l-1.4 1.4M5.1 12.9l-1.4 1.4"/></svg>
+      </button>
+      <a class="btn btn-primary btn-sm header-cta" href="../docs/quickstart.html">Get started</a>
+      <button class="icon-btn menu-btn" type="button" data-menu-toggle aria-expanded="false" aria-controls="mobile-menu" aria-label="Open menu"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 5h14M2 9h14M2 13h14"/></svg></button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu">
+    <div class="wrap">
+      <a href="../index.html#product">Product</a>
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#compare">Compare</a>
+      <a href="../docs/index.html">Documentation</a>
+      <a href="../docs/quickstart.html">Quickstart</a>
+      <a href="../install.sh">install.sh</a>
+      <a href="https://github.com/OckoTajny/dok">GitHub</a>
+    </div>
+  </div>
+</header>
+<div class="wrap">
+  <div class="docs-layout">
+    <div class="docs-side-wrap">
+      <button class="docs-mobile-btn" type="button" data-docs-toggle aria-expanded="false" aria-controls="docs-nav">
+        <span>Browse docs</span><span aria-hidden="true">+</span>
+      </button>
+      <aside class="docs-side" id="docs-nav" aria-label="Documentation">
+  <div class="side-group"><h2>Start here</h2><ul class="side-links"><li><a class="side-link" href="index.html">Overview</a></li><li><a class="side-link" href="quickstart.html">Quickstart</a></li></ul></div><div class="side-group"><h2>Using dok</h2><ul class="side-links"><li><a class="side-link" href="cli.html">CLI reference</a></li><li><a class="side-link" href="deploy.html" aria-current="page">Deploying apps</a></li><li><a class="side-link" href="domains.html">Domains & TLS</a></li></ul></div><div class="side-group"><h2>Operating</h2><ul class="side-links"><li><a class="side-link" href="teams.html">Teams & tokens</a></li><li><a class="side-link" href="self-hosting.html">Self-hosting</a></li><li><a class="side-link" href="api.html">API</a></li><li><a class="side-link" href="troubleshooting.html">Troubleshooting</a></li></ul></div>
+  <div class="side-note"><strong>dok 2.0.0</strong>Single binary. SQLite. MIT.</div>
+</aside>
+    </div>
+    <main class="docs-main" id="main">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a href="../index.html">Home</a><span aria-hidden="true">/</span>
+        <a href="index.html">Docs</a><span aria-hidden="true">/</span>
+        <span aria-current="page">Deploying apps</span>
+      </nav>
+      <div class="page-meta">
+        <span>Guide 04 / 09</span>
+        <a href="https://github.com/OckoTajny/dok" rel="noopener">Edit on GitHub</a>
+      </div>
+      <h1>Deploying apps</h1>
+      <p class="lede">A push is packed, uploaded, extracted, detected, built and switched. This page explains each decision point, including the limits that stop a bad archive before it runs.</p>
+      <details class="toc-mobile"><summary>On this page</summary><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#how-a-push-works">How a push works</a></li><li><a class="toc-link" href="#what-gets-uploaded">What gets uploaded</a></li><li><a class="toc-link" href="#deploy-modes">Deploy modes</a></li><li><a class="toc-link" href="#static-sites">Static sites</a></li><li><a class="toc-link" href="#container-apps">Container apps</a></li><li><a class="toc-link" href="#auto-detection">Auto-detection</a></li><li><a class="toc-link" href="#dok-toml">dok.toml</a></li><li><a class="toc-link" href="#environments">Environments</a></li><li><a class="toc-link" href="#previews">Previews</a></li><li><a class="toc-link" href="#promote-and-rollback">Promote and rollback</a></li><li><a class="toc-link" href="#git-deploys">Git deploys</a></li><li><a class="toc-link" href="#github-webhooks">GitHub webhooks</a></li><li><a class="toc-link" href="#limits-and-retention">Limits and retention</a></li></ol>
+</nav></details>
+      <article class="prose">
+        
+<h2 id="how-a-push-works">How a push works</h2>
+<p>A deploy is deliberately boring:</p>
+<ol>
+  <li><strong>Pack.</strong> The CLI walks the directory, skips files that should never leave your machine, and writes a gzipped tar.</li>
+  <li><strong>Upload.</strong> The archive is streamed to <code>POST /api/v1/projects/&lt;app&gt;/deploy</code>. The server enforces the size and entry limits while it writes.</li>
+  <li><strong>Extract.</strong> The archive is unpacked into a fresh build directory under <code>builds/</code>. Path traversal and symlinks are rejected.</li>
+  <li><strong>Detect.</strong> A <code>Dockerfile</code> wins. Otherwise dok looks for a static site, Node, Python or Go project. Unknown projects fail here with an explanation.</li>
+  <li><strong>Build and start.</strong> Containers are built and started on a temporary loopback port. dok waits for a real HTTP response before touching production.</li>
+  <li><strong>Switch.</strong> The proxy pointer moves to the new container or static directory. The old one is retired only after the new one answers.</li>
+</ol>
+<p>Static sites switch a directory pointer; containers get a new process first, then the route. A failed build never replaces the running version.</p>
+
+<h2 id="what-gets-uploaded">What gets uploaded</h2>
+<p>The CLI uses the same ignore rules for every project, so you do not need a <code>.dokignore</code>:</p>
+<ul>
+  <li><code>.git</code>, <code>node_modules</code>, <code>target</code>, <code>.venv</code> and <code>__pycache__</code> are always skipped.</li>
+  <li>Dotfiles are skipped, with one exception: <code>.well-known</code> is kept so ACME and app verification files can be served.</li>
+  <li><code>.env</code> and every <code>.env.*</code> file are skipped. Secrets belong in <code>dok env</code>, not in the upload.</li>
+  <li>Symlinks are skipped rather than followed, so a hostile repository cannot smuggle host files into a build.</li>
+</ul>
+<p>Limits are enforced server-side: <strong>200 MB</strong> compressed, <strong>20,000</strong> archive entries and <strong>500 MB</strong> uncompressed. The server also refuses an upload when the data filesystem has less than 1 GB free.</p>
+<div class="callout warn">
+  <span class="callout-title">Need a file that is normally ignored?</span>
+  <p>Commit it with a different name, generate it during the build, or put it in a subdirectory that is not on the skip list. There is no flag that disables the secret-file filter.</p>
+</div>
+
+<h2 id="deploy-modes">Deploy modes</h2>
+<div class="table-scroll">
+  <table class="table">
+    <caption>How dok decides what to build</caption>
+    <thead><tr><th scope="col">Mode</th><th scope="col">Trigger</th><th scope="col">Result</th></tr></thead>
+    <tbody>
+      <tr><td>Tarball</td><td><code>dok push</code> or the upload API</td><td>Build directory plus a production or preview deploy</td></tr>
+      <tr><td>Docker</td><td>A <code>Dockerfile</code> in the uploaded tree</td><td><code>docker build</code>, then a container with memory/CPU limits</td></tr>
+      <tr><td>Static</td><td><code>index.html</code> at the root, or <code>framework = "static"</code></td><td>Files served directly by the proxy; no container</td></tr>
+      <tr><td>Auto-detect</td><td><code>package.json</code>, <code>requirements.txt</code>, <code>pyproject.toml</code> or <code>go.mod</code></td><td>A generated Dockerfile and a container</td></tr>
+      <tr><td>Git</td><td><code>git push</code> to a bare repo, <code>dok redeploy</code>, or a GitHub webhook</td><td>The same pipeline, triggered from a repository</td></tr>
+      <tr><td>Preview</td><td><code>--env preview</code>, <code>X-Dok-Env: preview</code>, or <code>?env=preview</code></td><td>An isolated build at <code>&lt;app&gt;-&lt;deploy8&gt;.&lt;base&gt;</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="static-sites">Static sites</h2>
+<p>If the uploaded tree has an <code>index.html</code> at its root and no manifest that says otherwise, dok serves it as static files. No Docker, no container, no port.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok push ./site --app landing</code></pre></div>
+<ul>
+  <li><code>/</code> serves <code>index.html</code>; a directory path serves its own <code>index.html</code>.</li>
+  <li>Extensionless paths fall back to the root <code>index.html</code>, which covers client-side routers that use clean URLs.</li>
+  <li>Only <code>GET</code> and <code>HEAD</code> are allowed. Dotfile paths return 404.</li>
+  <li>ETags and optional compression are handled by the proxy; <code>dok proxy set</code> can enable compression.</li>
+</ul>
+<p>For a built frontend (Vite, Astro, Svelte, Nuxt), push the directory that contains the final <code>index.html</code> — usually <code>dist/</code>, <code>build/</code> or <code>.output/public/</code> — or let auto-detection build it for you.</p>
+
+<h2 id="container-apps">Container apps</h2>
+<p>A <code>Dockerfile</code> at the root wins over static detection. Put it anywhere else and point to it with <code>dockerfile</code> in <code>dok.toml</code>.</p>
+<p>The container port is chosen in this order:</p>
+<ol>
+  <li><code>--port</code> on <code>dok push</code>.</li>
+  <li><code>port</code> in <code>dok.toml</code>.</li>
+  <li>The first <code>EXPOSE</code> in the Dockerfile.</li>
+  <li><code>3000</code>.</li>
+</ol>
+<p>Every container runs with a memory limit (default 512 MB, clamped to 32–4096 MB) and a CPU limit (default 1.0, clamped to 0.1–4.0). Environment variables are passed through a temporary <code>0600</code> env file that is deleted after the container starts.</p>
+<div class="callout">
+  <span class="callout-title">Readiness, not just “started”</span>
+  <p>Docker can accept a connection before your app serves HTTP. dok waits for a real non-5xx response (404 is fine) before switching production, so a crash loop does not take the site down.</p>
+</div>
+
+<h2 id="auto-detection">Auto-detection</h2>
+<p>No Dockerfile? dok builds one of these small images. An explicit <code>framework</code> in <code>dok.toml</code> overrides the guess.</p>
+<div class="table-scroll">
+  <table class="table">
+    <caption>Detected project types</caption>
+    <thead><tr><th scope="col">Detected</th><th scope="col">Signal</th><th scope="col">What runs</th></tr></thead>
+    <tbody>
+      <tr><td>Node app</td><td><code>package.json</code> with a <code>start</code> script</td><td><code>npm start</code>, with <code>npm run build</code> first if that script exists. Port 3000.</td></tr>
+      <tr><td>Node static build</td><td><code>package.json</code> with <code>build</code> but no <code>start</code></td><td><code>npm run build</code>, then <code>serve</code> on port 3000. Output: Nuxt <code>.output/public</code>, CRA/SvelteKit <code>build</code>, otherwise <code>dist</code>.</td></tr>
+      <tr><td>Python</td><td><code>requirements.txt</code> or <code>pyproject.toml</code></td><td><code>python main.py</code>, falling back to <code>python app.py</code>. Port 8000.</td></tr>
+      <tr><td>Go</td><td><code>go.mod</code></td><td>Static binary built in a Go stage, run on Alpine. Port 8080.</td></tr>
+      <tr><td>Static</td><td><code>index.html</code>, or <code>framework = "static"</code></td><td>Files served directly. No container.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>Accepted framework hints include <code>static</code>, <code>node</code>, <code>next</code>, <code>vite</code>, <code>react</code>, <code>remix</code>, <code>nuxt</code>, <code>svelte</code>, <code>astro</code>, <code>python</code>, <code>flask</code>, <code>django</code>, <code>fastapi</code>, <code>go</code> and <code>golang</code>.</p>
+<p>A <code>package.json</code> with neither <code>start</code> nor <code>build</code> is only served as static if an <code>index.html</code> exists at the root. Without one, the deploy fails and tells you to add a script or a Dockerfile — easier to debug than a blank page.</p>
+
+<h2 id="dok-toml">dok.toml</h2>
+<p>The file is optional and every field is optional. It lives at the project root and is read on every deploy.</p>
+<div class="code" data-lang="toml"><div class="code-head"><span class="code-lang">toml</span></div><pre><code>name = "my-app"
+port = 3000
+domain = "my-app.example.com"
+# dockerfile = "Dockerfile"
+memory_mb = 512
+cpus = 1.0
+# framework = "static"</code></pre></div>
+<div class="table-scroll">
+  <table class="table">
+    <caption>dok.toml fields</caption>
+    <thead><tr><th scope="col">Field</th><th scope="col">Type</th><th scope="col">Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td>string</td><td>Project name used when <code>--app</code> is omitted.</td></tr>
+      <tr><td><code>port</code></td><td>integer</td><td>Container port; overrides Dockerfile <code>EXPOSE</code>.</td></tr>
+      <tr><td><code>domain</code></td><td>string</td><td>Primary custom domain to attach.</td></tr>
+      <tr><td><code>dockerfile</code></td><td>string</td><td>Path inside the uploaded tree. Absolute paths and <code>..</code> are rejected.</td></tr>
+      <tr><td><code>memory_mb</code></td><td>integer</td><td>Docker memory limit; default 512, clamped to 32–4096.</td></tr>
+      <tr><td><code>cpus</code></td><td>float</td><td>Docker CPU limit; default 1.0, clamped to 0.1–4.0.</td></tr>
+      <tr><td><code>framework</code></td><td>string</td><td>Force a detection hint, or <code>static</code> to skip containers.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="environments">Environments and variables</h2>
+<p>Every project has three variable scopes: <code>production</code>, <code>preview</code> and <code>development</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok env my-app API_URL=https://api.example.com
+dok env my-app STRIPE_KEY=sk_live_... --secret
+dok env my-app DEBUG=1 --env preview
+dok env pull my-app</code></pre></div>
+<ul>
+  <li>Non-secret production values are inherited by preview and development, then overridden by values set in that scope.</li>
+  <li><strong>Secret production values are not inherited.</strong> Preview URLs are public, so a production secret only reaches preview if you set it explicitly there.</li>
+  <li>Secret values are write-only after saving. <code>dok env pull</code> prints <code>***</code>, and viewers only ever see key names.</li>
+  <li>Values cannot contain newlines and are capped at 64 KB. Store multiline data base64-encoded or inside the image.</li>
+</ul>
+
+<h2 id="previews">Preview deployments</h2>
+<p>A preview is a normal build in a separate environment. It gets its own artifact, its own container and its own hostname:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok push . --app my-app --env preview
+# → https://my-app-4f2c9a1b.apps.example.com</code></pre></div>
+<p>The suffix is the first eight characters of the deploy id. Previews never move the production pointer, so you can push a branch, open the URL, and leave production alone.</p>
+<p>The API accepts the same choice through <code>X-Dok-Env: preview</code> or <code>?env=preview</code>. In edge mode each preview host gets its own certificate; dok does not implement DNS-01, so it cannot issue a wildcard certificate itself. With many previews, terminate TLS in an external proxy with a wildcard and run dok behind it.</p>
+
+<h2 id="promote-and-rollback">Promote and rollback</h2>
+<p>List the deploys, then point production at a successful one:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok deploys my-app
+dok promote my-app 4f2c9a1b
+dok rollback my-app 9e8d7c6b</code></pre></div>
+<p><code>rollback</code> is an alias for <code>promote</code>; both run a build on production. If the recorded image still exists, dok starts it directly. Otherwise it rebuilds from the retained build directory. The deploy must have status <code>ok</code> and its build tree must still exist.</p>
+<p>The last <strong>ten builds per environment</strong> are kept. The current production deploy is always protected from cleanup; older build trees and the previous image tag are removed on the next successful deploy.</p>
+
+<h2 id="git-deploys">Git deploys</h2>
+<p><code>dok git-init</code> creates a bare repository in the data directory and wires a <code>post-receive</code> hook to <code>dok deploy-git</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok git-init my-app
+git remote add dok /home/you/.local/share/dok/repos/my-app.git
+git push dok main</code></pre></div>
+<p>Pushing any branch runs the hook with that ref; the configured production branch decides whether the result becomes production. For a remote SSH user, that user needs read/write access to the data directory, or use the local <code>file://</code>-style path shown above.</p>
+<p>You can also point a project at an existing repository and let <code>dok redeploy</code> clone it:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok git my-app https://github.com/acme/my-app.git
+dok webhook my-app --secret "$(openssl rand -hex 24)" --branch main</code></pre></div>
+<p>Repository URLs are limited to public <code>https://</code>, <code>ssh://</code> and <code>git@host:path</code> remotes. Loopback, private, link-local and cloud-metadata addresses are refused, so a project cannot become an SSRF probe. For an internal git server, opt in explicitly with <code>DOK_REPO_ALLOW_HOSTS</code>.</p>
+
+<h2 id="github-webhooks">GitHub webhooks</h2>
+<p>The endpoint is <code>POST /api/v1/hooks/github/&lt;app&gt;</code>. dok verifies <code>X-Hub-Signature-256</code> as an HMAC over the raw body, ignores pushes outside the configured branch, and records the commit SHA, message and author on the deploy.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok webhook my-app --secret "$(openssl rand -hex 24)" --branch main
+dok webhook my-app</code></pre></div>
+<p>In GitHub, add a webhook with content type <code>application/json</code>, the URL above, and the same secret. <code>dok git-init</code> also generates a per-project secret and branch. <code>DOK_HOOK_SECRET</code> remains a legacy fallback for projects without a per-project secret.</p>
+
+<h2 id="limits-and-retention">Limits and retention</h2>
+<div class="table-scroll">
+  <table class="table">
+    <caption>Defaults enforced by the server</caption>
+    <thead><tr><th scope="col">Limit</th><th scope="col">Value</th></tr></thead>
+    <tbody>
+      <tr><td>Compressed upload</td><td>200 MB, streamed</td></tr>
+      <tr><td>Archive entries</td><td>20,000</td></tr>
+      <tr><td>Uncompressed archive</td><td>500 MB</td></tr>
+      <tr><td>Free disk before upload</td><td>1 GB</td></tr>
+      <tr><td>Builds retained</td><td>10 per environment; current production protected</td></tr>
+      <tr><td>Database backups</td><td>Every 24 h, keep 7 by default</td></tr>
+      <tr><td>Deploy rate</td><td>20 per minute per user</td></tr>
+      <tr><td>API rate</td><td>600 requests per minute per user</td></tr>
+      <tr><td>Access log</td><td>Last 5,000 requests per project</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>Next: <a href="domains.html">give the project a domain and a certificate <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4"/></svg></a></p>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages"><a class="pager-link prev" href="cli.html"><span>Previous</span><strong>CLI reference</strong></a><a class="pager-link next" href="domains.html"><span>Next</span><strong>Domains & TLS</strong></a></nav>
+    </main>
+    <aside class="docs-toc"><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#how-a-push-works">How a push works</a></li><li><a class="toc-link" href="#what-gets-uploaded">What gets uploaded</a></li><li><a class="toc-link" href="#deploy-modes">Deploy modes</a></li><li><a class="toc-link" href="#static-sites">Static sites</a></li><li><a class="toc-link" href="#container-apps">Container apps</a></li><li><a class="toc-link" href="#auto-detection">Auto-detection</a></li><li><a class="toc-link" href="#dok-toml">dok.toml</a></li><li><a class="toc-link" href="#environments">Environments</a></li><li><a class="toc-link" href="#previews">Previews</a></li><li><a class="toc-link" href="#promote-and-rollback">Promote and rollback</a></li><li><a class="toc-link" href="#git-deploys">Git deploys</a></li><li><a class="toc-link" href="#github-webhooks">GitHub webhooks</a></li><li><a class="toc-link" href="#limits-and-retention">Limits and retention</a></li></ol>
+</nav></aside>
+  </div>
+</div>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="../index.html" aria-label="dok home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+          <span class="brand-name">dok</span>
+        </a>
+        <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="../index.html#product">How it works</a></li>
+          <li><a href="../index.html#features">Features</a></li>
+          <li><a href="../index.html#compare">Comparison</a></li>
+          <li><a href="../index.html#security">Security</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Documentation</h4>
+        <ul>
+          <li><a href="../docs/quickstart.html">Quickstart</a></li>
+          <li><a href="../docs/cli.html">CLI reference</a></li>
+          <li><a href="../docs/api.html">API</a></li>
+          <li><a href="../docs/troubleshooting.html">Troubleshooting</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/OckoTajny/dok">GitHub</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/releases">Releases</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/issues">Issues</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/blob/main/LICENSE">MIT license</a></li>
+          <li><a href="../install.sh">install.sh</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="left">
+        <span>© <span id="year">2026</span> dok</span>
+        <span>MIT licensed</span>
+        <span>v2.0.0</span>
+        <span>No trackers</span>
+      </div>
+      <div class="left">
+        <a href="../docs/self-hosting.html">Self-hosting</a>
+        <a href="../sitemap.xml">Sitemap</a>
+        <a href="https://dok.solta.tech">Live instance</a>
+      </div>
+    </div>
+  </div>
+</footer>
+<div class="search-modal" id="search-modal" hidden>
+  <div class="search-panel" role="dialog" aria-modal="true" aria-labelledby="search-title">
+    <div class="search-field">
+      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg>
+      <label class="sr-only" for="search-input" id="search-title">Search documentation</label>
+      <input id="search-input" type="search" placeholder="Search docs — deploy, domains, tokens, backups…" autocomplete="off" spellcheck="false">
+      <kbd class="kbd">esc</kbd>
+    </div>
+    <div class="search-results" id="search-results" aria-live="polite"></div>
+    <p class="search-hint"><span>↑ ↓ to move</span><span>↵ to open</span><span>/ anywhere</span><span>esc to close</span></p>
+  </div>
+</div>
+
+</body>
+</html>

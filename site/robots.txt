@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://dok.djt-group.com/sitemap.xml

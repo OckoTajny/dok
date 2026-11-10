@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="dok">
+  <title>dok — favicon</title>
+  <!-- 32x32 build. Full-bleed tile so the icon fills the browser tab, and a heavier d
+       than the primary mark (stem 6.4, counter 8.2 of 32) so the letter still reads at
+       a 16px render. Same 45 degree chamfer, shallower, so it survives. -->
+  <path fill="#E9A23B" fill-rule="evenodd" d="M0 7A7 7 0 0 1 7 0h18a7 7 0 0 1 7 7v18a7 7 0 0 1-7 7H7a7 7 0 0 1-7-7Z
+    M19.1 4.4H22.1L25.5 7.8V28.7H19.1V28.18A9.5 9.5 0 1 1 19.1 10.22Z
+    M19.1 16.517A4.1 4.1 0 1 0 19.1 21.883Z"/>
+</svg>

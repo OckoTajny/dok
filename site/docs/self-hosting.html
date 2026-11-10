@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Self-hosting — dok docs</title>
+<meta name="description" content="Run dok yourself: requirements, binary install, systemd, Traefik, data layout, backups, restore, upgrades and Docker access.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("dok-theme");if(t==="dark")document.documentElement.setAttribute("data-theme","dark");}catch(e){}</script>
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/search-index.js"></script>
+<script defer src="../assets/app.js"></script>
+<meta property="og:title" content="Self-hosting — dok docs">
+<meta property="og:description" content="Run dok yourself: requirements, binary install, systemd, Traefik, data layout, backups, restore, upgrades and Docker access.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="dok">
+<meta property="og:image" content="https://dok.djt-group.com/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../index.html" aria-label="dok home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+      <span class="brand-name">dok</span>
+      <span class="brand-tag">self-hosted deploys</span>
+    </a>
+    <nav class="site-nav" aria-label="Main navigation">
+      <a class="nav-link" href="../index.html#product">Product</a>
+      <a class="nav-link" href="../index.html#features">Features</a>
+      <a class="nav-link" href="../index.html#compare">Compare</a>
+      <a class="nav-link" href="../docs/index.html" aria-current="page">Docs</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-btn search-trigger" type="button" data-search-open aria-expanded="false" aria-controls="search-modal" aria-haspopup="dialog" aria-label="Search documentation">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg><span class="label">Search</span><kbd class="kbd">/</kbd>
+      </button>
+      <a class="icon-btn" href="https://github.com/OckoTajny/dok" aria-label="dok on GitHub" title="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">
+        <svg class="i-moon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M15 11.2A6.4 6.4 0 0 1 6.8 3a6.6 6.6 0 1 0 8.2 8.2Z"/></svg><svg class="i-sun" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.7 3.7l1.4 1.4M12.9 12.9l1.4 1.4M14.3 3.7l-1.4 1.4M5.1 12.9l-1.4 1.4"/></svg>
+      </button>
+      <a class="btn btn-primary btn-sm header-cta" href="../docs/quickstart.html">Get started</a>
+      <button class="icon-btn menu-btn" type="button" data-menu-toggle aria-expanded="false" aria-controls="mobile-menu" aria-label="Open menu"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 5h14M2 9h14M2 13h14"/></svg></button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu">
+    <div class="wrap">
+      <a href="../index.html#product">Product</a>
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#compare">Compare</a>
+      <a href="../docs/index.html">Documentation</a>
+      <a href="../docs/quickstart.html">Quickstart</a>
+      <a href="../install.sh">install.sh</a>
+      <a href="https://github.com/OckoTajny/dok">GitHub</a>
+    </div>
+  </div>
+</header>
+<div class="wrap">
+  <div class="docs-layout">
+    <div class="docs-side-wrap">
+      <button class="docs-mobile-btn" type="button" data-docs-toggle aria-expanded="false" aria-controls="docs-nav">
+        <span>Browse docs</span><span aria-hidden="true">+</span>
+      </button>
+      <aside class="docs-side" id="docs-nav" aria-label="Documentation">
+  <div class="side-group"><h2>Start here</h2><ul class="side-links"><li><a class="side-link" href="index.html">Overview</a></li><li><a class="side-link" href="quickstart.html">Quickstart</a></li></ul></div><div class="side-group"><h2>Using dok</h2><ul class="side-links"><li><a class="side-link" href="cli.html">CLI reference</a></li><li><a class="side-link" href="deploy.html">Deploying apps</a></li><li><a class="side-link" href="domains.html">Domains & TLS</a></li></ul></div><div class="side-group"><h2>Operating</h2><ul class="side-links"><li><a class="side-link" href="teams.html">Teams & tokens</a></li><li><a class="side-link" href="self-hosting.html" aria-current="page">Self-hosting</a></li><li><a class="side-link" href="api.html">API</a></li><li><a class="side-link" href="troubleshooting.html">Troubleshooting</a></li></ul></div>
+  <div class="side-note"><strong>dok 2.0.0</strong>Single binary. SQLite. MIT.</div>
+</aside>
+    </div>
+    <main class="docs-main" id="main">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a href="../index.html">Home</a><span aria-hidden="true">/</span>
+        <a href="index.html">Docs</a><span aria-hidden="true">/</span>
+        <span aria-current="page">Self-hosting</span>
+      </nav>
+      <div class="page-meta">
+        <span>Guide 07 / 09</span>
+        <a href="https://github.com/OckoTajny/dok" rel="noopener">Edit on GitHub</a>
+      </div>
+      <h1>Self-hosting</h1>
+      <p class="lede">One binary, one data directory, one service. This page is the operational contract: what to install, what to back up, and what to check when Docker or TLS misbehaves.</p>
+      <details class="toc-mobile"><summary>On this page</summary><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#requirements">Requirements</a></li><li><a class="toc-link" href="#install-the-binary">Install the binary</a></li><li><a class="toc-link" href="#edge-mode">Edge mode</a></li><li><a class="toc-link" href="#systemd">Run it as a service</a></li><li><a class="toc-link" href="#behind-traefik">Behind Traefik</a></li><li><a class="toc-link" href="#data-directory">The data directory</a></li><li><a class="toc-link" href="#backups-and-restore">Backups and restore</a></li><li><a class="toc-link" href="#upgrades">Upgrades</a></li><li><a class="toc-link" href="#docker-access">Docker access</a></li><li><a class="toc-link" href="#keep-awake">Keep-awake</a></li><li><a class="toc-link" href="#security-checklist">Security checklist</a></li></ol>
+</nav></details>
+      <article class="prose">
+        
+<h2 id="requirements">Requirements</h2>
+<ul>
+  <li><strong>Linux</strong> x86_64 or aarch64 for the server. The CLI also runs on macOS; a macOS server is fine for a local instance.</li>
+  <li><strong>Docker</strong> for container builds and container apps. Static sites need only the binary. The service user needs access to the Docker socket.</li>
+  <li><strong>A domain</strong> and the ability to create A/CNAME records. Edge mode needs inbound TCP 80 and 443.</li>
+  <li><strong>Disk</strong>: at least 1 GB free before an upload is accepted; 5–10 GB is a comfortable baseline for builds and backups. SQLite is bundled, there is no external database.</li>
+  <li><strong>systemd</strong> (or another supervisor) so the process survives logout and reboot. A dedicated non-root user is strongly recommended.</li>
+</ul>
+
+<h2 id="install-the-binary">Install the binary</h2>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>curl -fsSL https://dok.djt-group.com/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+dok --version</code></pre></div>
+<p>The installer downloads <code>dok-&lt;os&gt;-&lt;arch&gt;</code> from the latest GitHub release into <code>~/.local/bin</code>. If no release asset exists, it builds from source with Cargo. To build yourself:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>git clone https://github.com/OckoTajny/dok.git
+cd dok
+cargo build --release
+install -m755 target/release/dok ~/.local/bin/dok</code></pre></div>
+<p>Put the binary somewhere stable. The unit below assumes <code>~/.local/bin/dok</code>; change <code>ExecStart</code> if you installed it to <code>/usr/local/bin</code>.</p>
+
+<h2 id="edge-mode">Edge mode</h2>
+<p>Edge mode makes dok the public TLS terminator: it binds <code>:80</code> and <code>:443</code>, redirects HTTP to HTTPS, answers ACME HTTP-01 and TLS-ALPN-01 challenges, and issues certificates for every project host and custom domain into <code>&lt;data&gt;/acme</code>.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok serve --edge \
+  --base-domain apps.example.com \
+  --public-host dok.example.com \
+  --dashboard-origin https://dok.example.com \
+  --acme-email you@example.com</code></pre></div>
+<p>DNS must already point <code>dok.example.com</code> and <code>*.apps.example.com</code> at this machine. The host set is recomputed every 15 seconds, so adding a project or domain does not require a restart. Do not run edge mode on a host where Traefik or Caddy already owns ports 80/443.</p>
+<div class="callout warn">
+  <span class="callout-title">Privileged ports</span>
+  <p>Ports below 1024 need privilege. Run edge mode as root only if you accept that; otherwise grant the binary <code>CAP_NET_BIND_SERVICE</code> (<code>sudo setcap 'cap_net_bind_service=+ep' ~/.local/bin/dok</code>, and reapply after an upgrade) or add <code>AmbientCapabilities=CAP_NET_BIND_SERVICE</code> to the unit. The least surprising option is to keep Traefik/Caddy on 80/443 and run dok on a high port.</p>
+</div>
+
+<h2 id="systemd">Run it as a service</h2>
+<p>Create a user unit at <code>~/.config/systemd/user/dok.service</code>. Adjust the hostnames, ports and Traefik directory for your setup; this example is the plain-HTTP-behind-Traefik layout.</p>
+<div class="code" data-lang="ini"><div class="code-head"><span class="code-lang">ini</span></div><pre><code>[Unit]
+Description=dok deploy platform
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/dok serve \
+  --http-port 8080 \
+  --public-host dok.example.com \
+  --dashboard-origin https://dok.example.com \
+  --base-domain apps.example.com \
+  --traefik-dir /etc/traefik/dynamic \
+  --data %h/.local/share/dok
+EnvironmentFile=-%h/.config/dok/env
+Environment=RUST_LOG=dok=info
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target</code></pre></div>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>mkdir -p ~/.config/systemd/user
+# write the unit, then:
+systemctl --user daemon-reload
+systemctl --user enable --now dok
+systemctl --user status dok --no-pager
+loginctl enable-linger "$USER"   # keep the user service after logout</code></pre></div>
+<p>Secrets and optional settings belong in <code>~/.config/dok/env</code>, mode 0600. The unit reads it with <code>EnvironmentFile=-</code>, so a missing file is not fatal:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>printf 'DOK_HOOK_SECRET=%s\n' "$(openssl rand -hex 16)" &gt; ~/.config/dok/env
+chmod 600 ~/.config/dok/env
+systemctl --user restart dok</code></pre></div>
+<p>Use <code>journalctl --user -u dok -f</code> for startup logs. If the service cannot reach Docker, see <a href="#docker-access">Docker access</a>.</p>
+
+<h2 id="behind-traefik">Behind Traefik</h2>
+<p>If you already run Traefik, keep it and let dok speak plain HTTP on a private port. Set <code>--trusted-proxy</code> to the proxy's CIDR so <code>X-Forwarded-Proto</code> and client IPs are honoured; only loopback is trusted by default.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok serve \
+  --http-port 8080 \
+  --base-domain apps.example.com \
+  --public-host dok.example.com \
+  --dashboard-origin https://dok.example.com \
+  --traefik-dir /etc/traefik/dynamic \
+  --trusted-proxy 100.64.0.0/10</code></pre></div>
+<p>A minimal file-provider configuration for the dashboard route:</p>
+<div class="code" data-lang="yaml"><div class="code-head"><span class="code-lang">yaml</span></div><pre><code>http:
+  routers:
+    dok-https:
+      entryPoints: [https]
+      rule: Host(`dok.example.com`)
+      service: dok
+      tls:
+        certResolver: letsencrypt
+    dok-http:
+      entryPoints: [http]
+      rule: Host(`dok.example.com`)
+      middlewares: [dok-redirect-https]
+      service: dok
+
+  middlewares:
+    dok-redirect-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+  services:
+    dok:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:8080</code></pre></div>
+<ul>
+  <li><code>certResolver</code> must match the resolver name in your Traefik static configuration. dok writes <code>certResolver: letsencrypt</code> into its per-app routers, so either name your resolver <code>letsencrypt</code> or adjust the generated file.</li>
+  <li>dok writes one <code>Host()</code> router per app, domain and preview into <code>--traefik-dir</code>. Traefik only requests a certificate when it sees the exact host.</li>
+  <li>With many preview deployments, use a wildcard certificate from Traefik's DNS-01 resolver. dok itself does not implement DNS-01 and cannot issue wildcard certificates.</li>
+  <li>The directory must be writable by the dok service user. Traefik hot-reloads file-provider changes; do not restart it for every deploy.</li>
+</ul>
+
+<h2 id="data-directory">The data directory</h2>
+<p>Everything dok owns is under <code>--data</code>, default <code>~/.local/share/dok</code>. The process sets <code>umask 077</code>, so new files are private by construction.</p>
+<pre class="data-tree" style="background:var(--code-bg);border:1px solid var(--code-rule);color:var(--code-fg);padding:1rem 1.1rem;overflow-x:auto;font-family:var(--mono);font-size:.72rem;line-height:1.9">dok.db          SQLite database, mode 0600
+dok.db-wal      write-ahead log, mode 0600
+dok.db-shm      shared-memory file, mode 0600
+builds/         retained build trees, ten per environment
+repos/          bare git repositories created by dok git-init
+acme/           certificates issued by edge mode
+logs/           deploy logs
+locks/          per-project deploy locks
+backups/        consistent database snapshots
+traefik/        generated per-app routers, if enabled
+initial-token   first-run token, before dashboard setup
+tmp/            upload staging; swept at startup</pre>
+<p>The directory is <code>0700</code>. The database, its WAL/SHM files and every backup are <code>0600</code>, so other local accounts cannot read environment secrets.</p>
+
+<h2 id="backups-and-restore">Backups and restore</h2>
+<p>dok writes a consistent SQLite snapshot at startup and every 24 hours. The default keeps seven; change it with <code>--backup-keep N</code> or disable it with <code>0</code>.</p>
+<ul>
+  <li>Backups cover the <strong>database</strong>: users, teams, projects, deploys, env vars, domains and sessions.</li>
+  <li>If you use git-push projects, copy <code>repos/</code> alongside the database.</li>
+  <li>If you use edge mode, copy <code>acme/</code> so certificates survive a restore.</li>
+  <li>Copy <code>builds/</code> only if you need the retained artifacts; it is large and can be rebuilt.</li>
+</ul>
+<p>To restore, stop the service, replace the database, remove stale WAL/SHM files, then start it again. Migrations run automatically on start.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>systemctl --user stop dok
+cp ~/.local/share/dok/backups/dok-2026-11-10.db ~/.local/share/dok/dok.db
+rm -f ~/.local/share/dok/dok.db-wal ~/.local/share/dok/dok.db-shm
+systemctl --user start dok
+systemctl --user status dok --no-pager</code></pre></div>
+<div class="callout warn">
+  <span class="callout-title">Test the restore</span>
+  <p>A backup you have never restored is a hope. Copy the data directory to a test host, restore there, and verify that the dashboard opens and a project serves before you need it in an incident.</p>
+</div>
+
+<h2 id="upgrades">Upgrades</h2>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>systemctl --user stop dok
+# take a fresh backup or copy backups/ now
+curl -fsSL https://dok.djt-group.com/install.sh | sh
+systemctl --user start dok
+dok --version</code></pre></div>
+<p>Re-running the installer is idempotent: it replaces <code>~/.local/bin/dok</code>. The SQLite schema is migrated in place on start. If you build from source, replace the binary and restart the service the same way. Keep a backup from <code>&lt;data&gt;/backups</code> before a major upgrade.</p>
+
+<h2 id="docker-access">Docker access</h2>
+<p>Container deploys fail with “permission denied” when the service user cannot read the Docker socket. Add the user to the <code>docker</code> group (log out and back in for the group to apply), or use an ACL:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>sudo usermod -aG docker "$USER"
+# or, without a group change:
+sudo setfacl -m u:"$USER":rw /var/run/docker.sock
+systemctl --user restart dok
+docker version</code></pre></div>
+<p>The repository ships <code>deploy/docker-socket-acl.conf</code>, a systemd drop-in that reapplies the ACL when the Docker socket is recreated. Without it, a Docker restart can silently remove access.</p>
+
+<h2 id="keep-awake">Keep-awake (optional)</h2>
+<p>If dok runs on a laptop or desktop that suspends, the sites go down with it. The repository includes a small unit that inhibits sleep:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>sudo install -m644 deploy/dok-keepawake.service /etc/systemd/system/
+sudo systemctl enable --now dok-keepawake.service</code></pre></div>
+<p>This is not needed on a normal always-on server, and it is the wrong tool for a machine you want to sleep on a schedule.</p>
+
+<h2 id="security-checklist">Security checklist</h2>
+<ul>
+  <li>Run dok as a dedicated non-root user; do not expose the Docker socket over TCP.</li>
+  <li>Firewall everything except 80/443 (edge) or the private proxy port.</li>
+  <li>Set <code>--trusted-proxy</code> only to the proxy network you actually control.</li>
+  <li>Keep <code>~/.config/dok/config.toml</code> and any token file at mode 0600.</li>
+  <li>Back up <code>backups/</code>, <code>repos/</code> and <code>acme/</code> off the machine.</li>
+  <li>Keep the binary and the host OS patched; re-run the installer for dok upgrades.</li>
+</ul>
+<p>Next: <a href="api.html">use the HTTP API directly <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4"/></svg></a></p>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages"><a class="pager-link prev" href="teams.html"><span>Previous</span><strong>Teams & tokens</strong></a><a class="pager-link next" href="api.html"><span>Next</span><strong>API</strong></a></nav>
+    </main>
+    <aside class="docs-toc"><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#requirements">Requirements</a></li><li><a class="toc-link" href="#install-the-binary">Install the binary</a></li><li><a class="toc-link" href="#edge-mode">Edge mode</a></li><li><a class="toc-link" href="#systemd">Run it as a service</a></li><li><a class="toc-link" href="#behind-traefik">Behind Traefik</a></li><li><a class="toc-link" href="#data-directory">The data directory</a></li><li><a class="toc-link" href="#backups-and-restore">Backups and restore</a></li><li><a class="toc-link" href="#upgrades">Upgrades</a></li><li><a class="toc-link" href="#docker-access">Docker access</a></li><li><a class="toc-link" href="#keep-awake">Keep-awake</a></li><li><a class="toc-link" href="#security-checklist">Security checklist</a></li></ol>
+</nav></aside>
+  </div>
+</div>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="../index.html" aria-label="dok home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+          <span class="brand-name">dok</span>
+        </a>
+        <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="../index.html#product">How it works</a></li>
+          <li><a href="../index.html#features">Features</a></li>
+          <li><a href="../index.html#compare">Comparison</a></li>
+          <li><a href="../index.html#security">Security</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Documentation</h4>
+        <ul>
+          <li><a href="../docs/quickstart.html">Quickstart</a></li>
+          <li><a href="../docs/cli.html">CLI reference</a></li>
+          <li><a href="../docs/api.html">API</a></li>
+          <li><a href="../docs/troubleshooting.html">Troubleshooting</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/OckoTajny/dok">GitHub</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/releases">Releases</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/issues">Issues</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/blob/main/LICENSE">MIT license</a></li>
+          <li><a href="../install.sh">install.sh</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="left">
+        <span>© <span id="year">2026</span> dok</span>
+        <span>MIT licensed</span>
+        <span>v2.0.0</span>
+        <span>No trackers</span>
+      </div>
+      <div class="left">
+        <a href="../docs/self-hosting.html">Self-hosting</a>
+        <a href="../sitemap.xml">Sitemap</a>
+        <a href="https://dok.solta.tech">Live instance</a>
+      </div>
+    </div>
+  </div>
+</footer>
+<div class="search-modal" id="search-modal" hidden>
+  <div class="search-panel" role="dialog" aria-modal="true" aria-labelledby="search-title">
+    <div class="search-field">
+      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg>
+      <label class="sr-only" for="search-input" id="search-title">Search documentation</label>
+      <input id="search-input" type="search" placeholder="Search docs — deploy, domains, tokens, backups…" autocomplete="off" spellcheck="false">
+      <kbd class="kbd">esc</kbd>
+    </div>
+    <div class="search-results" id="search-results" aria-live="polite"></div>
+    <p class="search-hint"><span>↑ ↓ to move</span><span>↵ to open</span><span>/ anywhere</span><span>esc to close</span></p>
+  </div>
+</div>
+
+</body>
+</html>

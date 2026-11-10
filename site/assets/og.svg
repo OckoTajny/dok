@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="dok — push a folder, get a URL">
+  <title>dok — push a folder, get a URL</title>
+  <!-- Social card. Flat surfaces only, no gradients, no masks. -->
+  <rect width="1200" height="630" fill="#0A0A0A"/>
+  <rect x="0" y="0" width="1200" height="1" fill="#1E1E1E"/>
+
+  <!-- lockup, scaled 3x from the 32-unit artwork -->
+  <g transform="translate(72 56) scale(3)" color="#EDEDED">
+    <g transform="translate(-1.8143 .7857) scale(.90714)">
+      <path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z
+        M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z
+        M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+    </g>
+    <g transform="translate(31.4 0)">
+      <g fill="none" stroke="currentColor" stroke-width="4.2">
+        <circle cx="8.1" cy="19" r="6.9"/>
+        <circle cx="32.1" cy="19" r="6.9"/>
+        <g stroke-linecap="butt">
+          <path d="M46.1 20.285 54.9 11.485"/>
+          <path d="M46.1 17.715 54.9 26.515"/>
+        </g>
+      </g>
+      <g fill="currentColor">
+        <rect x="15" y="2.6" width="4.2" height="25.4"/>
+        <rect x="44.3" y="2.6" width="4.2" height="25.4"/>
+      </g>
+    </g>
+  </g>
+
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif">
+    <text x="70" y="316" font-size="68" font-weight="600" letter-spacing="-2.4" fill="#EDEDED">Push a folder.</text>
+    <text x="70" y="390" font-size="68" font-weight="600" letter-spacing="-2.4" fill="#EDEDED">Get a URL.</text>
+    <text x="72" y="448" font-size="22" fill="#8A8A8A" letter-spacing="-.1">Deploys, TLS and previews in one small binary.</text>
+  </g>
+
+  <!-- terminal card -->
+  <rect x="660" y="248" width="468" height="216" rx="16" fill="#060606" stroke="#1E1E1E"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">
+    <text x="692" y="298" fill="#6E6E6E">$ <tspan fill="#EDEDED">dok push ./app</tspan></text>
+    <text x="692" y="340" fill="#E9A23B">&#8594; <tspan fill="#BBBBBB">notes.dok.djt-group.com</tspan></text>
+    <text x="692" y="382"><tspan fill="#7EE787">&#10003;</tspan><tspan fill="#8A8A8A" xml:space="preserve">  live in 6.2s</tspan></text>
+    <text x="692" y="424" fill="#5E5E5E">preview  pr-42.notes.dok...</text>
+  </g>
+
+  <!-- url -->
+  <path d="M72 496h1056" stroke="#1E1E1E"/>
+  <circle cx="78" cy="548" r="5" fill="#E9A23B"/>
+  <text x="96" y="555" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" fill="#BBBBBB" letter-spacing=".2">dok.djt-group.com</text>
+</svg>

@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting — dok docs</title>
+<meta name="description" content="Fix dok failures: 502s, pending certificates, DNS mismatches, rejected deploys, 401 tokens, disk space and Docker permissions.">
+<meta name="color-scheme" content="light dark">
+<script>try{var t=localStorage.getItem("dok-theme");if(t==="dark")document.documentElement.setAttribute("data-theme","dark");}catch(e){}</script>
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css">
+<script defer src="../assets/search-index.js"></script>
+<script defer src="../assets/app.js"></script>
+<meta property="og:title" content="Troubleshooting — dok docs">
+<meta property="og:description" content="Fix dok failures: 502s, pending certificates, DNS mismatches, rejected deploys, 401 tokens, disk space and Docker permissions.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="dok">
+<meta property="og:image" content="https://dok.djt-group.com/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../index.html" aria-label="dok home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+      <span class="brand-name">dok</span>
+      <span class="brand-tag">self-hosted deploys</span>
+    </a>
+    <nav class="site-nav" aria-label="Main navigation">
+      <a class="nav-link" href="../index.html#product">Product</a>
+      <a class="nav-link" href="../index.html#features">Features</a>
+      <a class="nav-link" href="../index.html#compare">Compare</a>
+      <a class="nav-link" href="../docs/index.html" aria-current="page">Docs</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-btn search-trigger" type="button" data-search-open aria-expanded="false" aria-controls="search-modal" aria-haspopup="dialog" aria-label="Search documentation">
+        <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg><span class="label">Search</span><kbd class="kbd">/</kbd>
+      </button>
+      <a class="icon-btn" href="https://github.com/OckoTajny/dok" aria-label="dok on GitHub" title="GitHub"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="icon-btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">
+        <svg class="i-moon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M15 11.2A6.4 6.4 0 0 1 6.8 3a6.6 6.6 0 1 0 8.2 8.2Z"/></svg><svg class="i-sun" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.7 3.7l1.4 1.4M12.9 12.9l1.4 1.4M14.3 3.7l-1.4 1.4M5.1 12.9l-1.4 1.4"/></svg>
+      </button>
+      <a class="btn btn-primary btn-sm header-cta" href="../docs/quickstart.html">Get started</a>
+      <button class="icon-btn menu-btn" type="button" data-menu-toggle aria-expanded="false" aria-controls="mobile-menu" aria-label="Open menu"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 5h14M2 9h14M2 13h14"/></svg></button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu">
+    <div class="wrap">
+      <a href="../index.html#product">Product</a>
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#compare">Compare</a>
+      <a href="../docs/index.html">Documentation</a>
+      <a href="../docs/quickstart.html">Quickstart</a>
+      <a href="../install.sh">install.sh</a>
+      <a href="https://github.com/OckoTajny/dok">GitHub</a>
+    </div>
+  </div>
+</header>
+<div class="wrap">
+  <div class="docs-layout">
+    <div class="docs-side-wrap">
+      <button class="docs-mobile-btn" type="button" data-docs-toggle aria-expanded="false" aria-controls="docs-nav">
+        <span>Browse docs</span><span aria-hidden="true">+</span>
+      </button>
+      <aside class="docs-side" id="docs-nav" aria-label="Documentation">
+  <div class="side-group"><h2>Start here</h2><ul class="side-links"><li><a class="side-link" href="index.html">Overview</a></li><li><a class="side-link" href="quickstart.html">Quickstart</a></li></ul></div><div class="side-group"><h2>Using dok</h2><ul class="side-links"><li><a class="side-link" href="cli.html">CLI reference</a></li><li><a class="side-link" href="deploy.html">Deploying apps</a></li><li><a class="side-link" href="domains.html">Domains & TLS</a></li></ul></div><div class="side-group"><h2>Operating</h2><ul class="side-links"><li><a class="side-link" href="teams.html">Teams & tokens</a></li><li><a class="side-link" href="self-hosting.html">Self-hosting</a></li><li><a class="side-link" href="api.html">API</a></li><li><a class="side-link" href="troubleshooting.html" aria-current="page">Troubleshooting</a></li></ul></div>
+  <div class="side-note"><strong>dok 2.0.0</strong>Single binary. SQLite. MIT.</div>
+</aside>
+    </div>
+    <main class="docs-main" id="main">
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a href="../index.html">Home</a><span aria-hidden="true">/</span>
+        <a href="index.html">Docs</a><span aria-hidden="true">/</span>
+        <span aria-current="page">Troubleshooting</span>
+      </nav>
+      <div class="page-meta">
+        <span>Guide 09 / 09</span>
+        <a href="https://github.com/OckoTajny/dok" rel="noopener">Edit on GitHub</a>
+      </div>
+      <h1>Troubleshooting</h1>
+      <p class="lede">Start with the symptom, not the stack. Each section names the check that confirms the cause and the command that fixes it.</p>
+      <details class="toc-mobile"><summary>On this page</summary><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#first-checks">First checks</a></li><li><a class="toc-link" href="#bad-gateway">502 Bad gateway</a></li><li><a class="toc-link" href="#certificate-pending">Certificate pending</a></li><li><a class="toc-link" href="#dns-mismatch">DNS mismatch</a></li><li><a class="toc-link" href="#deploy-rejected">Deploy rejected</a></li><li><a class="toc-link" href="#auth-401">401 Unauthorized</a></li><li><a class="toc-link" href="#disk-space">Disk space</a></li><li><a class="toc-link" href="#docker">Docker missing</a></li><li><a class="toc-link" href="#passkeys">Passkeys</a></li><li><a class="toc-link" href="#previews">Preview 404s</a></li><li><a class="toc-link" href="#other">Other failures</a></li></ol>
+</nav></details>
+      <article class="prose">
+        
+<h2 id="first-checks">First checks</h2>
+<p>Most failures are visible in three places: the service log, the deploy log and DNS. Run these before changing anything:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>systemctl --user status dok --no-pager
+journalctl --user -u dok -n 100 --no-pager
+dok whoami
+dok logs my-app
+dok certs list
+dig +short my-app.example.com</code></pre></div>
+<div class="table-scroll">
+  <table class="table">
+    <caption>Quick triage</caption>
+    <thead><tr><th scope="col">Symptom</th><th scope="col">Most likely</th><th scope="col">Jump to</th></tr></thead>
+    <tbody>
+      <tr><td>502 Bad gateway</td><td>Container exited, wrong port, or app bound to loopback.</td><td><a href="#bad-gateway">502</a></td></tr>
+      <tr><td>Certificate pending</td><td>DNS points elsewhere, ports blocked, or external proxy owns TLS.</td><td><a href="#certificate-pending">Certificate</a></td></tr>
+      <tr><td>Deploy fails before building</td><td>Unknown project type, oversized upload, unsafe archive.</td><td><a href="#deploy-rejected">Deploy rejected</a></td></tr>
+      <tr><td>HTTP 401 from the API</td><td>Old, revoked or unbound token; wrong server URL.</td><td><a href="#auth-401">401</a></td></tr>
+      <tr><td>Upload returns 507</td><td>Less than 1 GB free on the data filesystem.</td><td><a href="#disk-space">Disk space</a></td></tr>
+      <tr><td>Build says Docker unavailable</td><td>Docker not installed, or the service user cannot open the socket.</td><td><a href="#docker">Docker</a></td></tr>
+      <tr><td>Passkey registration fails</td><td>Dashboard origin does not match the browser URL.</td><td><a href="#passkeys">Passkeys</a></td></tr>
+      <tr><td>Preview URL 404s</td><td>Wildcard DNS missing, or the preview host has no route.</td><td><a href="#previews">Previews</a></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2 id="bad-gateway">502 Bad gateway</h2>
+<p>A 502 means dok reached the route but the project behind it did not answer. The branded error page names the project and the last successful production deploy, and includes an <code>x-request-id</code> you can match in the access log.</p>
+<ol>
+  <li><strong>Did the container exit?</strong> <code>dok logs my-app</code> shows build and runtime output. <code>dok deploys my-app</code> shows whether the last deploy is <code>ok</code> or <code>failed</code>.</li>
+  <li><strong>Is it listening on the right port?</strong> The port order is <code>--port</code>, <code>dok.toml</code>, Dockerfile <code>EXPOSE</code>, then 3000. If the app listens on 8080, set it explicitly: <code>dok push . --app my-app --port 8080</code>.</li>
+  <li><strong>Is it bound to <code>0.0.0.0</code>?</strong> A process inside the container that binds <code>127.0.0.1</code> is unreachable from Docker's published port. Bind all interfaces.</li>
+  <li><strong>Did it crash after starting?</strong> A missing env var or a database migration at boot is common. Check the runtime log, set the variable, then redeploy or roll back.</li>
+</ol>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok logs my-app
+dok deploys my-app
+dok rollback my-app 4f2c9a1b
+dok access-log my-app --limit 20</code></pre></div>
+<p>Static sites do not have a container. A 502 on a static project usually means the production pointer is missing or the project was never successfully deployed; check <code>dok deploys</code> and push again.</p>
+
+<h2 id="certificate-pending">Certificate pending or not issued</h2>
+<p>dok adds the host and starts the certificate path immediately. “Pending” means the ACME order has not completed, not that dok is still checking DNS.</p>
+<ol>
+  <li>Does the hostname resolve to the machine that terminates TLS? <code>dig +short host</code>. Remove stale AAAA records.</li>
+  <li>Are ports 80 and 443 reachable? HTTP-01 uses 80, TLS-ALPN-01 uses 443. A cloud firewall or security group is a common blocker.</li>
+  <li>Is another proxy in front? In edge mode, dok must own 80/443. If Traefik owns them, dok is in external-proxy mode and <code>dok certs renew</code> will return a conflict.</li>
+  <li>Is there a CAA record forbidding Let's Encrypt? <code>dig CAA example.com</code>.</li>
+  <li>Did you use <code>--acme-staging</code>? Staging certificates are untrusted by browsers. Restart without it and renew.</li>
+</ol>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok certs list
+dok certs renew my-app.example.com
+curl -I http://my-app.example.com/.well-known/acme-challenge/test</code></pre></div>
+<p>Let's Encrypt rate limits apply. If you have forced several renewals, wait before trying again. The full DNS table is in <a href="domains.html#troubleshooting">Domains &amp; TLS</a>.</p>
+
+<h2 id="dns-mismatch">DNS mismatch</h2>
+<p>“The domain works on my machine but not on my phone” is almost always DNS or IPv6:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dig +short my-app.example.com A
+dig +short my-app.example.com AAAA
+dig +short my-app.example.com CNAME
+dig @1.1.1.1 +short my-app.example.com
+dig NS example.com</code></pre></div>
+<ul>
+  <li>The <code>A</code> answer must be the server's public IPv4. An old address survives until its TTL expires.</li>
+  <li>An <code>AAAA</code> record pointing at a host without IPv6 breaks clients that prefer IPv6. Delete it or fix it.</li>
+  <li>A CNAME must point at the dok host, not at an app hostname. CNAMEs at the zone apex are usually invalid; use an A record there.</li>
+  <li>If a CDN proxy is enabled, set the record to DNS-only while issuing a certificate. TLS-ALPN-01 cannot pass through a terminating proxy.</li>
+</ul>
+
+<h2 id="deploy-rejected">Deploy rejected</h2>
+<p>A rejected upload never reaches the build. The message tells you which limit was hit:</p>
+<div class="table-scroll">
+  <table class="table">
+    <caption>Upload and build rejections</caption>
+    <thead><tr><th scope="col">Message / status</th><th scope="col">Cause</th><th scope="col">Fix</th></tr></thead>
+    <tbody>
+      <tr><td>“unknown project type”</td><td>No Dockerfile, manifest or <code>index.html</code>.</td><td>Add one, or set <code>framework = "static"</code> in <code>dok.toml</code>.</td></tr>
+      <tr><td>413 / “upload exceeds 200 MB”</td><td>Compressed archive too large.</td><td>Remove build output and assets that are regenerated; push the source, not <code>node_modules</code> or <code>dist</code>.</td></tr>
+      <tr><td>422 / “archive rejected”</td><td>Unsafe path, symlink, too many entries, or over 500 MB uncompressed.</td><td>Remove symlinks and nested archives; check the build output size.</td></tr>
+      <tr><td>507 / “not enough free disk space”</td><td>Less than 1 GB free on the data filesystem.</td><td>Free space or move <code>--data</code> to a larger volume.</td></tr>
+      <tr><td>Build failed</td><td>The Dockerfile or detected build returned non-zero.</td><td><code>dok logs my-app</code>; reproduce the same command locally.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>A <code>package.json</code> with neither a <code>start</code> nor a <code>build</code> script is only accepted when an <code>index.html</code> exists. Otherwise add a script, a Dockerfile, or a static entry point.</p>
+
+<h2 id="auth-401">401 Unauthorized</h2>
+<p>The API returns 401 for a missing, invalid, revoked or unbound token. The message distinguishes them:</p>
+<ul>
+  <li><code>missing token</code> — the <code>Authorization: Bearer</code> header was not sent.</li>
+  <li><code>invalid token</code> — the secret is wrong or was revoked.</li>
+  <li><code>token is not bound to a user; finish dashboard setup or issue a new token</code> — the token predates the first user. Finish setup, then mint a new token.</li>
+</ul>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok whoami
+dok login https://dok.example.com
+dok tokens list
+dok tokens create --name laptop</code></pre></div>
+<p>If CI fails but your laptop works, check that <code>DOK_SERVER</code> and <code>DOK_TOKEN</code> point at the same instance. A token is only valid on the server that issued it; there is no central auth service.</p>
+
+<h2 id="disk-space">Disk space</h2>
+<p>The server refuses an upload below 1 GB free, but builds, images and backups can fill a disk before that. Inspect before deleting:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>df -h
+du -sh ~/.local/share/dok/* | sort -h
+docker system df
+ls -lh ~/.local/share/dok/backups</code></pre></div>
+<p>Old build trees and the previous image tag are cleaned on the next successful deploy; the last ten per environment are retained deliberately. If you need space immediately, roll back to a known-good deploy, remove unused preview artifacts from the dashboard, and move the data directory to a larger volume. Do not delete <code>dok.db</code>, <code>backups/</code> or <code>acme/</code> to make room.</p>
+
+<h2 id="docker">Docker missing or permission denied</h2>
+<p>Static sites do not need Docker. Container builds do. Check both the client and the socket:</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>docker version
+sudo systemctl status docker --no-pager
+ls -l /var/run/docker.sock
+systemctl --user restart dok</code></pre></div>
+<p>If <code>docker version</code> works as your user but deploys fail, the user service may have started before the group or ACL was applied. Add the user to the <code>docker</code> group, re-login, or use the ACL drop-in described in <a href="self-hosting.html#docker-access">Self-hosting</a>, then restart the service.</p>
+<div class="callout warn">
+  <span class="callout-title">Do not expose the socket</span>
+  <p>Access to <code>/var/run/docker.sock</code> is effectively root on the host. Keep it local to the machine and never publish it on a TCP port.</p>
+</div>
+
+<h2 id="passkeys">Passkeys and the dashboard</h2>
+<ul>
+  <li><strong>“not configured”</strong> — start dok with <code>--dashboard-origin</code> set to a hostname WebAuthn can use, for example <code>http://localhost:8080</code> or <code>https://dok.example.com</code>. Bare IPs fall back to localhost.</li>
+  <li><strong>Origin error during registration</strong> — open the dashboard on the exact host in <code>--dashboard-origin</code>. Use <code>localhost</code>, not <code>127.0.0.1</code>, for a local instance.</li>
+  <li><strong>Passkey lost</strong> — register a second passkey from Account settings while you still have access. There is no password reset.</li>
+  <li><strong>Wrong host after a domain change</strong> — update <code>--dashboard-origin</code>, restart, and open the new URL. Existing sessions are host-scoped cookies.</li>
+</ul>
+
+<h2 id="previews">Preview URL 404s</h2>
+<p>Previews use <code>&lt;app&gt;-&lt;deploy8&gt;.&lt;base-domain&gt;</code>. That host needs DNS coverage: a wildcard <code>*.apps.example.com</code> A record is the easy option. In edge mode each preview host is added to the certificate set individually; dok does not issue wildcard certificates.</p>
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok deploys my-app
+dok logs my-app --env preview
+dig +short my-app-4f2c9a1b.apps.example.com</code></pre></div>
+<p>If the deploy is still running, the URL is not routable yet. If production is fine but the preview 404s, check that the push actually used <code>--env preview</code> and that the host appears in <code>dok certs list</code> (edge mode). Promote a preview with <code>dok promote my-app &lt;deploy-id&gt;</code>.</p>
+
+<h2 id="other">Other common failures</h2>
+<div class="table-scroll">
+  <table class="table">
+    <caption>Short fixes</caption>
+    <thead><tr><th scope="col">Symptom</th><th scope="col">Fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>Address already in use</code></td><td>Another dok or proxy owns the port. Change <code>--http-port</code> or stop the old process.</td></tr>
+      <tr><td>Dashboard works, apps 404</td><td>The app host does not match the project domain. Check <code>dok domains list</code> and <code>--base-domain</code>.</td></tr>
+      <tr><td>App sees the wrong client IP</td><td>Add the proxy CIDR to <code>--trusted-proxy</code>; only loopback is trusted by default.</td></tr>
+      <tr><td>Webhook returns 401</td><td>Secret mismatch or a proxy rewrote the body. The HMAC is over the raw body bytes.</td></tr>
+      <tr><td>Webhook returns 200 but nothing deploys</td><td>The push branch is outside the configured branch, or the repo URL is not set.</td></tr>
+      <tr><td>Service dies after logout</td><td>Run <code>loginctl enable-linger "$USER"</code>, or use a system unit instead of a user unit.</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>Still stuck? The <a href="cli.html">CLI reference</a> lists every command, and <a href="self-hosting.html">Self-hosting</a> covers the service, data directory and restore procedure.</p>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages"><a class="pager-link prev" href="api.html"><span>Previous</span><strong>API</strong></a><span class="pager-spacer"></span></nav>
+    </main>
+    <aside class="docs-toc"><nav class="toc" aria-label="On this page">
+  <p class="toc-title">On this page</p>
+  <ol><li><a class="toc-link" href="#first-checks">First checks</a></li><li><a class="toc-link" href="#bad-gateway">502 Bad gateway</a></li><li><a class="toc-link" href="#certificate-pending">Certificate pending</a></li><li><a class="toc-link" href="#dns-mismatch">DNS mismatch</a></li><li><a class="toc-link" href="#deploy-rejected">Deploy rejected</a></li><li><a class="toc-link" href="#auth-401">401 Unauthorized</a></li><li><a class="toc-link" href="#disk-space">Disk space</a></li><li><a class="toc-link" href="#docker">Docker missing</a></li><li><a class="toc-link" href="#passkeys">Passkeys</a></li><li><a class="toc-link" href="#previews">Preview 404s</a></li><li><a class="toc-link" href="#other">Other failures</a></li></ol>
+</nav></aside>
+  </div>
+</div>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a class="brand" href="../index.html" aria-label="dok home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+</svg>
+          <span class="brand-name">dok</span>
+        </a>
+        <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="../index.html#product">How it works</a></li>
+          <li><a href="../index.html#features">Features</a></li>
+          <li><a href="../index.html#compare">Comparison</a></li>
+          <li><a href="../index.html#security">Security</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Documentation</h4>
+        <ul>
+          <li><a href="../docs/quickstart.html">Quickstart</a></li>
+          <li><a href="../docs/cli.html">CLI reference</a></li>
+          <li><a href="../docs/api.html">API</a></li>
+          <li><a href="../docs/troubleshooting.html">Troubleshooting</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/OckoTajny/dok">GitHub</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/releases">Releases</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/issues">Issues</a></li>
+          <li><a href="https://github.com/OckoTajny/dok/blob/main/LICENSE">MIT license</a></li>
+          <li><a href="../install.sh">install.sh</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="left">
+        <span>© <span id="year">2026</span> dok</span>
+        <span>MIT licensed</span>
+        <span>v2.0.0</span>
+        <span>No trackers</span>
+      </div>
+      <div class="left">
+        <a href="../docs/self-hosting.html">Self-hosting</a>
+        <a href="../sitemap.xml">Sitemap</a>
+        <a href="https://dok.solta.tech">Live instance</a>
+      </div>
+    </div>
+  </div>
+</footer>
+<div class="search-modal" id="search-modal" hidden>
+  <div class="search-panel" role="dialog" aria-modal="true" aria-labelledby="search-title">
+    <div class="search-field">
+      <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><path d="M12 12l3.5 3.5"/></svg>
+      <label class="sr-only" for="search-input" id="search-title">Search documentation</label>
+      <input id="search-input" type="search" placeholder="Search docs — deploy, domains, tokens, backups…" autocomplete="off" spellcheck="false">
+      <kbd class="kbd">esc</kbd>
+    </div>
+    <div class="search-results" id="search-results" aria-live="polite"></div>
+    <p class="search-hint"><span>↑ ↓ to move</span><span>↵ to open</span><span>/ anywhere</span><span>esc to close</span></p>
+  </div>
+</div>
+
+</body>
+</html>
