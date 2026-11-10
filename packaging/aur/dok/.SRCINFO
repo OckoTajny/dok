@@ -1,0 +1,18 @@
+pkgbase = dok
+	pkgdesc = Lightweight self-hosted Vercel/Coolify alternative: deploy, Docker, reverse proxy, TLS
+	pkgver = 2.0.0
+	pkgrel = 1
+	url = https://github.com/OckoTajny/dok
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	makedepends = rust
+	depends = gcc-libs
+	optdepends = docker: build and run deployed apps
+	optdepends = git: deploy from repositories and webhooks
+	options = !lto
+	source = dok-2.0.0.tar.gz::https://github.com/OckoTajny/dok/archive/v2.0.0.tar.gz
+	sha256sums = ef2cea5ce63305dfed28d41d85a1a80decae09cb119a5ebf40fe0201864156bf
+
+pkgname = dok

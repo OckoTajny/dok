@@ -1,0 +1,21 @@
+pkgbase = dok-git
+	pkgdesc = Lightweight self-hosted Vercel/Coolify alternative (git version)
+	pkgver = r1.0000000
+	pkgrel = 1
+	url = https://github.com/OckoTajny/dok
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	makedepends = rust
+	makedepends = git
+	depends = gcc-libs
+	optdepends = docker: build and run deployed apps
+	optdepends = git: deploy from repositories and webhooks
+	provides = dok
+	conflicts = dok
+	options = !lto
+	source = git+https://github.com/OckoTajny/dok.git
+	sha256sums = SKIP
+
+pkgname = dok-git

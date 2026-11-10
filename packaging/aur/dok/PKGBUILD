@@ -11,7 +11,7 @@ makedepends=('cargo' 'rust')
 optdepends=('docker: build and run deployed apps'
             'git: deploy from repositories and webhooks')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('ef2cea5ce63305dfed28d41d85a1a80decae09cb119a5ebf40fe0201864156bf')
 options=(!lto)
 
 build() {
