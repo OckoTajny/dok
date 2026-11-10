@@ -52,8 +52,11 @@ production deploy and an `x-request-id`; they never list other projects.
 
 Certificates are refreshed when the DB host set changes and a renew request
 forces a fresh ACME order; `notAfter` is parsed into the certificate status
-shown in the UI. A wildcard DNS/TLS setup is still recommended if preview
-deploys must be reachable over HTTPS in edge mode.
+shown in the UI. Preview hosts are included in both the Traefik routers and the
+ACME host set, so they get their own certificate. dok does not implement
+DNS-01, so it cannot issue wildcard certificates itself; for a busy instance
+with many previews, terminate TLS in an external Traefik/Caddy with a wildcard
+certificate and run dok behind it.
 
 ## Install on a machine
 
@@ -98,9 +101,9 @@ systemctl --user daemon-reload
 systemctl --user enable --now dok
 systemctl --user status dok --no-pager | head
 
-# 3. first token
-cat ~/.local/share/dok/initial-token
-~/bin/dok login https://dok.solta.tech "$(cat ~/.local/share/dok/initial-token)"
+# 3. first token (avoid argv: use DOK_TOKEN or --token-file)
+install -m600 ~/.local/share/dok/initial-token ~/.config/dok/token
+DOK_TOKEN="$(cat ~/.config/dok/token)" ~/bin/dok login https://dok.solta.tech
 
 # 4. Traefik route (no restart, Traefik watches the dir)
 sudo install -m644 deploy/traefik-dok.yaml /data/coolify/proxy/dynamic/dok.yaml

@@ -3,10 +3,49 @@ use axum::body::Body;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use std::collections::HashMap;
+use serde::Serialize;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// One point-in-time runtime sample. Kept in memory; restarts start a new
+/// series. CPU is a percentage, memory is MiB (both parsed from `docker stats`).
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricSample {
+    pub ts: i64,
+    pub cpu: Option<f64>,
+    pub memory_mb: Option<f64>,
+}
+
+fn parse_cpu(s: &str) -> Option<f64> {
+    s.trim().trim_end_matches('%').trim().parse().ok()
+}
+
+fn parse_memory_mb(s: &str) -> Option<f64> {
+    let used = s.split('/').next()?.trim();
+    let lower = used.to_ascii_lowercase();
+    let (num, factor) = if let Some(v) = lower
+        .strip_suffix("gib")
+        .or_else(|| lower.strip_suffix("gb"))
+    {
+        (v, 1024.0)
+    } else if let Some(v) = lower
+        .strip_suffix("mib")
+        .or_else(|| lower.strip_suffix("mb"))
+    {
+        (v, 1.0)
+    } else if let Some(v) = lower
+        .strip_suffix("kib")
+        .or_else(|| lower.strip_suffix("kb"))
+    {
+        (v, 1.0 / 1024.0)
+    } else {
+        (lower.as_str(), 1.0)
+    };
+    let value: f64 = num.trim().parse().ok()?;
+    Some(value * factor)
+}
 
 /// Tiny in-memory fixed-window limiter (per key, e.g. IP + bucket).
 #[derive(Clone, Default)]
@@ -66,6 +105,8 @@ pub struct AppState {
     /// exhaust the host.
     pub deploy_gate: Arc<tokio::sync::Semaphore>,
     pub stream_gate: Arc<tokio::sync::Semaphore>,
+    /// Recent CPU/memory samples per project, newest last (bounded ring).
+    pub metrics: Arc<Mutex<HashMap<String, VecDeque<MetricSample>>>>,
 }
 
 impl AppState {
@@ -95,7 +136,38 @@ impl AppState {
             trusted_proxies: Vec::new(),
             deploy_gate: Arc::new(tokio::sync::Semaphore::new(4)),
             stream_gate: Arc::new(tokio::sync::Semaphore::new(16)),
+            metrics: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Record a `docker stats` snapshot. Keeps roughly one hour at the default
+    /// 30s sampling interval.
+    pub fn record_metrics(&self, app: &str, stats: &serde_json::Value) {
+        let cpu = stats["cpu"].as_str().and_then(parse_cpu);
+        let memory_mb = stats["memory"].as_str().and_then(parse_memory_mb);
+        if cpu.is_none() && memory_mb.is_none() {
+            return;
+        }
+        let mut map = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+        let series = map.entry(app.to_string()).or_default();
+        series.push_back(MetricSample {
+            ts: crate::db::now(),
+            cpu,
+            memory_mb,
+        });
+        while series.len() > 120 {
+            series.pop_front();
+        }
+    }
+
+    pub fn metric_history(&self, app: &str, limit: usize) -> Vec<MetricSample> {
+        let map = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(app)
+            .map(|s| {
+                let skip = s.len().saturating_sub(limit);
+                s.iter().skip(skip).cloned().collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn with_auth(mut self, auth: Option<Arc<crate::auth::AuthState>>) -> Self {
@@ -161,6 +233,11 @@ impl AppState {
             }
         }
         for (h, _) in self.db.domain_hosts().unwrap_or_default() {
+            hosts.insert(h);
+        }
+        // Preview deployments are served on `<app>-<deploy8>.<base>`; without
+        // an explicit router Traefik never forwards those hosts to dok.
+        for h in self.db.preview_hosts() {
             hosts.insert(h);
         }
         let mut routers = String::new();
@@ -259,5 +336,19 @@ impl AppState {
 
     pub fn builds_dir(&self) -> PathBuf {
         self.data.join("builds")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_cpu, parse_memory_mb};
+
+    #[test]
+    fn parses_docker_stats_units() {
+        assert_eq!(parse_cpu("12.50%"), Some(12.5));
+        assert_eq!(parse_cpu("0.00%"), Some(0.0));
+        assert_eq!(parse_memory_mb("12.5MiB / 512MiB"), Some(12.5));
+        assert_eq!(parse_memory_mb("1.5GiB / 2GiB"), Some(1536.0));
+        assert_eq!(parse_memory_mb("512KiB / 1MiB"), Some(0.5));
     }
 }

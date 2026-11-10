@@ -79,12 +79,14 @@ pub async fn serve_app(
         return with_request_id(apply_headers(r, &settings), request_id);
     }
     if let Some(r) = basic_auth_challenge(&req, &settings) {
-        // Only failed attempts count towards the limiter.
-        if !st.rate.allow(
-            &format!("basic:{}", ip.as_deref().unwrap_or("unknown")),
-            10,
-            60,
-        ) {
+        // Only failed attempts count towards the limiter. Include the username
+        // so one abusive client behind NAT cannot lock every other user out.
+        let key = format!(
+            "basic:{}:{}",
+            ip.as_deref().unwrap_or("unknown"),
+            basic_auth_user(&req).unwrap_or_else(|| "-".to_string())
+        );
+        if !st.rate.allow(&key, 10, 60) {
             let limited = Response::builder()
                 .status(StatusCode::TOO_MANY_REQUESTS)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -322,6 +324,16 @@ fn redirect_301(location: &str) -> Response<Body> {
         .unwrap()
 }
 
+fn basic_auth_user(req: &Request<Body>) -> Option<String> {
+    req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Basic "))
+        .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|s| s.split_once(':').map(|(u, _)| u.to_string()))
+}
+
 fn basic_auth_challenge(
     req: &Request<Body>,
     settings: &crate::db::ProxySettings,
@@ -424,6 +436,25 @@ fn find_route(st: &AppState, host: &str) -> Option<Route> {
     None
 }
 
+/// Forward the app's cookies, dropping only dok's control-plane cookies.
+fn filter_cookie_header(value: &HeaderValue) -> Option<HeaderValue> {
+    let raw = value.to_str().ok()?;
+    let kept: Vec<&str> = raw
+        .split(';')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .filter(|p| {
+            let name = p.split('=').next().unwrap_or("").trim();
+            !matches!(name, "dok_session" | "dok_flash" | "dok_invite_once")
+        })
+        .collect();
+    if kept.is_empty() {
+        None
+    } else {
+        HeaderValue::from_str(&kept.join("; ")).ok()
+    }
+}
+
 fn is_upgrade(req: &Request<Body>) -> bool {
     req.headers()
         .get(header::CONNECTION)
@@ -475,8 +506,17 @@ async fn forward(
             if !upgrade && HOP_BY_HOP.contains(&name) {
                 continue;
             }
-            // The control-plane session must never reach user code.
-            if name == "cookie" || name == "authorization" || name == "proxy-authorization" {
+            // Never leak dok's own control-plane cookies to user code, but do
+            // forward the application's cookies: hosted apps with sessions
+            // must be able to log their users in.
+            if name == "cookie" {
+                if let Some(filtered) = filter_cookie_header(v) {
+                    h.append(k.clone(), filtered);
+                }
+                continue;
+            }
+            // `Proxy-Authorization` is hop-by-hop proxy auth, never app auth.
+            if name == "proxy-authorization" {
                 continue;
             }
             h.append(k.clone(), v.clone());
@@ -819,6 +859,35 @@ pub fn generic_not_found(st: &AppState, request_id: &str) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::{hidden_path, parse_authority, safe_join};
+
+    #[test]
+    fn forwards_app_cookies_but_not_dok_session() {
+        let value = axum::http::HeaderValue::from_static(
+            "dok_session=secret; theme=dark; dok_flash=abc; app_session=xyz",
+        );
+        let filtered = super::filter_cookie_header(&value).unwrap();
+        assert_eq!(filtered, "theme=dark; app_session=xyz");
+        let only_dok = axum::http::HeaderValue::from_static("dok_session=secret");
+        assert!(super::filter_cookie_header(&only_dok).is_none());
+    }
+
+    #[test]
+    fn basic_auth_limiter_key_includes_username() {
+        let req = axum::http::Request::builder()
+            .header(
+                axum::http::header::AUTHORIZATION,
+                format!(
+                    "Basic {}",
+                    base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        "alice:wrong"
+                    )
+                ),
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(super::basic_auth_user(&req).as_deref(), Some("alice"));
+    }
     use std::path::Path;
 
     #[test]

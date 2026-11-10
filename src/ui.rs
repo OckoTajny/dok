@@ -78,7 +78,8 @@ h3{font-size:13px;margin:20px 0 8px;color:#bbb;font-weight:500}
 .envitem .k{font-weight:600}
 .row > input:not([type=checkbox]):not([type=hidden]){width:auto;flex:1 1 220px}
 input,select,textarea{background:#0a0a0a;border:1px solid #333;color:#eee;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px;width:100%}
-input:focus,select:focus,textarea:focus{outline:none;border-color:#666}
+input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #79c0ff;outline-offset:1px;border-color:#666}
+input:focus:not(:focus-visible),select:focus:not(:focus-visible),textarea:focus:not(:focus-visible){outline:none;border-color:#666}
 textarea{min-height:130px;resize:vertical}
 label{display:block;color:#999;font-size:12px;margin:12px 0 4px}
 input[type=checkbox]{width:auto;min-height:0}
@@ -124,7 +125,9 @@ pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;
  body.nav-open .scrim{display:block}
  .btn,.menu,.tabs a,.side a,.btn.link{min-height:44px}
  body.nav-open{overflow:hidden}
- .tabs{flex-wrap:nowrap;overflow-x:auto}
+ .tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#444 transparent;padding-bottom:4px}
+ .tabs::-webkit-scrollbar{height:4px}
+ .tabs::-webkit-scrollbar-thumb{background:#444;border-radius:2px}
  .tabs a{display:flex;align-items:center;justify-content:center;flex:0 0 auto}
  .grid{grid-template-columns:1fr}
  input,select,textarea{font-size:16px}
@@ -140,6 +143,7 @@ pub fn esc(s: &str) -> String {
 fn page(title: &str, body: &str) -> String {
     format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
+<link rel=icon href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='19' fill='%2379c0ff' text-anchor='middle'%3Ed%3C/text%3E%3C/svg%3E\">\
 <title>{t} · dok</title><style>{css}</style></head><body>{body}</body></html>",
         t = esc(title),
         css = CSS,
@@ -253,7 +257,8 @@ pub fn page_login_for(req: &Request<Body>) -> Response<Body> {
 fn login_page(flash: Option<&Flash>) -> Response<Body> {
     let inner = format!(
         r#"{}{}<p class=small style="margin:0 0 14px">Use the passkey you registered for this instance.</p>
-<form onsubmit="login();return false"><button id=go class="btn primary" type=submit style="width:100%">Sign in with passkey</button></form>"#,
+<form onsubmit="login();return false"><button id=go class="btn primary" type=submit style="width:100%">Sign in with passkey</button></form>
+<p class="small muted" style="margin:18px 0 0">New here? You need an invite link from a teammate — ask an owner for a <code>/join/…</code> link. Lost your passkey or need another account? An owner can send you a fresh invite.</p>"#,
         flash_banner(flash),
         err_box()
     );
@@ -870,6 +875,10 @@ fn sidebar(
         csrf = esc(csrf)
     ));
     let _ = st;
+    s.push_str(&format!(
+        "<div class=\"muted small\" style=\"margin-top:20px;padding:0 8px;margin-left:-8px\">dok {}</div>",
+        env!("CARGO_PKG_VERSION")
+    ));
     s.push_str("</aside>");
     s
 }
@@ -893,7 +902,7 @@ fn layout_with_sidebar(
     let body = format!(
         "<a class=skip href=\"#main\">Skip to content</a>\
 <div class=wrap><header class=top><a class=brand href=\"/dashboard{team_q}\">dok</a>\
-<div class=row><span class=\"muted small\">{user} · {team}</span>\
+<div class=row><a class=\"muted small\" href=\"https://github.com/OckoTajny/dok#readme\" target=_blank rel=noreferrer>Docs</a><span class=\"muted small\">{user} · {team}</span>\
 <button class=menu type=button aria-controls=sidebar aria-expanded=false onclick=\"toggleNav(this)\">Menu</button></div></header>\
 <div class=layout><main id=main tabindex=-1>{flash}{main}</main>\
 <button class=scrim type=button aria-label=\"Close menu\" onclick=\"toggleNav()\"></button>{side}</div></div>\
@@ -961,6 +970,41 @@ fn can_write(db: &Db, user: &User, app: &App) -> bool {
     crate::db::can_write(role.as_deref())
 }
 
+fn can_deploy(db: &Db, user: &User, app: &App) -> bool {
+    let Some(tid) = app.team_id.as_deref() else {
+        return false;
+    };
+    let role = db.role(tid, &user.id).ok().flatten();
+    crate::db::can_deploy(role.as_deref())
+}
+
+fn sparkline(samples: &[crate::state::MetricSample]) -> String {
+    if samples.is_empty() {
+        return "<div class=\"muted small\">History appears after the next sample (30s).</div>"
+            .into();
+    }
+    let max = samples
+        .iter()
+        .filter_map(|s| s.cpu)
+        .fold(0.0f64, f64::max)
+        .max(5.0);
+    let mut bars = String::new();
+    for s in samples {
+        let cpu = s.cpu.unwrap_or(0.0).max(0.0);
+        let height = (4.0 + (cpu / max) * 18.0).round() as i64;
+        let label = s
+            .cpu
+            .map(|v| format!("{v:.1}% CPU"))
+            .unwrap_or_else(|| "n/a".into());
+        bars.push_str(&format!(
+            "<span title=\"{}\" style=\"display:inline-block;width:2px;margin-right:1px;height:{}px;background:#79c0ff;opacity:.75;vertical-align:bottom\"></span>",
+            esc(&label),
+            height
+        ));
+    }
+    format!("<div style=\"height:24px;margin:6px 0 4px;line-height:24px\">{bars}</div>")
+}
+
 fn render_dashboard(
     st: &AppState,
     user: &User,
@@ -973,6 +1017,13 @@ fn render_dashboard(
         .as_ref()
         .map(|t| t.slug.clone())
         .unwrap_or_default();
+    let can_create_here = selected
+        .as_ref()
+        .map(|t| {
+            let role = st.db.role(&t.id, &user.id).ok().flatten();
+            crate::db::can_write(role.as_deref())
+        })
+        .unwrap_or(false);
 
     let mut cards = String::new();
     for a in &apps {
@@ -1076,20 +1127,18 @@ fn render_dashboard(
         ));
     }
     if cards.is_empty() {
-        cards.push_str("<div class=empty><strong>No projects yet</strong><div class=small style=\"margin-top:6px\">Push from the CLI or create one above. Your first deploy appears here.</div><div class=small style=\"margin-top:10px\"><code>dok push ./my-app --app my-app</code></div></div>");
+        if can_create_here {
+            cards.push_str("<div class=empty><strong>No projects yet</strong><div class=small style=\"margin-top:6px\">Push from the CLI or create one above. Your first deploy appears here.</div><div class=small style=\"margin-top:10px\"><code>dok push ./my-app --app my-app</code></div></div>");
+        } else {
+            cards.push_str("<div class=empty><strong>No projects yet</strong><div class=small style=\"margin-top:6px\">You have read-only access to this team. Ask an owner or admin to create a project or grant you a deploy role.</div></div>");
+        }
     }
 
     let team_name = selected
         .as_ref()
         .map(|t| t.name.clone())
         .unwrap_or_else(|| "Workspace".into());
-    let can_create = selected
-        .as_ref()
-        .map(|t| {
-            let role = st.db.role(&t.id, &user.id).ok().flatten();
-            crate::db::can_write(role.as_deref())
-        })
-        .unwrap_or(false);
+    let can_create = can_create_here;
     let csrf = csrf_input(session);
     let has_tokens = !st
         .db
@@ -1100,7 +1149,7 @@ fn render_dashboard(
         String::new()
     } else {
         format!(
-            "<div class=notice>New here? <a href=\"/dashboard/account\">Create an API token</a> in Account → API tokens, then run <code>dok login {url} &lt;token&gt;</code> before <code>dok push</code>.</div>",
+            "<div class=notice>New here? <a href=\"/dashboard/account\">Create an API token</a> in Account → API tokens, then run <code>dok login {url} &lt;token&gt;</code> before <code>dok push</code>. Need the CLI? <a href=\"https://github.com/OckoTajny/dok#quickstart\" target=_blank rel=noreferrer>Install dok</a>.</div>",
             url = esc(&st.public_url)
         )
     };
@@ -1252,6 +1301,7 @@ async fn render_project(
         .or(selected);
     let csrf = csrf_input(session);
     let can = can_write(&st.db, user, app);
+    let deployer = can_deploy(&st.db, user, app);
     let mut content = String::new();
 
     match tab {
@@ -1307,6 +1357,7 @@ async fn render_project(
             let mem = stats["memory"].as_str().unwrap_or("n/a");
             let stats_note = stats["note"].as_str().unwrap_or("");
             let mut selector = String::from("<option value=\"\">Latest deploy</option>");
+            let deploys_len = deploys.len();
             for d in &deploys {
                 let short = &d.id[..d.id.len().min(8)];
                 selector.push_str(&format!(
@@ -1324,8 +1375,18 @@ async fn render_project(
                     }
                 ));
             }
+            let status_filter = q.get("status").and_then(|s| s.parse::<u16>().ok());
+            let access_rows = st
+                .db
+                .access_logs_filtered(&app.name, 50, status_filter, None)
+                .unwrap_or_default();
+            let access_total = st
+                .db
+                .access_log_count(&app.name, status_filter, None)
+                .unwrap_or(access_rows.len() as i64);
+            let access_shown = access_rows.len();
             let mut access = String::new();
-            for r in st.db.access_logs(&app.name, 50).unwrap_or_default() {
+            for r in access_rows {
                 access.push_str(&format!(
                     "<tr><td>{}</td><td><code>{}</code> {}</td><td>{}</td><td class=muted>{} ms</td><td class=muted>{}</td></tr>",
                     when(r.ts),
@@ -1354,6 +1415,7 @@ async fn render_project(
             let deploy_q = effective
                 .map(|d| format!("&deploy={}", d.id))
                 .unwrap_or_default();
+            let deploy_id_for_filter = effective.map(|d| d.id.clone()).unwrap_or_default();
             let live_btn = if kind == "docker" {
                 format!("<button class=\"btn\" type=button id=live-btn onclick=\"toggleLive('{}')\">Live stream</button>", esc(&format!("/dashboard/stream/{}?env={}{}", app.name, env, deploy_q)))
             } else {
@@ -1387,12 +1449,16 @@ async fn render_project(
             };
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Logs</h2><div class=row>{live_btn}</div></div>\
+<div class=\"muted small\" style=\"margin:0 0 6px\">Newest {deploys_len} deploys are selectable here; older builds remain available through the API.</div>\
 <form class=\"row\" method=get action=\"/dashboard/project/{app}/logs\" style=\"margin:10px 0 16px\">\
 <label class=sr for=deploy-select>Deploy</label><select id=deploy-select name=deploy onchange=\"this.form.submit()\" style=\"max-width:420px\">{selector}</select><button class=\"btn\">Show deploy</button></form>\
 <div class=\"row small\" style=\"margin-bottom:4px\"><h3 style=\"margin:0\">Build log</h3>{copy_btn}</div>{build_body}\
 <div class=\"row small\" style=\"margin:18px 0 4px\"><h3 style=\"margin:0\">Runtime log</h3>{runtime_btns}</div>{runtime_body}\
 {stats_line}\
 <h3 style=\"margin-top:24px\">Recent requests</h3>\
+<div class=\"row between\" style=\"margin-bottom:8px\"><div class=\"muted small\">Showing the newest {access_shown} of {access_total} retained requests.</div>\
+<form class=row method=get action=\"/dashboard/project/{app}/logs\"><input type=hidden name=deploy value=\"{deploy_id}\"><label class=sr for=status-filter>Status filter</label>\
+<select id=status-filter name=status onchange=\"this.form.submit()\" style=\"width:auto\"><option value=\"\">All statuses</option><option value=\"400\"{f400}>4xx and 5xx</option><option value=\"500\"{f500}>5xx only</option></select></form></div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>When</th><th>Request</th><th>Status</th><th>Latency</th><th>IP</th></tr></thead><tbody>{access}</tbody></table></div>\
 <script>\
 var liveCtl=null;\
@@ -1409,13 +1475,19 @@ liveCtl=null;b.textContent='Live stream';}}\
 </script>",
                 app = esc(&app.name),
                 selector = selector,
+                deploys_len = deploys_len,
                 build_body = build_body,
                 runtime_body = runtime_body,
                 live_btn = live_btn,
                 copy_btn = copy_btn,
                 runtime_btns = runtime_btns,
                 stats_line = stats_line,
-                access = access
+                access = access,
+                access_shown = access_shown,
+                access_total = access_total,
+                deploy_id = esc(&deploy_id_for_filter),
+                f400 = if status_filter == Some(400) { " selected" } else { "" },
+                f500 = if status_filter == Some(500) { " selected" } else { "" }
             ));
         }
         "env" => {
@@ -1500,7 +1572,11 @@ liveCtl=null;b.textContent='Live stream';}}\
                 }
             }
             if rows.is_empty() {
-                rows.push_str("<div class=empty><strong>No variables in this environment</strong><div class=\"small\" style=\"margin-top:6px\">Add the first one below. Values are passed to the next deploy.</div></div>");
+                if can {
+                    rows.push_str("<div class=empty><strong>No variables in this environment</strong><div class=\"small\" style=\"margin-top:6px\">Add the first one below. Values are passed to the next deploy.</div></div>");
+                } else {
+                    rows.push_str("<div class=empty><strong>No variables in this environment</strong><div class=\"small\" style=\"margin-top:6px\">You have read-only access; ask an owner or admin to add them.</div></div>");
+                }
             }
             let mut switches = String::new();
             for e in ["production", "preview", "development"] {
@@ -1795,7 +1871,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                     ""
                 };
                 let mut actions = String::new();
-                if can && d.status == "ok" && d.env != "production" {
+                if deployer && d.status == "ok" && d.env != "production" {
                     actions.push_str(&format!(
                         "<form class=inline method=post action=\"/dashboard/promote/{}/{}\" onsubmit=\"this.querySelector('button').disabled=true;this.querySelector('button').textContent='Working…'\">{}<button class=\"btn link\">Promote to production</button></form> ",
                         esc(&app.name),
@@ -1803,7 +1879,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                         csrf
                     ));
                 }
-                if can
+                if deployer
                     && d.env == "production"
                     && d.status == "ok"
                     && app.production_deploy.as_deref() != Some(d.id.as_str())
@@ -1861,7 +1937,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             if rows.is_empty() {
                 rows.push_str("<tr><td colspan=5><div class=empty><strong>No deployments yet</strong><div class=\"small\" style=\"margin-top:6px\">Run <code>dok push</code> from the project directory to create the first one.</div></div></td></tr>");
             }
-            let redeploy = if can && app.repo.is_some() {
+            let redeploy = if deployer && app.repo.is_some() {
                 format!(
                     "<form class=inline method=post action=\"/dashboard/redeploy/{}\" onsubmit=\"this.querySelector('button').disabled=true;this.querySelector('button').textContent='Deploying…'\">{}<button class=\"btn\">Redeploy from git</button></form>",
                     esc(&app.name),
@@ -1901,23 +1977,32 @@ liveCtl=null;b.textContent='Live stream';}}\
             } else {
                 "static files".to_string()
             };
+            let runtime_history = st.metric_history(&app.name, 60);
+            let spark = if app.kind == "docker" {
+                sparkline(&runtime_history)
+            } else {
+                String::new()
+            };
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Deployments</h2><div>{redeploy}</div></div>\
 <div class=\"grid\" style=\"margin:12px 0 20px\">\
 <div class=card><div class=muted small>Deployments</div><div class=name>{total}</div><div class=\"muted small\">{prod_n} production · {preview_n} preview</div></div>\
 <div class=card><div class=muted small>Domains</div><div class=name>{domain_n}</div><div class=\"muted small\">custom + primary</div></div>\
 <div class=card><div class=muted small>Environment keys</div><div class=name>{env_total}</div><div class=\"muted small\">across all environments</div></div>\
-<div class=card><div class=muted small>Runtime</div><div class=name>{runtime}</div><div class=\"muted small\">{runtime_note}</div></div></div>\
+<div class=card><div class=muted small>Runtime</div><div class=name>{runtime}</div>{spark}<div class=\"muted small\">{runtime_note}</div></div></div>\
+<div class=\"muted small\" style=\"margin:0 0 8px\">Showing the newest {shown} of {total} deployments.</div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>Deploy</th><th>Env</th><th>Status</th><th>Deployed</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>",
                 redeploy = redeploy,
                 rows = rows,
                 total = total,
+                shown = deploys.len(),
                 prod_n = prod_n,
                 preview_n = preview_n,
                 domain_n = domain_n,
                 env_total = env_total,
                 runtime = runtime,
-                runtime_note = if app.kind == "docker" { "docker stats" } else { "served from disk" }
+                spark = spark,
+                runtime_note = if app.kind == "docker" { "docker stats · last 30 min" } else { "served from disk" }
             ));
         }
     }
@@ -2218,7 +2303,8 @@ fn render_team(
         format!(
             "<h2>Invite a teammate</h2><form id=invite-create class=\"row\" method=post action=/dashboard/team/invite style=\"max-width:560px\">{csrf}<input type=hidden name=team value=\"{slug}\">\
 <label class=sr for=invite-role>Role</label><select id=invite-role name=role style=\"max-width:160px\">{options}</select>\
-<button class=\"btn primary\">Create invite link</button></form>",
+<button class=\"btn primary\">Create invite link</button></form>\
+<p class=\"muted small\">owner: everything, including admins · admin: projects, settings, invites · member: deploy and read · viewer: read-only.</p>",
             csrf = csrf,
             slug = esc(&team.slug),
             options = role_options
@@ -2584,7 +2670,8 @@ pub async fn handle(
         };
     }
     if rest == "logout" {
-        let _ = st.db.delete_sessions_for_user(&user.id);
+        // Scope a normal sign-out to this device; "everywhere" is explicit.
+        let _ = st.db.delete_session(&session.hash);
         return Some(redirect_flash("/", true, "Signed out."));
     }
     if rest == "logout-all" {
@@ -3294,6 +3381,7 @@ mod tests {
         let session = || crate::auth::Session {
             user: u.clone(),
             csrf: "good".into(),
+            hash: String::new(),
         };
         let post = |body: &str| {
             axum::http::Request::builder()
@@ -3372,6 +3460,7 @@ mod tests {
         let viewer_session = || crate::auth::Session {
             user: viewer.clone(),
             csrf: "good".into(),
+            hash: String::new(),
         };
         let r = super::handle(&st, &auth, get(), Some(viewer_session()))
             .await
@@ -3433,6 +3522,7 @@ mod tests {
             Some(crate::auth::Session {
                 user: u.clone(),
                 csrf: "good".into(),
+                hash: String::new(),
             }),
         )
         .await
@@ -3445,6 +3535,7 @@ mod tests {
             Some(crate::auth::Session {
                 user: u.clone(),
                 csrf: "good".into(),
+                hash: String::new(),
             }),
         )
         .await

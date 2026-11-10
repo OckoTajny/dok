@@ -115,6 +115,12 @@ pub fn can_write(role: Option<&str>) -> bool {
     matches!(role, Some("owner" | "admin"))
 }
 
+/// Members may ship deployments and operate them, but not change project
+/// settings, domains, env vars or membership.
+pub fn can_deploy(role: Option<&str>) -> bool {
+    matches!(role, Some("owner" | "admin" | "member"))
+}
+
 /// An admin may invite members/viewers; only an owner may grant admin/owner.
 pub fn can_grant(actor: Option<&str>, target: &str) -> bool {
     match actor {
@@ -1625,31 +1631,83 @@ impl Db {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![app, now(), method, path, status as i64, latency_ms, ip],
         );
-        // Keep the last 200 requests per project; cheap bounded retention.
+        // Keep the last 5000 requests per project; enough for a useful
+        // post-incident look-back without unbounded growth.
         let _ = c.execute(
             "DELETE FROM access_log WHERE app = ?1 AND id NOT IN (
-               SELECT id FROM access_log WHERE app = ?1 ORDER BY id DESC LIMIT 200)",
+               SELECT id FROM access_log WHERE app = ?1 ORDER BY id DESC LIMIT 5000)",
             params![app],
         );
     }
 
+    #[allow(dead_code)]
     pub fn access_logs(&self, app: &str, limit: usize) -> Result<Vec<AccessLog>> {
+        self.access_logs_filtered(app, limit, None, None)
+    }
+
+    pub fn access_logs_filtered(
+        &self,
+        app: &str,
+        limit: usize,
+        status_min: Option<u16>,
+        since: Option<i64>,
+    ) -> Result<Vec<AccessLog>> {
         let c = self.conn();
         let mut st = c.prepare(
             "SELECT ts, method, path, status, latency_ms, ip FROM access_log
-             WHERE app = ?1 ORDER BY id DESC LIMIT ?2",
+             WHERE app = ?1
+               AND (?2 IS NULL OR status >= ?2)
+               AND (?3 IS NULL OR ts >= ?3)
+             ORDER BY id DESC LIMIT ?4",
         )?;
-        let rows = st.query_map(params![app, limit as i64], |r| {
-            Ok(AccessLog {
-                ts: r.get(0)?,
-                method: r.get(1)?,
-                path: r.get(2)?,
-                status: r.get::<_, i64>(3)? as u16,
-                latency_ms: r.get(4)?,
-                ip: r.get(5)?,
-            })
-        })?;
+        let rows = st.query_map(
+            params![app, status_min.map(|s| s as i64), since, limit as i64],
+            |r| {
+                Ok(AccessLog {
+                    ts: r.get(0)?,
+                    method: r.get(1)?,
+                    path: r.get(2)?,
+                    status: r.get::<_, i64>(3)? as u16,
+                    latency_ms: r.get(4)?,
+                    ip: r.get(5)?,
+                })
+            },
+        )?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn access_log_count(
+        &self,
+        app: &str,
+        status_min: Option<u16>,
+        since: Option<i64>,
+    ) -> Result<i64> {
+        let c = self.conn();
+        Ok(c.query_row(
+            "SELECT COUNT(*) FROM access_log WHERE app = ?1
+               AND (?2 IS NULL OR status >= ?2)
+               AND (?3 IS NULL OR ts >= ?3)",
+            params![app, status_min.map(|s| s as i64), since],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Hosts of successful preview deploys, used for Traefik routers and ACME.
+    pub fn preview_hosts(&self) -> Vec<String> {
+        let c = self.conn();
+        let Ok(mut st) = c.prepare(
+            "SELECT url FROM deploys
+             WHERE env = 'preview' AND status = 'ok' AND url IS NOT NULL
+             ORDER BY created_at DESC LIMIT 200",
+        ) else {
+            return Vec::new();
+        };
+        let rows = st.query_map([], |r| r.get::<_, String>(0));
+        let Ok(rows) = rows else { return Vec::new() };
+        rows.flatten()
+            .filter_map(|u| url::Url::parse(&u).ok())
+            .filter_map(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+            .collect()
     }
 }
 
@@ -1866,6 +1924,33 @@ mod tests {
             dev,
             vec![("A".into(), "2".into()), ("B".into(), "3".into())]
         );
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn preview_hosts_are_discoverable_and_access_log_filters_work() {
+        let (db, path) = tmp_db();
+        db.add_deploy("prev1", "app", "ok", Some("/tmp/p"), "preview", None)
+            .unwrap();
+        db.finish_deploy_meta(
+            "prev1",
+            "ok",
+            "",
+            None,
+            Some("https://app-abcdef12.apps.test"),
+        )
+        .unwrap();
+        assert_eq!(
+            db.preview_hosts(),
+            vec!["app-abcdef12.apps.test".to_string()]
+        );
+        db.log_access("app", "GET", "/", 200, 4, None);
+        db.log_access("app", "GET", "/boom", 503, 9, None);
+        assert_eq!(db.access_log_count("app", None, None).unwrap(), 2);
+        assert_eq!(db.access_log_count("app", Some(500), None).unwrap(), 1);
+        let rows = db.access_logs_filtered("app", 10, Some(500), None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "/boom");
         drop(db);
         let _ = std::fs::remove_file(path);
     }

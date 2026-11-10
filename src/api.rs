@@ -1,7 +1,7 @@
 use crate::deploy::{self, DeployOutcome};
 use crate::proxy;
 use crate::state::AppState;
-use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
+use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -29,12 +29,16 @@ pub fn router(st: AppState) -> Router {
 
 async fn dispatch(State(st): State<AppState>, req: Request) -> Response {
     let request_id = new_request_id();
+    let scheme = st.scheme.clone();
     let host = proxy::host_of(&req);
-    let mut resp = if st.is_control_host(&host) {
+    let control = st.is_control_host(&host);
+    let mut resp = if control {
         // The dashboard, auth and token API are only served on the control
         // host. Unknown project hosts get a generic 404 without a project list.
         let path = req.uri().path().to_string();
-        if path == "/api" || path.starts_with("/api/") {
+        if path == "/favicon.ico" {
+            (StatusCode::NO_CONTENT, "").into_response()
+        } else if path == "/api" || path.starts_with("/api/") {
             match api_routes(st.clone()).oneshot(req).await {
                 Ok(r) => r,
                 Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal\n").into_response(),
@@ -54,6 +58,9 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response {
             proxy::generic_not_found(&st, &request_id)
         }
     };
+    if control {
+        apply_security_headers(&mut resp, &scheme);
+    }
     if let Ok(v) = axum::http::HeaderValue::from_str(&request_id) {
         resp.headers_mut().entry("x-request-id").or_insert(v);
     }
@@ -155,8 +162,39 @@ fn api_routes(st: AppState) -> Router {
     public
         .merge(protected)
         .route("/api/v1/hooks/github/{app}", post(github_hook))
-        .layer(DefaultBodyLimit::max(MAX_UPLOAD))
+        // Axum's 2 MB default protects JSON endpoints; deploy uploads are
+        // streamed and enforce MAX_UPLOAD in `save_body`.
         .with_state(st)
+}
+
+fn apply_security_headers(resp: &mut Response, scheme: &str) {
+    let html = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("text/html"))
+        .unwrap_or(false);
+    let h = resp.headers_mut();
+    if scheme == "https" {
+        h.entry(header::STRICT_TRANSPORT_SECURITY)
+            .or_insert(header::HeaderValue::from_static(
+                "max-age=31536000; includeSubDomains",
+            ));
+    }
+    h.entry(header::X_CONTENT_TYPE_OPTIONS)
+        .or_insert(header::HeaderValue::from_static("nosniff"));
+    h.entry(header::X_FRAME_OPTIONS)
+        .or_insert(header::HeaderValue::from_static("DENY"));
+    h.entry(header::REFERRER_POLICY)
+        .or_insert(header::HeaderValue::from_static("no-referrer"));
+    if html {
+        h.entry(header::CONTENT_SECURITY_POLICY)
+            .or_insert(header::HeaderValue::from_static(
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
+                 script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; \
+                 base-uri 'none'; form-action 'self'",
+            ));
+    }
 }
 
 async fn health() -> impl IntoResponse {
@@ -255,6 +293,20 @@ fn require_write(st: &AppState, caller: &Caller, app: &crate::db::App) -> Result
     };
     let role = st.db.role(tid, &caller.user).ok().flatten();
     if crate::db::can_write(role.as_deref()) {
+        Ok(())
+    } else if crate::db::can_read(role.as_deref()) {
+        Err(forbidden())
+    } else {
+        Err(not_found())
+    }
+}
+
+fn require_deploy(st: &AppState, caller: &Caller, app: &crate::db::App) -> Result<(), Response> {
+    let Some(tid) = &app.team_id else {
+        return Err(forbidden());
+    };
+    let role = st.db.role(tid, &caller.user).ok().flatten();
+    if crate::db::can_deploy(role.as_deref()) {
         Ok(())
     } else if crate::db::can_read(role.as_deref()) {
         Err(forbidden())
@@ -490,7 +542,7 @@ async fn upload(
         Err(e) => return internal(e),
     };
     let team_id = if let Some(a) = &existing {
-        if let Err(r) = require_write(&st, &caller, a) {
+        if let Err(r) = require_deploy(&st, &caller, a) {
             return r;
         }
         a.team_id.clone()
@@ -552,7 +604,7 @@ async fn upload(
                 // a project this caller is allowed to write to.
                 match st.db.get_app(&app) {
                     Ok(Some(a)) => {
-                        if let Err(r) = require_write(&st, &caller, &a) {
+                        if let Err(r) = require_deploy(&st, &caller, &a) {
                             return r;
                         }
                     }
@@ -602,6 +654,8 @@ struct LogQuery {
     env: Option<String>,
     limit: Option<usize>,
     deploy: Option<String>,
+    status_min: Option<u16>,
+    since: Option<i64>,
 }
 
 async fn logs(
@@ -798,7 +852,7 @@ async fn promote(
         Ok(a) => a,
         Err(r) => return r,
     };
-    if let Err(r) = require_write(&st, &caller, &a) {
+    if let Err(r) = require_deploy(&st, &caller, &a) {
         return r;
     }
     let author = author_of(&st, &caller);
@@ -1344,6 +1398,7 @@ async fn metrics(
         domains += 1;
     }
     let stats = deploy::container_stats(&app, "production", None).await;
+    let history = st.metric_history(&app, 120);
     Json(json!({
         "project": a.name,
         "status": a.status,
@@ -1358,6 +1413,7 @@ async fn metrics(
             "development": st.db.env(&app, "development").unwrap_or_default().len(),
         },
         "runtime": stats,
+        "history": history,
     }))
     .into_response()
 }
@@ -1371,9 +1427,16 @@ async fn access_log(
     if let Err(r) = project_for(&st, &caller, &app) {
         return r;
     }
-    let limit = q.limit.unwrap_or(50).min(200);
-    match st.db.access_logs(&app, limit) {
-        Ok(logs) => Json(json!({"requests": logs})).into_response(),
+    let limit = q.limit.unwrap_or(50).min(500);
+    match st
+        .db
+        .access_logs_filtered(&app, limit, q.status_min, q.since)
+    {
+        Ok(logs) => Json(json!({
+            "requests": logs,
+            "total": st.db.access_log_count(&app, q.status_min, q.since).unwrap_or(0),
+        }))
+        .into_response(),
         Err(e) => internal(e),
     }
 }
@@ -1998,7 +2061,7 @@ async fn redeploy(
         Ok(a) => a,
         Err(r) => return r,
     };
-    if let Err(r) = require_write(&st, &caller, &a) {
+    if let Err(r) = require_deploy(&st, &caller, &a) {
         return r;
     }
     match deploy_from_repo(&st, &app).await {
@@ -2026,13 +2089,6 @@ async fn github_hook(
             return (StatusCode::PAYLOAD_TOO_LARGE, "webhook payload too large\n").into_response()
         }
     };
-    if !st.rate.allow(&format!("hook:{app}"), 30, 60) {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            "too many webhook deliveries\n",
-        )
-            .into_response();
-    }
     if st.db.get_app(&app).ok().flatten().is_none() {
         return not_found();
     }
@@ -2091,6 +2147,16 @@ async fn github_hook(
                 }
             }
         }
+    }
+
+    // Limit only authenticated deliveries: an invalid-signature flood must not
+    // exhaust the bucket GitHub needs for real pushes.
+    if !st.rate.allow(&format!("hook:{app}"), 30, 60) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many webhook deliveries\n",
+        )
+            .into_response();
     }
 
     let payload: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
@@ -2665,8 +2731,8 @@ mod tests {
     use crate::db::{App, Db};
     use crate::state::AppState;
     use axum::body::Body;
-    use axum::http::{Method, Request, StatusCode};
-    use axum::response::Response;
+    use axum::http::{header, Method, Request, StatusCode};
+    use axum::response::{IntoResponse, Response};
     use serde_json::{json, Value};
     use std::path::PathBuf;
     use tower::ServiceExt;
@@ -2835,7 +2901,7 @@ mod tests {
             assert_eq!(r.status(), StatusCode::NOT_FOUND, "{method} {uri}");
         }
 
-        // Members may read their team, never write.
+        // Members may read and deploy their team, but never change settings.
         assert_eq!(
             call(
                 &st,
@@ -2861,11 +2927,24 @@ mod tests {
                 Some("{\"domain\":\"x.test\"}"),
             ),
             (Method::PUT, "/api/v1/projects/app-a/proxy", Some("{}")),
-            (Method::POST, "/api/v1/projects/app-a/redeploy", None),
         ] {
             let r = call(&st, Some(&tc_tok), method.clone(), uri, body).await;
             assert_eq!(r.status(), StatusCode::FORBIDDEN, "{method} {uri}");
         }
+        // Deploy actions are member-visible; they fail on their own merits
+        // (no repo configured) instead of being forbidden by role.
+        assert_ne!(
+            call(
+                &st,
+                Some(&tc_tok),
+                Method::POST,
+                "/api/v1/projects/app-a/redeploy",
+                None
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
 
         // Owner still sees their own project.
         assert_eq!(
@@ -3254,5 +3333,50 @@ mod tests {
         .await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
         let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn security_headers_cover_dashboard_html_and_tls() {
+        let mut resp: Response = (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            "ok",
+        )
+            .into_response();
+        super::apply_security_headers(&mut resp, "https");
+        assert_eq!(
+            resp.headers()
+                .get(header::STRICT_TRANSPORT_SECURITY)
+                .unwrap(),
+            "max-age=31536000; includeSubDomains"
+        );
+        assert_eq!(resp.headers().get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
+        assert_eq!(
+            resp.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
+        let csp = resp
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("script-src 'self'"));
+
+        let mut plain: Response = (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            "{}",
+        )
+            .into_response();
+        super::apply_security_headers(&mut plain, "http");
+        assert!(plain
+            .headers()
+            .get(header::STRICT_TRANSPORT_SECURITY)
+            .is_none());
+        assert!(plain
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .is_none());
     }
 }

@@ -17,8 +17,15 @@ pub struct Cli {
 pub enum Cmd {
     /// Run the server.
     Serve(ServeArgs),
-    /// Save server URL and token.
-    Login { server: String, token: String },
+    /// Save server URL and token. Omit the token to read DOK_TOKEN or a 0600 file.
+    Login {
+        server: String,
+        /// Avoid passing the token in argv; prefer DOK_TOKEN or --token-file.
+        token: Option<String>,
+        /// Read the token from a file (for example ~/.config/dok/token).
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+    },
     /// Upload the current directory and deploy it.
     Push(PushArgs),
     /// List apps.
@@ -307,7 +314,7 @@ fn load_config() -> Result<Config> {
     let p = config_path()?;
     let s = std::fs::read_to_string(&p).with_context(|| {
         format!(
-            "no config at {}; run `dok login <url> <token>`",
+            "no config at {}; run `dok login <url>` with DOK_TOKEN set or use --token-file",
             p.display()
         )
     })?;
@@ -375,7 +382,27 @@ fn handle(resp: reqwest::blocking::Response) -> Result<()> {
 pub fn run(cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Serve(_) => unreachable!("serve is async"),
-        Cmd::Login { server, token } => {
+        Cmd::Login {
+            server,
+            token,
+            token_file,
+        } => {
+            let token = match (token, token_file) {
+                (Some(t), _) if !t.trim().is_empty() => t,
+                (_, Some(path)) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("read token file {}", path.display()))?
+                    .trim()
+                    .to_string(),
+                _ => std::env::var("DOK_TOKEN")
+                    .ok()
+                    .filter(|t| !t.trim().is_empty())
+                    .context(
+                        "missing token: pass it as an argument, set DOK_TOKEN, or use --token-file",
+                    )?,
+            };
+            if token.trim().is_empty() {
+                bail!("token is empty");
+            }
             let cfg = Config {
                 server: server.trim_end_matches('/').to_string(),
                 token,

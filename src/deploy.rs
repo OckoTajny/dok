@@ -7,6 +7,39 @@ use tokio::process::Command;
 
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
 const MAX_ARCHIVE_BYTES: u64 = 500 * 1024 * 1024;
+const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const RUN_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+const READY_TIMEOUT: Duration = Duration::from_secs(45);
+
+async fn output_with_timeout(cmd: &mut Command, limit: Duration) -> Result<std::process::Output> {
+    cmd.kill_on_drop(true);
+    match tokio::time::timeout(limit, cmd.output()).await {
+        Ok(out) => out.context("run docker command"),
+        Err(_) => bail!(
+            "docker command timed out after {}s; the container or build was killed",
+            limit.as_secs()
+        ),
+    }
+}
+
+/// A container can exit immediately after `docker run` returns. Wait until the
+/// published loopback port accepts a TCP connection before retiring the old
+/// production container.
+async fn wait_until_ready(port: u16, limit: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
 
 fn archive_limits_ok(entries: usize, total: u64) -> bool {
     entries <= MAX_ARCHIVE_ENTRIES && total <= MAX_ARCHIVE_BYTES
@@ -386,7 +419,8 @@ pub async fn deploy_dir(
 
         let tag = format!("dok/{app}:{deploy_id}");
         log.push_str(&format!("$ docker build -f {dockerfile} -t {tag} .\n"));
-        let out = Command::new("docker")
+        let mut build = Command::new("docker");
+        build
             .args([
                 "build",
                 "-f",
@@ -397,10 +431,19 @@ pub async fn deploy_dir(
                 &format!("dok.app={app}"),
                 ".",
             ])
-            .current_dir(dir)
-            .output()
-            .await
-            .context("run docker build")?;
+            .current_dir(dir);
+        let out = match output_with_timeout(&mut build, BUILD_TIMEOUT).await {
+            Ok(o) => o,
+            Err(e) => {
+                log.push_str(&format!("\n{e}\n"));
+                st.db.finish_deploy(&deploy_id, "failed", &log)?;
+                guard.done = true;
+                if env == "production" {
+                    st.db.set_status(app, "failed")?;
+                }
+                return Err(e);
+            }
+        };
         log.push_str(&String::from_utf8_lossy(&out.stdout));
         log.push_str(&String::from_utf8_lossy(&out.stderr));
         if !out.status.success() {
@@ -453,9 +496,21 @@ pub async fn deploy_dir(
         }
         cmd.args(["--env-file", &env_file.to_string_lossy()]);
         cmd.arg(&tag);
-        let output = cmd.output().await;
+        let output = output_with_timeout(&mut cmd, RUN_TIMEOUT).await;
         let _ = tokio::fs::remove_file(&env_file).await;
-        let out = output.context("run docker run")?;
+        let out = match output {
+            Ok(o) => o,
+            Err(e) => {
+                log.push_str(&format!("\n{e}\n"));
+                remove_container(&temp_name).await;
+                st.db.finish_deploy(&deploy_id, "failed", &log)?;
+                guard.done = true;
+                if env == "production" {
+                    st.db.set_status(app, "failed")?;
+                }
+                return Err(e);
+            }
+        };
         log.push_str(&String::from_utf8_lossy(&out.stdout));
         log.push_str(&String::from_utf8_lossy(&out.stderr));
         if !out.status.success() {
@@ -474,6 +529,19 @@ pub async fn deploy_dir(
                 bail!("docker did not report a host port");
             }
         };
+        if !wait_until_ready(host_port, READY_TIMEOUT).await {
+            remove_container(&temp_name).await;
+            st.db.finish_deploy(
+                &deploy_id,
+                "failed",
+                &format!("{log}\nnew container did not become ready on 127.0.0.1:{host_port}"),
+            )?;
+            guard.done = true;
+            if env == "production" {
+                st.db.set_status(app, "failed")?;
+            }
+            bail!("new container did not become ready; the previous production deploy was kept");
+        }
         (
             "docker",
             Some(host_port),
@@ -675,10 +743,10 @@ async fn cleanup_removed(removed: &[crate::db::Deploy]) {
                     .await;
             }
         }
-        if d.env == "preview" {
-            if let Some(image) = d.image.as_deref() {
-                let _ = Command::new("docker").args(["rmi", image]).output().await;
-            }
+        if let Some(image) = d.image.as_deref() {
+            // Images are unique per deploy id; once the row is pruned beyond
+            // the rollback window the image is no longer needed.
+            let _ = Command::new("docker").args(["rmi", image]).output().await;
         }
     }
 }
@@ -1008,6 +1076,18 @@ pub async fn container_logs(app: &str, env: &str, container: Option<&str>, tail:
 #[cfg(test)]
 mod tests {
     use super::{archive_limits_ok, container_name, detect_build, exposed_port, normalize_env};
+
+    #[tokio::test]
+    async fn docker_commands_have_a_timeout() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 5"]);
+        let started = std::time::Instant::now();
+        let err = super::output_with_timeout(&mut cmd, std::time::Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
 
     #[test]
     fn reads_expose() {

@@ -63,7 +63,11 @@ impl AuthState {
         match db.session(&h) {
             Ok(Some((user_id, csrf, exp))) if exp > crate::db::now() => {
                 let user = db.user(&user_id).ok().flatten()?;
-                Some(Session { user, csrf })
+                Some(Session {
+                    user,
+                    csrf,
+                    hash: h,
+                })
             }
             _ => None,
         }
@@ -81,6 +85,8 @@ impl AuthState {
 pub struct Session {
     pub user: User,
     pub csrf: String,
+    /// SHA-256 of the session cookie, so logout can revoke exactly this device.
+    pub hash: String,
 }
 
 fn client_ip(st: &AppState, req: &Request<Body>) -> String {

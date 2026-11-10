@@ -35,7 +35,8 @@ The installer prints the initial token. First run: open the dashboard URL
 `--dashboard-origin`) and register a passkey. Then, on your laptop:
 
 ```bash
-dok login https://dok.example.com <token>
+# Prefer DOK_TOKEN or --token-file so the token never appears in shell history/ps.
+DOK_TOKEN="$(cat ~/.config/dok/token)" dok login https://dok.example.com
 dok push ./my-app --app my-app
 ```
 
@@ -175,8 +176,9 @@ dok serve [--data DIR] [--http-port 8080] [--base-domain example.com]
 - Without `--acme-domain` it speaks plain HTTP; put it behind an existing proxy
   (Traefik/Caddy) if you already have one.
 - With `--acme-domain` it also listens on `:443` and issues certificates.
-  Add domains **before** starting the server (or `dok domain` + restart); the
-  ACME domain list is built at startup.
+  The host set is recomputed every 15 seconds, so `dok domain` and new projects
+  are picked up without a restart; the TLS listener is swapped with
+  `SO_REUSEPORT` so existing traffic is not interrupted.
 - The dashboard, passkey auth and token API are only served on the dashboard
   host (and its `localhost` alias). Every other host is either proxied to a
   project or answers a generic branded 404 without a project list.
@@ -201,6 +203,9 @@ download, access log), **Environment** (production / preview / development),
 Environment secrets are write-only: values are masked in the dashboard and the
 API even for owners, `KEY=` in the bulk editor keeps the current value, and a
 secret can only be declassified by explicitly clearing its per-row checkbox.
+Write-only is deliberate: there is no reveal endpoint. Keep your own copy (a
+password manager or `dok env pull` for non-secret keys) before marking a value
+secret, and re-enter secrets after migrating the database to another host.
 Every write returns a flash message and validation errors redirect back to the
 form with an inline banner. Sessions and CSRF tokens live in SQLite, so a
 restart does not log you out; every dashboard write is CSRF-protected.

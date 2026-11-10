@@ -154,6 +154,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .set_setting("base_domain", args.base_domain.as_deref().unwrap_or(""));
     let _ = st.db.set_setting("public_url", &public_url);
     sweep_tmp(&data);
+    spawn_metrics_sampler(st.clone());
 
     if args.backup_keep > 0 {
         let st_backup = st.clone();
@@ -339,15 +340,6 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     last_renew = renew_at;
                     clear_cert_cache_for(&acme_dir, &renew_host);
                 }
-                supervisor_tls_active.store(false, Ordering::Relaxed);
-                if let Some(h) = current_tls.take() {
-                    h.abort();
-                    let _ = h.await;
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                }
-                if let Some(h) = current_acme.take() {
-                    h.abort();
-                }
                 current_hosts = hosts.clone();
                 tracing::info!(
                     "ACME: {} ({} domain(s)){}",
@@ -365,6 +357,9 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 let cert_st = supervisor_st.clone();
                 let cert_hosts = hosts.clone();
                 let cert_dir = acme_dir.clone();
+                if let Some(old) = current_acme.take() {
+                    old.abort();
+                }
                 current_acme = Some(tokio::spawn(async move {
                     use futures_util::StreamExt;
                     while let Some(event) = acme.next().await {
@@ -392,25 +387,40 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     }
                 }));
 
-                let mut listener = None;
-                for _ in 0..50 {
-                    match std::net::TcpListener::bind(("0.0.0.0", tls_port)) {
-                        Ok(l) => {
-                            let _ = l.set_nonblocking(true);
-                            listener = Some(l);
-                            break;
+                // Try to bind alongside the old listener (SO_REUSEPORT). That
+                // keeps existing projects online while the new resolver is
+                // installed. Only fall back to a stop/rebind when the kernel
+                // does not support it.
+                let listener = match bind_tls_listener(tls_port, true) {
+                    Ok(l) => l,
+                    Err(_) => {
+                        if let Some(h) = current_tls.take() {
+                            h.abort();
+                            let _ = h.await;
                         }
-                        Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        let mut last = None;
+                        for _ in 0..50 {
+                            match bind_tls_listener(tls_port, false) {
+                                Ok(l) => {
+                                    last = Some(l);
+                                    break;
+                                }
+                                Err(_) => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await
+                                }
+                            }
+                        }
+                        let Some(l) = last else {
+                            tracing::error!("cannot bind TLS port {tls_port}");
+                            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                            continue;
+                        };
+                        l
                     }
-                }
-                let Some(listener) = listener else {
-                    tracing::error!("cannot bind TLS port {tls_port}");
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                    continue;
                 };
                 let https_st = supervisor_st.clone();
-                let tls_flag = supervisor_tls_active.clone();
-                current_tls = Some(tokio::spawn(async move {
+                let new_tls = tokio::spawn(async move {
                     if let Err(e) = axum_server::from_tcp(listener)
                         .expect("tls listener")
                         .acceptor(acceptor)
@@ -422,9 +432,25 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     {
                         tracing::error!("https server stopped: {e}");
                     }
-                    tls_flag.store(false, Ordering::Relaxed);
-                }));
+                });
+                if let Some(old) = current_tls.replace(new_tls) {
+                    // With reuseport both listeners briefly overlap; aborting
+                    // the old one only stops new handshakes for old hosts.
+                    old.abort();
+                }
+                // Never downgrade :80 to plaintext while any TLS listener has
+                // been active. The supervisor only clears this when all hosts
+                // disappear (fresh install / all domains removed).
                 supervisor_tls_active.store(true, Ordering::Relaxed);
+            } else if current_tls
+                .as_ref()
+                .map(|h| h.is_finished())
+                .unwrap_or(false)
+            {
+                // The TLS task exited unexpectedly: force a rebind next loop.
+                current_tls = None;
+                current_hosts.clear();
+                continue;
             }
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         }
@@ -432,6 +458,80 @@ pub async fn run(args: ServeArgs) -> Result<()> {
 
     let _ = tokio::join!(http, supervisor);
     Ok(())
+}
+
+/// Sample Docker runtime stats on a timer so the metrics endpoint can expose a
+/// short history instead of a single point-in-time `docker stats` call.
+fn spawn_metrics_sampler(st: AppState) {
+    tokio::spawn(async move {
+        loop {
+            for app in st.db.list_apps().unwrap_or_default() {
+                if app.kind != "docker" || app.status == "new" {
+                    continue;
+                }
+                let stats = crate::deploy::container_stats(&app.name, "production", None).await;
+                st.record_metrics(&app.name, &stats);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+}
+
+/// Bind the TLS port. With `reuseport` the new listener can coexist with the
+/// old one, so installing a fresh ACME resolver never drops existing TLS
+/// connections or forces the dashboard onto plaintext.
+fn bind_tls_listener(port: u16, reuseport: bool) -> std::io::Result<std::net::TcpListener> {
+    #[cfg(target_os = "linux")]
+    if reuseport {
+        use std::os::fd::FromRawFd;
+        unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let one: libc::c_int = 1;
+            for opt in [libc::SO_REUSEADDR, libc::SO_REUSEPORT] {
+                if libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    opt,
+                    &one as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                ) != 0
+                {
+                    libc::close(fd);
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            let addr = libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: port.to_be(),
+                sin_addr: libc::in_addr {
+                    s_addr: libc::INADDR_ANY,
+                },
+                sin_zero: [0; 8],
+            };
+            if libc::bind(
+                fd,
+                &addr as *const _ as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            ) != 0
+            {
+                libc::close(fd);
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::listen(fd, 1024) != 0 {
+                libc::close(fd);
+                return Err(std::io::Error::last_os_error());
+            }
+            let listener = std::net::TcpListener::from_raw_fd(fd);
+            listener.set_nonblocking(true)?;
+            return Ok(listener);
+        }
+    }
+    let listener = std::net::TcpListener::bind(("0.0.0.0", port))?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
 }
 
 fn desired_hosts(st: &AppState, extra: &[String], base: &Option<String>) -> Vec<String> {
@@ -455,6 +555,13 @@ fn desired_hosts(st: &AppState, extra: &[String], base: &Option<String>) -> Vec<
         }
     }
     for (h, _) in st.db.domain_hosts().unwrap_or_default() {
+        if !hosts.contains(&h) {
+            hosts.push(h);
+        }
+    }
+    // Preview hosts must have certificates too, otherwise
+    // `<app>-<deploy8>.<base>` fails TLS in edge mode.
+    for h in st.db.preview_hosts() {
         if !hosts.contains(&h) {
             hosts.push(h);
         }
@@ -862,5 +969,25 @@ mod tests {
             ensure_port("https://dok.example.com", 8080, "http"),
             "https://dok.example.com"
         );
+    }
+    #[test]
+    fn desired_hosts_include_previews_for_tls() {
+        let path = std::env::temp_dir().join(format!("dok-host-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::db::Db::open(&path).unwrap();
+        let data = std::env::temp_dir().join(format!("dok-host-data-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data).unwrap();
+        let st = crate::state::AppState::new(
+            db.clone(),
+            data,
+            Some("apps.test".into()),
+            "https://dok.test".into(),
+        );
+        db.add_deploy("d1", "app", "ok", Some("/tmp/b"), "preview", None)
+            .unwrap();
+        db.finish_deploy_meta("d1", "ok", "", None, Some("https://app-abcdef12.apps.test"))
+            .unwrap();
+        let hosts = super::desired_hosts(&st, &[], &Some("apps.test".into()));
+        assert!(hosts.contains(&"app-abcdef12.apps.test".to_string()));
+        let _ = std::fs::remove_file(path);
     }
 }
