@@ -364,6 +364,14 @@ async fn list_projects(
         apps.extend(st.db.apps_for_team(&team.id).unwrap_or_default());
     }
     apps.sort_by(|a, b| a.name.cmp(&b.name));
+    let apps = apps
+        .into_iter()
+        .map(|app| {
+            let mut value = serde_json::to_value(&app).unwrap_or_else(|_| json!({}));
+            value["url"] = json!(project_url(&st, &app));
+            value
+        })
+        .collect::<Vec<_>>();
     Json(json!({"apps": apps, "projects": apps})).into_response()
 }
 
@@ -1069,6 +1077,10 @@ fn put_env_impl(
         .iter()
         .map(|(k, _, s)| (k.clone(), *s))
         .collect();
+    let existing_values: HashMap<String, String> = existing_rows
+        .iter()
+        .map(|(k, v, _)| (k.clone(), v.clone()))
+        .collect();
     for (k, (v, _)) in &vars {
         if !valid_env_key(k) {
             return bad("env keys must be letters, digits and _, and cannot start with a digit");
@@ -1090,6 +1102,13 @@ fn put_env_impl(
     let kv: Vec<(String, String, bool)> = vars
         .into_iter()
         .map(|(k, (v, explicit))| {
+            // `KEY=` keeps the stored value, matching the bulk editor and
+            // README; it must not erase a secret or any other value.
+            let v = if v.is_empty() {
+                existing_values.get(&k).cloned().unwrap_or(v)
+            } else {
+                v
+            };
             let secret = if v.is_empty() && existing.get(&k).copied().unwrap_or(false) {
                 // A blank value means "keep the stored secret"; it does not
                 // silently declassify it.

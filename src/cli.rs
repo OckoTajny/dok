@@ -1,14 +1,20 @@
+use crate::term;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(name = "dok", version, about = "Tiny self-hosted deploy platform")]
 pub struct Cli {
+    /// Print raw JSON instead of the human-readable output (for scripts).
+    #[arg(long, global = true)]
+    pub json: bool,
     #[command(subcommand)]
     pub cmd: Cmd,
 }
@@ -17,7 +23,7 @@ pub struct Cli {
 pub enum Cmd {
     /// Run the server.
     Serve(ServeArgs),
-    /// Save server URL and token. Omit the token to read DOK_TOKEN or a 0600 file.
+    /// Link this CLI to a dok server with an account API token.
     Login {
         server: String,
         /// Avoid passing the token in argv; prefer DOK_TOKEN or --token-file.
@@ -368,21 +374,824 @@ fn split_server(url: &str) -> (&str, &str) {
     (scheme, host)
 }
 
+fn server_error(status: reqwest::StatusCode, text: &str) -> String {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return "not signed in (HTTP 401). Run `dok login <server> <token>` or `dok whoami` to check your token.".to_string();
+    }
+    let detail = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+        .unwrap_or_else(|| text.trim().to_string());
+    if detail.is_empty() {
+        format!("server returned {status}")
+    } else {
+        format!("{detail} (HTTP {})", status.as_u16())
+    }
+}
+
 fn handle(resp: reqwest::blocking::Response) -> Result<()> {
     let status = resp.status();
     let text = resp.text().unwrap_or_default();
     if !status.is_success() {
-        bail!("server returned {status}: {text}");
+        bail!("{}", server_error(status, &text));
     }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-        println!("{}", serde_json::to_string_pretty(&v)?);
-    } else {
-        println!("{text}");
+    if term::json() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        } else {
+            println!("{text}");
+        }
+        return Ok(());
+    }
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) => render(&value),
+        Err(_) => print!("{text}"),
     }
     Ok(())
 }
 
-pub fn run(cmd: Cmd) -> Result<()> {
+fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
+    value.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+fn number(value: &serde_json::Value, key: &str) -> Option<i64> {
+    value.get(key).and_then(|v| v.as_i64())
+}
+
+fn flag(value: &serde_json::Value, key: &str) -> bool {
+    value.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+fn shorten(id: &str, len: usize) -> String {
+    let head: String = id.chars().take(len).collect();
+    if id.chars().count() > len {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
+fn short_id(id: &str) -> String {
+    shorten(id, 8)
+}
+
+fn status_colored(status: &str) -> String {
+    match status {
+        "ok" | "running" | "active" | "issued" | "ready" | "deployed" => term::green(status),
+        "failed" | "error" | "unhealthy" | "revoked" => term::red(status),
+        "building" | "pending" | "queued" | "new" | "renewing" | "paused" => term::yellow(status),
+        "stopped" | "sleeping" | "used" | "expired" => term::dim(status),
+        other => other.to_string(),
+    }
+}
+
+fn on_off(on: bool) -> String {
+    if on {
+        term::green("on")
+    } else {
+        term::dim("off")
+    }
+}
+
+fn expires_in(ts: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(ts);
+    let left = ts - now;
+    if left <= 0 {
+        term::dim("expired")
+    } else if left < 3600 {
+        format!("in {}m", left / 60)
+    } else if left < 86_400 {
+        format!("in {}h", left / 3600)
+    } else {
+        format!("in {}d", left / 86_400)
+    }
+}
+
+fn render_scalar(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => term::dim("-"),
+        serde_json::Value::String(s) if s.is_empty() => term::dim("-"),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(true) => term::green("yes"),
+        serde_json::Value::Bool(false) => term::dim("no"),
+        serde_json::Value::Array(items) if items.is_empty() => term::dim("none"),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(render_scalar)
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => other.to_string(),
+    }
+}
+
+fn detail_row(label: &str, value: impl std::fmt::Display) {
+    println!("  {}  {value}", term::dim(&format!("{label:<12}")));
+}
+
+fn apps_table(items: &[serde_json::Value]) {
+    let rows = items
+        .iter()
+        .map(|app| {
+            let kind = field(app, "kind");
+            let status = field(app, "status");
+            let url = field(app, "url");
+            vec![
+                term::bold(field(app, "name")),
+                if kind.is_empty() {
+                    term::dim("-")
+                } else {
+                    kind.to_string()
+                },
+                if status.is_empty() {
+                    term::dim("-")
+                } else {
+                    status_colored(status)
+                },
+                if url.is_empty() {
+                    term::dim("-")
+                } else {
+                    term::cyan(url)
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["NAME", "KIND", "STATUS", "URL"], &rows);
+    if !items.is_empty() {
+        println!("{}", term::dim(&format!("{} project(s)", items.len())));
+    }
+}
+
+fn deployments_table(items: &[serde_json::Value]) {
+    let rows = items
+        .iter()
+        .map(|item| {
+            let id = short_id(field(item, "id"));
+            let status = field(item, "status");
+            let env = field(item, "env");
+            let age = number(item, "created_at")
+                .map(term::human_age)
+                .unwrap_or_else(|| term::dim("-"));
+            let mut detail = String::new();
+            if let Some(sha) = item
+                .get("commit_sha")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                detail.push_str(&format!("{} ", shorten(sha, 7)));
+            }
+            if let Some(msg) = item
+                .get("commit_message")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                detail.push_str(&msg.chars().take(40).collect::<String>());
+            }
+            if detail.is_empty() {
+                let url = field(item, "url");
+                detail = if url.is_empty() {
+                    term::dim("-")
+                } else {
+                    url.to_string()
+                };
+            }
+            vec![
+                term::bold(&id),
+                status_colored(status),
+                if env.is_empty() {
+                    term::dim("-")
+                } else {
+                    env.to_string()
+                },
+                age,
+                detail,
+            ]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["ID", "STATUS", "ENV", "AGE", "DETAIL"], &rows);
+}
+
+fn domains_table(obj: &serde_json::Map<String, serde_json::Value>, items: &[serde_json::Value]) {
+    let primary = obj.get("primary").and_then(|v| v.as_str()).unwrap_or("");
+    let rows = items
+        .iter()
+        .map(|item| {
+            let host = item
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| {
+                    item.get("host")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            let marker = if !primary.is_empty() && host == primary {
+                term::green("primary")
+            } else {
+                term::dim("-")
+            };
+            vec![term::cyan(&host), marker]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["HOST", "PRIMARY"], &rows);
+}
+
+fn certificates_table(items: &[serde_json::Value]) {
+    let rows = items
+        .iter()
+        .map(|item| {
+            let expires = number(item, "expires")
+                .map(expires_in)
+                .unwrap_or_else(|| term::dim("-"));
+            let note = field(item, "note");
+            vec![
+                term::cyan(field(item, "host")),
+                field(item, "project").to_string(),
+                status_colored(field(item, "status")),
+                expires,
+                if note.is_empty() {
+                    term::dim("-")
+                } else {
+                    term::dim(note)
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["HOST", "PROJECT", "STATUS", "EXPIRES", "NOTE"], &rows);
+}
+
+fn members_table(items: &[serde_json::Value]) {
+    let rows = items
+        .iter()
+        .map(|item| {
+            let role = field(item, "role");
+            let role = match role {
+                "owner" => term::magenta(role),
+                "admin" => term::yellow(role),
+                other => other.to_string(),
+            };
+            vec![
+                term::bold(field(item, "name")),
+                term::dim(field(item, "email")),
+                role,
+            ]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["NAME", "EMAIL", "ROLE"], &rows);
+}
+
+fn invites_table(items: &[serde_json::Value]) {
+    let rows = items
+        .iter()
+        .map(|item| {
+            let used = flag(item, "used");
+            let expired = flag(item, "expired");
+            let status = if used {
+                term::dim("used")
+            } else if expired {
+                term::dim("expired")
+            } else {
+                term::green("active")
+            };
+            let expires = number(item, "expires_at")
+                .map(expires_in)
+                .unwrap_or_else(|| term::dim("-"));
+            vec![
+                field(item, "role").to_string(),
+                status,
+                expires,
+                term::cyan(field(item, "link")),
+            ]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["ROLE", "STATUS", "EXPIRES", "LINK"], &rows);
+}
+
+fn tokens_table(items: &[serde_json::Value]) {
+    let rows = items
+        .iter()
+        .map(|item| {
+            let created = number(item, "created_at")
+                .map(term::human_age)
+                .unwrap_or_else(|| term::dim("-"));
+            vec![
+                term::bold(field(item, "name")),
+                term::dim(&shorten(field(item, "id"), 12)),
+                created,
+            ]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["NAME", "ID", "CREATED"], &rows);
+}
+
+fn http_status(code: i64) -> String {
+    let text = code.to_string();
+    match code {
+        200..=299 => term::green(&text),
+        300..=399 => term::cyan(&text),
+        400..=499 => term::yellow(&text),
+        500..=599 => term::red(&text),
+        _ => text,
+    }
+}
+
+fn access_table(items: &[serde_json::Value], total: Option<i64>) {
+    let rows = items
+        .iter()
+        .map(|item| {
+            let status = number(item, "status").map(http_status).unwrap_or_default();
+            let time = number(item, "ts")
+                .map(term::human_age)
+                .unwrap_or_else(|| term::dim("-"));
+            let latency = number(item, "latency_ms")
+                .map(|ms| format!("{ms}ms"))
+                .unwrap_or_else(|| "-".into());
+            vec![
+                term::dim(&time),
+                status,
+                field(item, "method").to_string(),
+                field(item, "path").to_string(),
+                term::dim(field(item, "ip")),
+                latency,
+            ]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["TIME", "STATUS", "METHOD", "PATH", "IP", "LAT"], &rows);
+    if let Some(total) = total {
+        println!("{}", term::dim(&format!("{total} request(s) in the log")));
+    }
+}
+
+fn teams_table(items: &[serde_json::Value]) {
+    let rows = items
+        .iter()
+        .map(|item| {
+            vec![
+                term::bold(field(item, "name")),
+                field(item, "slug").to_string(),
+                term::dim(&shorten(field(item, "id"), 12)),
+            ]
+        })
+        .collect::<Vec<_>>();
+    term::print_table(&["NAME", "SLUG", "ID"], &rows);
+}
+
+fn whoami_view(obj: &serde_json::Map<String, serde_json::Value>) {
+    let user = obj.get("user").cloned().unwrap_or(serde_json::Value::Null);
+    let name = field(&user, "name");
+    let email = field(&user, "email");
+    let label = if name.is_empty() {
+        email.to_string()
+    } else {
+        name.to_string()
+    };
+    println!(
+        "{} {}",
+        term::bold(&label),
+        term::dim(&format!("<{email}>"))
+    );
+    if let Some(teams) = obj.get("teams").and_then(|v| v.as_array()) {
+        let names = teams
+            .iter()
+            .map(|team| format!("{} ({})", field(team, "name"), field(team, "slug")))
+            .collect::<Vec<_>>();
+        detail_row("teams", &names.join(" · "));
+    }
+}
+
+fn proxy_view(obj: &serde_json::Map<String, serde_json::Value>) {
+    let value = serde_json::Value::Object(obj.clone());
+    detail_row("compression", on_off(flag(&value, "compression")));
+    detail_row("force https", on_off(flag(&value, "force_https")));
+    let redirect = field(&value, "redirect");
+    detail_row(
+        "redirect",
+        if redirect.is_empty() {
+            term::dim("off")
+        } else {
+            redirect.to_string()
+        },
+    );
+    let basic_auth = if flag(&value, "basic_auth_configured") {
+        format!(
+            "{} ({})",
+            term::green("on"),
+            field(&value, "basic_auth_user")
+        )
+    } else {
+        term::dim("off")
+    };
+    detail_row("basic auth", basic_auth);
+    let max_body = number(&value, "max_body_mb")
+        .map(|mb| format!("{mb} MB"))
+        .unwrap_or_else(|| "unlimited".to_string());
+    detail_row("max body", max_body);
+    let headers = obj
+        .get("headers")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    if let Some(pair) = item.as_array() {
+                        pair.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(": ")
+                    } else {
+                        render_scalar(item)
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    detail_row(
+        "headers",
+        if headers.is_empty() {
+            term::dim("none")
+        } else {
+            headers.join(" · ")
+        },
+    );
+}
+
+fn webhook_view(obj: &serde_json::Map<String, serde_json::Value>) {
+    let value = serde_json::Value::Object(obj.clone());
+    let status = if flag(&value, "configured") {
+        term::green("configured")
+    } else {
+        term::dim("not configured")
+    };
+    detail_row("status", status);
+    let branch = field(&value, "branch");
+    detail_row(
+        "branch",
+        if branch.is_empty() {
+            term::dim("-")
+        } else {
+            branch.to_string()
+        },
+    );
+    let secret = if value.get("secret").map(|v| !v.is_null()).unwrap_or(false) {
+        term::green("set")
+    } else {
+        term::dim("not set")
+    };
+    detail_row("secret", secret);
+}
+
+fn stats_view(obj: &serde_json::Map<String, serde_json::Value>) {
+    let value = serde_json::Value::Object(obj.clone());
+    println!(
+        "{} {} {}",
+        term::bold(field(&value, "project")),
+        term::dim("·"),
+        term::dim(field(&value, "kind")),
+    );
+    println!("  {}", status_colored(field(&value, "status")));
+    if let Some(deployments) = value.get("deployments").and_then(|v| v.as_object()) {
+        let total = deployments
+            .get("total")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let production = deployments
+            .get("production")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let preview = deployments
+            .get("preview")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        detail_row(
+            "deployments",
+            &format!("{total} total · {production} production · {preview} preview"),
+        );
+    }
+    detail_row(
+        "domains",
+        &number(&value, "domains").unwrap_or(0).to_string(),
+    );
+    if let Some(env) = value.get("env_keys").and_then(|v| v.as_object()) {
+        let parts = ["production", "preview", "development"]
+            .iter()
+            .map(|key| {
+                format!(
+                    "{key} {}",
+                    env.get(*key).and_then(|v| v.as_i64()).unwrap_or(0)
+                )
+            })
+            .collect::<Vec<_>>();
+        detail_row("env keys", &parts.join(" · "));
+    }
+    if let Some(latest) = value.get("latest").filter(|v| !v.is_null()) {
+        let age = number(latest, "created_at")
+            .map(term::human_age)
+            .unwrap_or_else(|| term::dim("-"));
+        detail_row(
+            "latest",
+            &format!(
+                "{} · {} · {age}",
+                short_id(field(latest, "id")),
+                status_colored(field(latest, "status"))
+            ),
+        );
+    }
+    if let Some(traffic) = value.get("traffic").and_then(|v| v.as_object()) {
+        let requests = traffic
+            .get("requests")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let errors = traffic
+            .get("errors_5xx")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let p95 = traffic
+            .get("p95_latency_ms")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let window = traffic
+            .get("window_secs")
+            .and_then(|v| v.as_i64())
+            .map(term::human_window)
+            .unwrap_or_else(|| "1h".into());
+        detail_row(
+            "traffic",
+            &format!("{requests} req · {errors} 5xx · p95 {p95}ms ({window})"),
+        );
+    }
+    if let Some(runtime) = value.get("runtime").and_then(|v| v.as_object()) {
+        let container = runtime
+            .get("container")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let note = runtime.get("note").and_then(|v| v.as_str()).unwrap_or("");
+        let mut text = container.to_string();
+        if let Some(cpu) = runtime.get("cpu").and_then(|v| v.as_f64()) {
+            text.push_str(&format!(" · cpu {cpu:.2}"));
+        }
+        if let Some(mem) = runtime.get("memory").and_then(|v| v.as_f64()) {
+            text.push_str(&format!(" · mem {mem:.0} MB"));
+        }
+        if !note.is_empty() {
+            text.push_str(&format!(" · {note}"));
+        }
+        detail_row("runtime", text.trim());
+    }
+}
+
+fn deploy_outcome(value: &serde_json::Value) {
+    let mut meta = Vec::new();
+    let env = field(value, "env");
+    let kind = field(value, "kind");
+    if !env.is_empty() {
+        meta.push(env.to_string());
+    }
+    if !kind.is_empty() {
+        meta.push(kind.to_string());
+    }
+    let suffix = if meta.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", meta.join(" · "))
+    };
+    term::success(&format!(
+        "Deployed {}{suffix}",
+        term::bold(field(value, "app"))
+    ));
+    let url = field(value, "url");
+    if !url.is_empty() {
+        println!("  {}", term::cyan(url));
+    }
+}
+
+fn render_array(items: &[serde_json::Value]) {
+    if items.is_empty() {
+        println!("  {}", term::dim("(none)"));
+        return;
+    }
+    for item in items {
+        match item {
+            serde_json::Value::String(s) => println!("  {s}"),
+            serde_json::Value::Object(obj) => {
+                let pairs = obj
+                    .iter()
+                    .map(|(key, value)| {
+                        format!("{} {}", term::dim(&format!("{key}:")), render_scalar(value))
+                    })
+                    .collect::<Vec<_>>();
+                println!("  {}", pairs.join("  "));
+            }
+            other => println!("  {other}"),
+        }
+    }
+}
+
+fn render(value: &serde_json::Value) {
+    let Some(obj) = value.as_object() else {
+        match value {
+            serde_json::Value::String(s) => println!("{s}"),
+            serde_json::Value::Array(items) => render_array(items),
+            other => println!("{other}"),
+        }
+        return;
+    };
+
+    for key in ["apps", "projects"] {
+        if let Some(items) = obj.get(key).and_then(|v| v.as_array()) {
+            apps_table(items);
+            return;
+        }
+    }
+    if let Some(items) = obj
+        .get("deployments")
+        .and_then(|v| v.as_array())
+        .or_else(|| obj.get("deploys").and_then(|v| v.as_array()))
+    {
+        deployments_table(items);
+        return;
+    }
+    if obj.get("project").is_some()
+        && obj
+            .get("deployments")
+            .map(|v| v.is_object())
+            .unwrap_or(false)
+    {
+        stats_view(obj);
+        return;
+    }
+    if let Some(items) = obj.get("domains").and_then(|v| v.as_array()) {
+        domains_table(obj, items);
+        return;
+    }
+    if let Some(items) = obj.get("certificates").and_then(|v| v.as_array()) {
+        certificates_table(items);
+        return;
+    }
+    if let Some(items) = obj.get("members").and_then(|v| v.as_array()) {
+        members_table(items);
+        return;
+    }
+    if let Some(items) = obj.get("invites").and_then(|v| v.as_array()) {
+        invites_table(items);
+        return;
+    }
+    if let Some(items) = obj.get("tokens").and_then(|v| v.as_array()) {
+        tokens_table(items);
+        return;
+    }
+    if let Some(items) = obj.get("requests").and_then(|v| v.as_array()) {
+        access_table(items, number(value, "total"));
+        return;
+    }
+    if obj.contains_key("user") && obj.get("teams").map(|v| v.is_array()).unwrap_or(false) {
+        whoami_view(obj);
+        return;
+    }
+    if let Some(items) = obj.get("teams").and_then(|v| v.as_array()) {
+        teams_table(items);
+        return;
+    }
+    if obj.contains_key("basic_auth_configured") && obj.contains_key("force_https") {
+        proxy_view(obj);
+        return;
+    }
+    if obj.contains_key("configured") {
+        webhook_view(obj);
+        return;
+    }
+    if obj.contains_key("link") && obj.contains_key("role") && obj.contains_key("token") {
+        term::success(&format!(
+            "Invite created for role {}",
+            term::yellow(field(value, "role"))
+        ));
+        println!("  {}", term::cyan(field(value, "link")));
+        println!("  {}", term::dim("share the link; it expires in 7 days"));
+        return;
+    }
+    if obj.contains_key("login") && obj.contains_key("token") {
+        term::success(&format!(
+            "Token {} created",
+            term::bold(field(value, "name"))
+        ));
+        println!("  {}", term::cyan(field(value, "token")));
+        println!("  {}", term::dim("store it now; it is not shown again"));
+        return;
+    }
+    if obj.contains_key("remote") || obj.contains_key("ssh_remote") {
+        term::success(&format!(
+            "Git remote for {}",
+            term::bold(field(value, "app"))
+        ));
+        let remote = if field(value, "ssh_remote").is_empty() {
+            field(value, "remote")
+        } else {
+            field(value, "ssh_remote")
+        };
+        println!("  {}", term::cyan(remote));
+        let hint = field(value, "hint");
+        if !hint.is_empty() {
+            println!("  {}", term::dim(hint));
+        }
+        return;
+    }
+    if obj.contains_key("app") && obj.contains_key("deploy_id") {
+        deploy_outcome(value);
+        return;
+    }
+    if obj.contains_key("domain") && flag(value, "ok") {
+        term::success(&format!(
+            "Domain {} now points at this project",
+            term::cyan(field(value, "domain"))
+        ));
+        return;
+    }
+    if let Some(removed) = obj.get("removed").and_then(|v| v.as_str()) {
+        let mut message = format!("Removed {}", term::bold(removed));
+        if let Some(env) = obj.get("env").and_then(|v| v.as_str()) {
+            message = format!("Removed {} from the {env} environment", term::bold(removed));
+        }
+        if flag(value, "primary") {
+            message.push_str(" (was the primary domain)");
+        }
+        term::success(&message);
+        return;
+    }
+    if let Some(deleted) = obj.get("deleted").and_then(|v| v.as_str()) {
+        let message = if let Some(env) = obj.get("env").and_then(|v| v.as_str()) {
+            format!("Removed {} from the {env} environment", term::bold(deleted))
+        } else {
+            format!("Deleted {}", term::bold(deleted))
+        };
+        term::success(&message);
+        return;
+    }
+    if flag(value, "ok") {
+        if let Some(env) = obj.get("env").and_then(|v| v.as_str()) {
+            if let Some(keys) = obj.get("keys").and_then(|v| v.as_array()) {
+                let names = keys.iter().filter_map(|k| k.as_str()).collect::<Vec<_>>();
+                let extra = if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", names.join(", "))
+                };
+                term::success(&format!(
+                    "Saved {} variable(s) to {env}{extra}",
+                    names.len()
+                ));
+                return;
+            }
+        }
+        if let Some(role) = obj.get("role").and_then(|v| v.as_str()) {
+            term::success(&format!("Role set to {}", term::yellow(role)));
+            return;
+        }
+        if let Some(repo) = obj.get("repo").and_then(|v| v.as_str()) {
+            term::success(&format!("Repository set to {}", term::cyan(repo)));
+            return;
+        }
+        if let Some(host) = obj.get("host").and_then(|v| v.as_str()) {
+            term::success(&format!(
+                "Certificate renewal started for {} ({})",
+                term::cyan(host),
+                status_colored(field(value, "status"))
+            ));
+            return;
+        }
+        term::success("Done");
+        return;
+    }
+    if obj.contains_key("team_id") && obj.contains_key("kind") {
+        term::success(&format!("Project {}", term::bold(field(value, "name"))));
+        let mut details = Vec::new();
+        if !field(value, "kind").is_empty() {
+            details.push(format!("kind {}", field(value, "kind")));
+        }
+        if !field(value, "status").is_empty() {
+            details.push(format!("status {}", status_colored(field(value, "status"))));
+        }
+        if !details.is_empty() {
+            println!("  {}", details.join(" · "));
+        }
+        let url = field(value, "url");
+        if !url.is_empty() {
+            println!("  {}", term::cyan(url));
+        }
+        return;
+    }
+
+    for (key, value) in obj {
+        println!(
+            "  {}  {}",
+            term::dim(&format!("{key:<16}")),
+            render_scalar(value)
+        );
+    }
+}
+
+pub fn run(cmd: Cmd, json: bool) -> Result<()> {
+    term::set_json(json);
     match cmd {
         Cmd::Serve(_) => unreachable!("serve is async"),
         Cmd::Login {
@@ -411,7 +1220,23 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 token,
             };
             save_config(&cfg)?;
-            println!("saved {}", config_path()?.display());
+            let path = config_path()?;
+            if term::json() {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "server": cfg.server,
+                        "config": path.display().to_string(),
+                    }))?
+                );
+            } else {
+                term::success(&format!("Linked to {}", term::cyan(&cfg.server)));
+                detail_row("config", &term::dim(&path.display().to_string()));
+                println!(
+                    "  {}",
+                    term::dim("next: dok whoami to verify the account, then dok push <dir>")
+                );
+            }
             Ok(())
         }
         Cmd::Apps => {
@@ -462,6 +1287,12 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 .map(|d| format!("&deploy={d}"))
                 .unwrap_or_default();
             if follow {
+                if !term::json() && term::stderr_tty() {
+                    eprintln!(
+                        "{} following {app} logs ({env}) · ctrl-c to stop",
+                        term::arrow()
+                    );
+                }
                 let mut resp = client()?
                     .get(format!(
                         "{}/api/v1/projects/{app}/logs/stream?env={env}{deploy_q}",
@@ -487,8 +1318,24 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 return handle(resp);
             }
             let v: serde_json::Value = resp.json()?;
-            println!("== build ==\n{}", v["build"].as_str().unwrap_or(""));
-            println!("== runtime ==\n{}", v["runtime"].as_str().unwrap_or(""));
+            if term::json() {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            let build = v["build"].as_str().unwrap_or("").trim_end();
+            let runtime = v["runtime"].as_str().unwrap_or("").trim_end();
+            println!("{}", term::bold("== build =="));
+            if build.is_empty() {
+                println!("{}", term::dim("(no build output)"));
+            } else {
+                println!("{build}");
+            }
+            println!("{}", term::bold("== runtime =="));
+            if runtime.is_empty() {
+                println!("{}", term::dim("(no runtime output)"));
+            } else {
+                println!("{runtime}");
+            }
             Ok(())
         }
         Cmd::Env {
@@ -535,7 +1382,7 @@ pub fn run(cmd: Cmd) -> Result<()> {
                 let v: serde_json::Value = resp.json()?;
                 if let Some(map) = v["env"].as_object() {
                     for (k, val) in map {
-                        println!("{k}={}", val.as_str().unwrap_or(""));
+                        println!("{}={}", term::bold(k), val.as_str().unwrap_or(""));
                     }
                 }
                 return Ok(());
@@ -900,7 +1747,11 @@ pub fn run(cmd: Cmd) -> Result<()> {
             if url.is_empty() {
                 bail!("project has no routable domain; add one with `dok domain {app} <host>` or start dok with --base-domain");
             }
-            println!("{url}");
+            if term::json() {
+                println!("{url}");
+            } else {
+                println!("{}", term::cyan(&url));
+            }
             Ok(())
         }
         Cmd::Redeploy { app } => {
@@ -975,6 +1826,8 @@ fn expand_home(p: &str) -> String {
 
 fn push(args: PushArgs) -> Result<()> {
     let cfg = load_config()?;
+    let json_mode = term::json();
+    let started = Instant::now();
     let dir = args.dir.canonicalize().context("project dir")?;
     let app = args
         .app
@@ -987,9 +1840,32 @@ fn push(args: PushArgs) -> Result<()> {
         .or_else(|| dir.file_name().map(|n| n.to_string_lossy().to_lowercase()))
         .context("cannot infer app name; use --app")?;
     let app = slug(&app)?;
+    let server = base(&cfg);
+
+    if !json_mode {
+        println!(
+            "{} {} {} {}",
+            term::bold("dok push"),
+            term::cyan(&app),
+            term::dim("·"),
+            term::dim(&format!("{} · {server}", args.env))
+        );
+        println!("  {}", term::dim(&dir.display().to_string()));
+    }
 
     let tmp = std::env::temp_dir().join(format!("dok-{}.tar.gz", uuid::Uuid::new_v4().simple()));
-    pack(&dir, &tmp)?;
+    let pack_started = Instant::now();
+    let spinner = term::Spinner::start(format!("Packing {}", dir.display()));
+    let stats = pack(&dir, &tmp)?;
+    spinner.finish();
+    if !json_mode {
+        term::success(&format!(
+            "Packed {} files · {} · {:.1}s",
+            stats.files,
+            term::human_bytes(stats.bytes),
+            pack_started.elapsed().as_secs_f64()
+        ));
+    }
 
     let mut url = format!("{}/api/v1/projects/{}/deploy", base(&cfg), app);
     let mut q = Vec::new();
@@ -1007,15 +1883,116 @@ fn push(args: PushArgs) -> Result<()> {
         url.push_str(&q.join("&"));
     }
 
+    let total = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    if !json_mode {
+        term::info(&format!(
+            "Uploading {} to {}",
+            term::human_bytes(total),
+            server
+        ));
+    }
+
     let file = std::fs::File::open(&tmp)?;
-    let resp = client()?
-        .post(url)
-        .bearer_auth(&cfg.token)
-        .header("content-type", "application/gzip")
-        .body(reqwest::blocking::Body::new(file))
-        .send();
+    let (body, uploaded) = term::ProgressReader::new(file, total);
+    let http = client()?;
+    let token = cfg.token.clone();
+    let (tx, rx) = mpsc::channel();
+    let uploader = std::thread::Builder::new()
+        .name("dok-upload".into())
+        .spawn(move || {
+            let result = http
+                .post(url)
+                .bearer_auth(token)
+                .header("content-type", "application/gzip")
+                .header(reqwest::header::CONTENT_LENGTH, total.to_string())
+                .body(reqwest::blocking::Body::new(body))
+                .send();
+            let _ = tx.send(result);
+        })
+        .context("spawn upload thread")?;
+
+    // The upload finishes before the server finishes building. Watch the byte
+    // counter so the UI can switch from "uploading" to "deploying" instead of
+    // sitting silent for the whole build.
+    let upload_started = Instant::now();
+    let mut upload_done = false;
+    let mut deploy_spinner: Option<term::Spinner> = None;
+    let response = loop {
+        if !upload_done && uploaded.load(Ordering::Relaxed) {
+            upload_done = true;
+            if !json_mode {
+                term::success(&format!(
+                    "Uploaded {} in {:.1}s",
+                    term::human_bytes(total),
+                    upload_started.elapsed().as_secs_f64()
+                ));
+                deploy_spinner = Some(term::Spinner::start(format!(
+                    "Deploying {app} · building on the server"
+                )));
+            }
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(response) => break response,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("upload stopped before the server replied")
+            }
+        }
+    };
+    if let Some(spinner) = deploy_spinner.take() {
+        spinner.finish();
+    }
     let _ = std::fs::remove_file(&tmp);
-    handle(resp?)
+    let _ = uploader.join();
+
+    let response = response.context("upload failed")?;
+    if json_mode {
+        return handle(response);
+    }
+    if !upload_done {
+        term::success(&format!(
+            "Uploaded {} in {:.1}s",
+            term::human_bytes(total),
+            upload_started.elapsed().as_secs_f64()
+        ));
+    }
+
+    let status = response.status();
+    let text = response.text().unwrap_or_default();
+    if !status.is_success() {
+        bail!("{}", server_error(status, &text));
+    }
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => {
+            print!("{text}");
+            return Ok(());
+        }
+    };
+    let mut meta = Vec::new();
+    let kind = field(&value, "kind");
+    let env = field(&value, "env");
+    if !kind.is_empty() {
+        meta.push(kind.to_string());
+    }
+    if !env.is_empty() {
+        meta.push(env.to_string());
+    }
+    let suffix = if meta.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", meta.join(" · "))
+    };
+    term::success(&format!(
+        "Deployed {} in {:.1}s{suffix}",
+        term::bold(&app),
+        started.elapsed().as_secs_f64()
+    ));
+    let deployed_url = field(&value, "url");
+    if !deployed_url.is_empty() {
+        println!("  {}", term::cyan(deployed_url));
+    }
+    Ok(())
 }
 
 fn slug(raw: &str) -> Result<String> {
@@ -1039,7 +2016,12 @@ fn slug(raw: &str) -> Result<String> {
     Ok(out)
 }
 
-fn pack(dir: &Path, out: &Path) -> Result<()> {
+struct PackStats {
+    files: usize,
+    bytes: u64,
+}
+
+fn pack(dir: &Path, out: &Path) -> Result<PackStats> {
     let f = std::fs::File::create(out)?;
     let enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
     let mut tb = tar::Builder::new(enc);
@@ -1091,7 +2073,11 @@ fn pack(dir: &Path, out: &Path) -> Result<()> {
     if count == 0 {
         bail!("nothing to upload (empty directory or everything ignored)");
     }
-    Ok(())
+    let bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+    Ok(PackStats {
+        files: count,
+        bytes,
+    })
 }
 
 #[cfg(test)]

@@ -46,4 +46,8 @@ case ":$PATH:" in
   *) echo "add it to PATH: export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 echo
-echo "next: dok login https://dok.solta.tech <token>"
+echo "next:"
+echo "  1. create an API token in the dashboard (Account > API tokens)"
+echo "  2. dok login https://your-dok-server <token>"
+echo "  3. dok whoami   # verifies the account"
+echo "  4. dok push ./my-app"
