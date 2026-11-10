@@ -391,24 +391,20 @@ async fn register_finish(st: &AppState, auth: &AuthState, req: Request<Body>) ->
             Err(e) => return bad(&format!("cannot create user: {e}")),
         }
     } else {
-        if !st.db.claim_first_user().unwrap_or(false) {
-            return forbidden("this instance is already set up; use an invite link");
-        }
-        let u = match st.db.create_user_with_id(&p.user_id, &p.email, &p.name) {
-            Ok(u) => u,
-            Err(e) => return bad(&format!("cannot create user: {e}")),
+        let team_name = p.team.unwrap_or_else(|| "Personal".into());
+        let slug = slugify(&team_name);
+        let u = match st
+            .db
+            .create_first_setup(&p.user_id, &p.email, &p.name, &team_name, &slug)
+        {
+            Ok(Some(u)) => u,
+            Ok(None) => return forbidden("this instance is already set up; use an invite link"),
+            Err(e) => return bad(&format!("cannot finish setup: {e}")),
         };
-        if st.db.user_count().unwrap_or(0) == 1 {
-            let team = p.team.unwrap_or_else(|| "Personal".into());
-            let slug = slugify(&team);
-            match st.db.create_team(&team, &slug, &u.id) {
-                Ok(t) => {
-                    let _ = st.db.assign_orphan_apps(&t.id);
-                }
-                Err(e) => return bad(&format!("cannot create team: {e}")),
-            }
-            let _ = st.db.assign_orphan_tokens(&u.id);
+        if let Ok(Some(t)) = st.db.team_by_slug(&slug) {
+            let _ = st.db.assign_orphan_apps(&t.id);
         }
+        let _ = st.db.assign_orphan_tokens(&u.id);
         u
     };
     if let Err(e) = st.db.add_passkey(&user.id, &data) {

@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -25,6 +25,27 @@ async fn output_with_timeout(cmd: &mut Command, limit: Duration) -> Result<std::
 /// A container can exit immediately after `docker run` returns. Wait until the
 /// published loopback port accepts a TCP connection before retiring the old
 /// production container.
+/// Dockerfile paths in `dok.toml` must stay inside the uploaded build tree.
+/// Absolute paths and `..` would otherwise let a deploy member make Docker read
+/// any host file and echo it into the deploy log.
+fn safe_dockerfile_path(dir: &Path, name: &str) -> bool {
+    let candidate = Path::new(name);
+    if candidate.as_os_str().is_empty()
+        || candidate
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return false;
+    }
+    let (Ok(root), Ok(file)) = (
+        std::fs::canonicalize(dir),
+        std::fs::canonicalize(dir.join(candidate)),
+    ) else {
+        return false;
+    };
+    file.starts_with(&root) && file.is_file()
+}
+
 async fn wait_until_ready(port: u16, limit: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + limit;
     loop {
@@ -349,7 +370,15 @@ pub async fn deploy_dir(
     let prev = st.db.get_app(app)?;
     let conf = read_dok_toml(dir);
     let chosen_domain = if env == "production" {
-        match domain_hint.clone().or_else(|| conf.domain.clone()) {
+        // `dok.toml` may claim a domain on the first deploy. Later domain
+        // changes go through the Domains tab/API so a deploy-only member
+        // cannot silently move an existing project to another hostname.
+        let toml_domain = if prev.as_ref().and_then(|p| p.domain.clone()).is_none() {
+            conf.domain.clone()
+        } else {
+            None
+        };
+        match domain_hint.clone().or(toml_domain) {
             Some(d) => {
                 let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
                 if !crate::api::valid_host(&d) {
@@ -383,6 +412,9 @@ pub async fn deploy_dir(
         .dockerfile
         .clone()
         .unwrap_or_else(|| "Dockerfile".into());
+    if conf.dockerfile.is_some() && !safe_dockerfile_path(dir, &dockerfile) {
+        bail!("dockerfile must be a relative path inside the project");
+    }
     let mut has_dockerfile = dir.join(&dockerfile).is_file();
     let mut framework = framework_hint.clone().unwrap_or_default();
     if conf.dockerfile.is_some() && !has_dockerfile {
@@ -491,7 +523,12 @@ pub async fn deploy_dir(
                 std::fs::set_permissions(&env_file, std::fs::Permissions::from_mode(0o600))?;
             }
             for (k, v) in st.db.env_resolved(app, env)? {
-                writeln!(f, "{k}={}", v.replace('\n', " "))?;
+                if v.contains('\n') || v.contains('\r') {
+                    bail!(
+                        "environment variable {k} contains a newline; Docker env files cannot represent it (store it base64-encoded)"
+                    );
+                }
+                writeln!(f, "{k}={v}")?;
             }
         }
         cmd.args(["--env-file", &env_file.to_string_lossy()]);
@@ -827,6 +864,25 @@ pub async fn promote(
                     return Err(e);
                 }
             };
+            if !wait_until_ready(host_port, READY_TIMEOUT).await {
+                remove_container(&temp).await;
+                st.db.finish_deploy(
+                    &new_id,
+                    "failed",
+                    "promoted container did not become ready; previous deploy kept",
+                )?;
+                guard.done = true;
+                bail!("promoted container did not become ready; previous deploy was kept");
+            }
+            if let Some(sha) = deploy.commit_sha.as_deref() {
+                let _ = st.db.set_deploy_commit(
+                    &new_id,
+                    sha,
+                    deploy.commit_message.as_deref().unwrap_or(""),
+                    deploy.commit_author.as_deref().unwrap_or(""),
+                    deploy.branch.as_deref().unwrap_or(""),
+                );
+            }
             stop_container(app, "production").await;
             let _ = Command::new("docker")
                 .args(["rename", &temp, &container_name(app, "production")])
@@ -934,7 +990,12 @@ async fn run_image(
             std::fs::set_permissions(&env_file, std::fs::Permissions::from_mode(0o600))?;
         }
         for (k, v) in st.db.env_resolved(app, env)? {
-            writeln!(f, "{k}={}", v.replace('\n', " "))?;
+            if v.contains('\n') || v.contains('\r') {
+                bail!(
+                    "environment variable {k} contains a newline; Docker env files cannot represent it (store it base64-encoded)"
+                );
+            }
+            writeln!(f, "{k}={v}")?;
         }
     }
     let mut cmd = Command::new("docker");
@@ -1250,5 +1311,19 @@ mod tests {
             Some("https://github.com/example/app.git")
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+    #[test]
+    fn dockerfile_path_cannot_escape_the_build_tree() {
+        let dir = std::env::temp_dir().join(format!("dok-df-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(dir.join("sub/Dockerfile"), "FROM scratch\n").unwrap();
+        assert!(super::safe_dockerfile_path(&dir, "Dockerfile"));
+        assert!(super::safe_dockerfile_path(&dir, "sub/Dockerfile"));
+        assert!(!super::safe_dockerfile_path(&dir, "/etc/hostname"));
+        assert!(!super::safe_dockerfile_path(&dir, "../etc/hostname"));
+        assert!(!super::safe_dockerfile_path(&dir, "sub/../../etc/hostname"));
+        assert!(!super::safe_dockerfile_path(&dir, ""));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

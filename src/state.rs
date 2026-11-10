@@ -65,15 +65,46 @@ impl RateLimiter {
                 true
             }
         };
-        // Drop expired/disallowed buckets so a spray of client IPs cannot grow
-        // the map without bound.
+        // Evict expired buckets and cap the map so a spray of client IPs or
+        // basic-auth usernames cannot grow it without bound.
         if map.get(key).map(|h| h.is_empty()).unwrap_or(false) {
             map.remove(key);
         }
-        if map.len() > 4096 {
-            map.retain(|_, hits| !hits.is_empty());
+        if map.len() > 1024 {
+            map.retain(|_, hits| {
+                hits.retain(|t| *t > now - 3600);
+                !hits.is_empty()
+            });
         }
         allowed
+    }
+
+    /// Check the window without recording a hit. Lets callers reject before
+    /// doing expensive work such as Argon2 password verification.
+    pub fn blocked(&self, key: &str, limit: usize, window_secs: i64) -> bool {
+        let now = crate::db::now();
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let hits = map.entry(key.to_string()).or_default();
+        hits.retain(|t| *t > now - window_secs);
+        let blocked = hits.len() >= limit;
+        if map.len() > 1024 {
+            map.retain(|_, hits| {
+                hits.retain(|t| *t > now - 3600);
+                !hits.is_empty()
+            });
+        }
+        blocked
+    }
+
+    /// Record one event (for example a failed basic-auth attempt).
+    pub fn hit(&self, key: &str) {
+        let now = crate::db::now();
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let hits = map.entry(key.to_string()).or_default();
+        hits.push(now);
+        if hits.len() > 256 {
+            hits.drain(..hits.len() - 256);
+        }
     }
 }
 

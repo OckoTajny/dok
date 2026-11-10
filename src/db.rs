@@ -1042,11 +1042,17 @@ impl Db {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// Production first, then preview, then development.
+    /// Production first, then preview, then development. Secrets are only
+    /// inherited by the environment that owns them: preview URLs are public,
+    /// so a production secret must never leak into a preview container unless
+    /// the operator explicitly sets it for preview.
     pub fn env_resolved(&self, app: &str, env: &str) -> Result<Vec<(String, String)>> {
         let mut out = std::collections::HashMap::new();
         for layer in ["production", "preview", "development"] {
-            for (k, v, _) in self.env(app, layer)? {
+            for (k, v, secret) in self.env(app, layer)? {
+                if layer != env && secret {
+                    continue;
+                }
                 out.insert(k, v);
             }
             if layer == env {
@@ -1535,6 +1541,48 @@ impl Db {
     // ---------- settings ----------
 
     /// Atomically claim the single first-run slot. Exactly one caller wins.
+    /// Atomically claim the first-run slot and create the owner + personal team.
+    /// If anything fails the transaction rolls back, so a retry is always safe.
+    pub fn create_first_setup(
+        &self,
+        id: &str,
+        email: &str,
+        name: &str,
+        team_name: &str,
+        slug: &str,
+    ) -> Result<Option<User>> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let claimed = tx.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('first_user_claimed', '1')",
+            [],
+        )? == 1;
+        if !claimed {
+            return Ok(None);
+        }
+        let created = now();
+        tx.execute(
+            "INSERT INTO users (id, email, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id, email.to_ascii_lowercase(), name, created],
+        )?;
+        let team_id = uuid::Uuid::new_v4().simple().to_string();
+        tx.execute(
+            "INSERT INTO teams (id, name, slug, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![team_id, team_name, slug, created],
+        )?;
+        tx.execute(
+            "INSERT INTO members (team_id, user_id, role, created_at) VALUES (?1, ?2, 'owner', ?3)",
+            params![team_id, id, created],
+        )?;
+        tx.commit()?;
+        Ok(Some(User {
+            id: id.to_string(),
+            email: email.to_ascii_lowercase(),
+            name: name.to_string(),
+        }))
+    }
+
+    #[allow(dead_code)]
     pub fn claim_first_user(&self) -> Result<bool> {
         Ok(self.conn().execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('first_user_claimed', '1')",
@@ -1903,6 +1951,8 @@ mod tests {
         let (db, path) = tmp_db();
         db.put_env("app", "production", &[("A".into(), "1".into(), false)])
             .unwrap();
+        db.put_env("app", "production", &[("S".into(), "secret".into(), true)])
+            .unwrap();
         db.put_env(
             "app",
             "preview",
@@ -1913,7 +1963,10 @@ mod tests {
         )
         .unwrap();
         let prod = db.env_resolved("app", "production").unwrap();
-        assert_eq!(prod, vec![("A".into(), "1".into())]);
+        assert_eq!(
+            prod,
+            vec![("A".into(), "1".into()), ("S".into(), "secret".into())]
+        );
         let preview = db.env_resolved("app", "preview").unwrap();
         assert_eq!(
             preview,

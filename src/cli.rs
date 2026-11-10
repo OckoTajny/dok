@@ -266,9 +266,12 @@ pub struct ServeArgs {
     /// Contact email for Let's Encrypt (repeatable).
     #[arg(long = "acme-email", env = "DOK_ACME_EMAIL")]
     pub acme_email: Vec<String>,
-    /// Use the Let's Encrypt production directory (default: staging).
-    #[arg(long, env = "DOK_ACME_PROD")]
-    pub acme_prod: bool,
+    /// Use the Let's Encrypt staging directory (untrusted certs, for testing).
+    #[arg(long, env = "DOK_ACME_STAGING")]
+    pub acme_staging: bool,
+    /// Deprecated no-op: production is now the default.
+    #[arg(long = "acme-prod", env = "DOK_ACME_PROD", hide = true)]
+    pub acme_prod_legacy: bool,
     /// Built-in edge: bind :80/:443, issue certs for every DB host, redirect HTTP to HTTPS.
     #[arg(long, env = "DOK_EDGE")]
     pub edge: bool,

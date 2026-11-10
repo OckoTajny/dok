@@ -28,6 +28,7 @@ On the server:
 ```bash
 ./install.sh                       # binary + systemd user service + token
 # or: DOMAIN=dok.example.com BASE_DOMAIN=apps.example.com ./install.sh
+# no Rust toolchain? DOK_BIN_URL=https://…/dok ./install.sh downloads a prebuilt binary
 ```
 
 The installer prints the initial token. First run: open the dashboard URL
@@ -170,7 +171,7 @@ dok serve [--data DIR] [--http-port 8080] [--base-domain example.com]
           [--public-host dok.example.com]
           [--token TOKEN]
           [--acme-domain dok.example.com ...] [--acme-email you@example.com]
-          [--acme-prod]
+          [--acme-staging]
 ```
 
 - Without `--acme-domain` it speaks plain HTTP; put it behind an existing proxy
@@ -265,8 +266,10 @@ injected, and `X-Forwarded-Proto` is only trusted from loopback or an explicit
 
 The dashboard host and the `base_domain` apex are reserved. Projects are only
 routed on custom domains or `<app>.<base_domain>`, and a project with an
-explicit custom domain is not served on its default subdomain. Cookies and
-Authorization headers are stripped before proxying to user containers.
+explicit custom domain is not served on its default subdomain. Only dok's own
+`dok_session`/`dok_flash`/`dok_invite_once` cookies are stripped; application
+cookies and `Authorization` headers are forwarded to the user container so
+hosted apps can run their own auth.
 
 Default mode is plain HTTP behind an external proxy (Traefik/Caddy), exactly
 as before. `dok serve --edge` binds :80 and :443, redirects HTTP to HTTPS,
@@ -336,7 +339,7 @@ internal git server, opt in explicitly with
   to `/var/run/docker.sock` (`deploy/docker-socket-acl.conf` shows the ACL
   setup), then `systemctl --user restart dok`.
 - **Let's Encrypt staging certificate**: dok uses the staging directory unless
-  `--acme-prod` is set; staging certs are not trusted by browsers.
+  `--acme-staging` is set; production is the default and staging certs are not trusted by browsers.
 - **A token stops working after setup**: tokens created before the first user
   are inactive until the dashboard setup claims them; issue a new one with
   `dok login` / `--token`.

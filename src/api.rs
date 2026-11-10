@@ -439,6 +439,22 @@ async fn delete_project(
     if let Err(r) = require_write(&st, &caller, &a) {
         return r;
     }
+    // Serialise with deploys: otherwise a build finishing concurrently can
+    // resurrect the row or leave a running container after deletion.
+    let _lock = match st.lock_deploy(&app).await {
+        Ok(l) => l,
+        Err(e) => return internal(e),
+    };
+    if st.db.get_app(&app).ok().flatten().is_none() {
+        return not_found();
+    }
+    let images: Vec<String> = st
+        .db
+        .deploys(&app, 100_000)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|d| d.image)
+        .collect();
     deploy::stop_container(&app, "production").await;
     deploy::stop_container(&app, "preview").await;
     deploy::stop_all_previews(&app).await;
@@ -446,6 +462,12 @@ async fn delete_project(
     let _ = tokio::fs::remove_dir_all(st.data.join("repos").join(format!("{app}.git"))).await;
     match st.db.delete_app(&app) {
         Ok(_) => {
+            for image in images {
+                let _ = tokio::process::Command::new("docker")
+                    .args(["rmi", &image])
+                    .output()
+                    .await;
+            }
             st.sync_traefik();
             Json(json!({"deleted": app})).into_response()
         }
@@ -541,6 +563,18 @@ async fn upload(
         Ok(a) => a,
         Err(e) => return internal(e),
     };
+    // Changing an existing project's primary domain is an admin operation,
+    // even when it arrives through the deploy query string.
+    if let Some(domain) = q.domain.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        let current = existing.as_ref().and_then(|a| a.domain.as_deref());
+        if current != Some(domain) {
+            if let Some(a) = &existing {
+                if let Err(r) = require_write(&st, &caller, a) {
+                    return r;
+                }
+            }
+        }
+    }
     let team_id = if let Some(a) = &existing {
         if let Err(r) = require_deploy(&st, &caller, a) {
             return r;
@@ -575,8 +609,14 @@ async fn upload(
     let _ = tokio::fs::remove_file(&archive).await;
     match extracted {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => return internal(e),
-        Err(e) => return internal(e.into()),
+        Ok(Err(e)) => {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return internal(e);
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return internal(e.into());
+        }
     }
 
     if existing.is_none() {
@@ -622,9 +662,26 @@ async fn upload(
             if env == "production" {
                 let _ = st.db.set_status(&app, "failed");
             }
-            internal(e)
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
+}
+
+/// Local bare repositories are only valid for the project that owns them.
+/// Lexical prefix checks let `<data>/repos/../victim.git` through, so resolve
+/// both paths and require an exact match.
+pub fn local_repo_allowed(st: &AppState, app: &str, repo: &str) -> bool {
+    let expected = st.data.join("repos").join(format!("{app}.git"));
+    let (Ok(given), Ok(expected)) = (std::fs::canonicalize(repo), std::fs::canonicalize(expected))
+    else {
+        return false;
+    };
+    given == expected
 }
 
 fn over_upload_limit(total: usize) -> bool {
@@ -974,6 +1031,9 @@ fn put_env_impl(
         if v.len() > 64 * 1024 {
             return bad("env value too large");
         }
+        if v.contains('\n') || v.contains('\r') {
+            return bad("env values cannot contain newlines; store multiline data base64-encoded or as a file inside the image");
+        }
     }
     if replace {
         for (k, _, _) in &existing_rows {
@@ -1236,6 +1296,13 @@ struct DomainBody {
     domain: String,
 }
 
+#[derive(Deserialize)]
+struct RepoBody {
+    repo: Option<String>,
+    /// Accepted for backwards compatibility with older clients.
+    domain: Option<String>,
+}
+
 async fn set_domain(
     State(st): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -1352,7 +1419,7 @@ async fn set_repo(
     State(st): State<AppState>,
     Extension(caller): Extension<Caller>,
     Path(app): Path<String>,
-    Json(b): Json<DomainBody>,
+    Json(b): Json<RepoBody>,
 ) -> Response {
     let a = match project_for(&st, &caller, &app) {
         Ok(a) => a,
@@ -1361,11 +1428,14 @@ async fn set_repo(
     if let Err(r) = require_write(&st, &caller, &a) {
         return r;
     }
-    if !valid_repo_url(&b.domain) {
-        return bad("repo must be https://, ssh:// or git@host:path");
+    let repo = b.repo.or(b.domain).unwrap_or_default();
+    if !valid_repo_url(&repo) && !local_repo_allowed(&st, &app, &repo) {
+        return bad(
+            "repo must be https://, ssh://, git@host:path, or the project's own local bare repo",
+        );
     }
-    match st.db.set_repo(&app, &b.domain) {
-        Ok(_) => Json(json!({"ok": true, "repo": b.domain})).into_response(),
+    match st.db.set_repo(&app, &repo) {
+        Ok(_) => Json(json!({"ok": true, "repo": repo})).into_response(),
         Err(e) => internal(e),
     }
 }
@@ -1538,7 +1608,7 @@ pub fn project_url(st: &AppState, app: &crate::db::App) -> String {
     }
 }
 
-fn hosts_for_app(st: &AppState, app: &crate::db::App) -> Vec<String> {
+pub(crate) fn hosts_for_app(st: &AppState, app: &crate::db::App) -> Vec<String> {
     let mut set = HashSet::new();
     if let Some(d) = &app.domain {
         set.insert(d.clone());
@@ -1987,14 +2057,34 @@ async fn git_init(
                         uuid::Uuid::new_v4().simple()
                     );
                     let _ = st.db.set_setting(&secret_key, &s);
-                    let _ = st.db.set_setting(&format!("webhook_branch:{app}"), "main");
                     s
                 });
+            // Re-running git-init on an existing project must still set the
+            // production branch, otherwise branch pushes fall through to
+            // production deployment.
+            if st
+                .db
+                .get_setting(&format!("webhook_branch:{app}"))
+                .ok()
+                .flatten()
+                .filter(|b| !b.is_empty())
+                .is_none()
+            {
+                let _ = st.db.set_setting(&format!("webhook_branch:{app}"), "main");
+            }
+            let host = url::Url::parse(&st.public_url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_else(|| "localhost".into());
+            let user = std::env::var("DOK_GIT_USER")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_else(|_| "dok".into());
             Json(json!({
                 "app": app,
-                "path": path,
-                "remote": format!("ssh://<user>@<host>{path}"),
-                "hint": format!("git remote add dok ssh://<user>@<host>{path} && git push dok main"),
+                "path": path.clone(),
+                "remote": path.clone(),
+                "ssh_remote": format!("ssh://{user}@{host}{path}"),
+                "hint": format!("git remote add dok {} && git push dok main", path),
                 "hook": hook,
                 "webhook_secret": secret,
                 "branch": "main",
@@ -2168,16 +2258,16 @@ async fn github_hook(
         .filter(|b| !b.is_empty());
     let r#ref = payload["ref"].as_str().unwrap_or("");
 
-    let pushed_branch = r#ref.strip_prefix("refs/heads/").filter(|b| !b.is_empty());
-    if let Some(branch) = pushed_branch {
-        if !valid_branch(branch) || branch.starts_with('-') {
-            return bad("invalid branch name in webhook");
-        }
+    // GitHub sends `ping`, tag pushes and other events without a branch ref.
+    // Never turn those into a production deployment.
+    let Some(pushed_branch) = r#ref.strip_prefix("refs/heads/").filter(|b| !b.is_empty()) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    if !valid_branch(pushed_branch) || pushed_branch.starts_with('-') {
+        return bad("invalid branch name in webhook");
     }
-    let deploy_branch = pushed_branch
-        .map(str::to_string)
-        .or_else(|| branch_setting.clone());
-    let env = git_deploy_env(branch_setting.as_deref(), pushed_branch);
+    let deploy_branch = Some(pushed_branch.to_string());
+    let env = git_deploy_env(branch_setting.as_deref(), Some(pushed_branch));
     let out = match deploy_from_repo_branch_env(&st, &app, deploy_branch.as_deref(), env).await {
         Ok(out) => out,
         Err(e) => return internal(e),
@@ -2271,8 +2361,7 @@ pub async fn deploy_from_repo_branch_env(
         .repo
         .ok_or_else(|| anyhow::anyhow!("app has no repo; use `dok git {app} <url>`"))?;
 
-    let local_repo = std::path::Path::new(&repo).is_absolute()
-        && std::path::Path::new(&repo).starts_with(st.data.join("repos"));
+    let local_repo = local_repo_allowed(st, app, &repo);
     if !local_repo && !valid_repo_url(&repo) {
         anyhow::bail!(
             "repo must be a public https://, ssh:// or git@host:path (private/loopback hosts are refused)"
@@ -2422,6 +2511,7 @@ pub(crate) fn safe_header(name: &str) -> bool {
                 | "host"
                 | "proxy-authenticate"
                 | "proxy-authorization"
+                | "authorization"
                 | "date"
                 | "server"
         )
@@ -3378,5 +3468,65 @@ mod tests {
             .headers()
             .get(header::CONTENT_SECURITY_POLICY)
             .is_none());
+    }
+    #[test]
+    fn repo_body_accepts_cli_and_legacy_keys() {
+        let cli: super::RepoBody =
+            serde_json::from_str(r#"{"repo":"https://example.com/a.git"}"#).unwrap();
+        assert_eq!(cli.repo.as_deref(), Some("https://example.com/a.git"));
+        let legacy: super::RepoBody =
+            serde_json::from_str(r#"{"domain":"https://example.com/b.git"}"#).unwrap();
+        assert_eq!(legacy.domain.as_deref(), Some("https://example.com/b.git"));
+    }
+
+    #[test]
+    fn local_repo_must_belong_to_the_project() {
+        let path = std::env::temp_dir().join(format!("dok-repo-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::db::Db::open(&path).unwrap();
+        let data = std::env::temp_dir().join(format!("dok-repo-data-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(data.join("repos/demo.git")).unwrap();
+        std::fs::create_dir_all(data.join("repos/other.git")).unwrap();
+        let st = crate::state::AppState::new(db, data.clone(), None, "http://localhost".into());
+        let own = data.join("repos/demo.git").to_string_lossy().to_string();
+        let other = data.join("repos/other.git").to_string_lossy().to_string();
+        let escape = format!("{}/repos/demo.git/../../../etc", data.display());
+        assert!(super::local_repo_allowed(&st, "demo", &own));
+        assert!(!super::local_repo_allowed(&st, "demo", &other));
+        assert!(!super::local_repo_allowed(&st, "demo", &escape));
+        let _ = std::fs::remove_file(path);
+    }
+    #[tokio::test]
+    async fn webhook_without_a_branch_ref_does_not_deploy() {
+        let (st, path) = state();
+        let (_u, team, _tok) = seed(&st, "hookowner", "owner");
+        project(&st, "hookapp", &team);
+        st.db
+            .set_setting("webhook_secret:hookapp", "s3cret")
+            .unwrap();
+        st.db.set_setting("webhook_branch:hookapp", "main").unwrap();
+        let body = br#"{"zen":"ping"}"#;
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"s3cret").unwrap();
+        mac.update(body);
+        let sig = format!(
+            "sha256={}",
+            mac.finalize()
+                .into_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/hooks/github/hookapp")
+            .header("x-hub-signature-256", sig)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        let r = super::api_routes(st.clone()).oneshot(req).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        assert!(st.db.deploys("hookapp", 10).unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
     }
 }

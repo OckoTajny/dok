@@ -153,8 +153,8 @@ fn page(title: &str, body: &str) -> String {
 
 fn auth_page(title: &str, subtitle: &str, inner: &str, script: &str) -> String {
     let body = format!(
-        "<div class=auth><div class=brand>dok</div><h1>{t}</h1><p>{s}</p><div class=card>{inner}</div>\
-<div class=foot>Passkeys only — nothing to remember, nothing to leak.</div></div><script>{script}</script>",
+        "<main class=auth><div class=brand>dok</div><h1>{t}</h1><p>{s}</p><div class=card>{inner}</div>\
+<div class=foot>Passkeys only — nothing to remember, nothing to leak.</div></main><script>{script}</script>",
         t = esc(title),
         s = esc(subtitle),
         inner = inner,
@@ -403,10 +403,12 @@ fn error_body(
     } else if app.is_some() {
         meta.push_str("<div>No successful production deploy yet.</div>");
     }
-    meta.push_str(&format!(
-        "<div>Request id <code>{}</code></div>",
-        esc(request_id)
-    ));
+    if request_id != "-" && !request_id.is_empty() {
+        meta.push_str(&format!(
+            "<div>Request id <code>{}</code></div>",
+            esc(request_id)
+        ));
+    }
     let back = back
         .map(|b| format!("<p><a class=btn href=\"{}\">Back</a></p>", esc(b)))
         .unwrap_or_default();
@@ -430,11 +432,23 @@ pub fn branded_error(
     last_good: Option<i64>,
     request_id: &str,
 ) -> Response<Body> {
+    branded_error_with_back(status, title, app, message, last_good, request_id, None)
+}
+
+pub fn branded_error_with_back(
+    status: StatusCode,
+    title: &str,
+    app: Option<&str>,
+    message: &str,
+    last_good: Option<i64>,
+    request_id: &str,
+    back: Option<&str>,
+) -> Response<Body> {
     let retry = if matches!(
         status,
         StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT
     ) {
-        "<p><a class=btn href=\"javascript:location.reload()\">Try again</a></p>"
+        "<p><button class=btn type=button onclick=\"location.reload()\">Try again</button></p>"
     } else {
         ""
     };
@@ -445,7 +459,7 @@ pub fn branded_error(
         app,
         last_good,
         request_id,
-        None,
+        back,
     );
     let resp = page_html(
         status,
@@ -825,9 +839,7 @@ fn sidebar(
     s.push_str("<button class=\"btn link close\" id=nav-close type=button onclick=\"toggleNav()\">Close menu</button>");
     s.push_str("<div class=side-title>Teams</div>");
     for t in teams {
-        let on = active_app.is_none()
-            && active_section.is_none()
-            && selected.map(|x| x.id == t.id).unwrap_or(false);
+        let on = active_section != Some("team") && selected.map(|x| x.id == t.id).unwrap_or(false);
         s.push_str(&format!(
             "<a class=\"{}\" href=\"/dashboard?team={}\"{}>{}</a>",
             if on { "on" } else { "" },
@@ -914,6 +926,7 @@ else{{var b=document.querySelector('button.menu');if(b)b.focus();}}}}\
 function toggleNav(){{setNav(!document.body.classList.contains('nav-open'));}}\
 document.addEventListener('keydown',function(e){{if(e.key==='Escape'&&document.body.classList.contains('nav-open'))setNav(false);}});\
 function copyText(t,b){{if(!navigator.clipboard)return;navigator.clipboard.writeText(t).then(function(){{if(!b)return;var o=b.textContent;b.textContent='Copied';setTimeout(function(){{b.textContent=o}},1500)}});}}\
+if(document.querySelector('.badge.run')){{setTimeout(function(){{location.reload()}},5000);}}\
 </script>",
         user = esc(&user.name),
         team = esc(selected.map(|t| t.name.as_str()).unwrap_or("")),
@@ -1005,6 +1018,37 @@ fn sparkline(samples: &[crate::state::MetricSample]) -> String {
     format!("<div style=\"height:24px;margin:6px 0 4px;line-height:24px\">{bars}</div>")
 }
 
+fn no_team_page(
+    st: &AppState,
+    user: &User,
+    session: &Session,
+    flash: Option<&Flash>,
+) -> Response<Body> {
+    let main = format!(
+        "<div class=head><h1>No team yet</h1><div class=muted>You are not a member of any team. Create one, or ask a teammate for an invite link.</div></div>\
+<h2>Create a team</h2><form class=\"row\" method=post action=/dashboard/team/create style=\"max-width:560px\">{csrf}\
+<label class=sr for=team-name>Team name</label><input id=team-name name=name placeholder=\"Personal\" maxlength=60 required>\
+<button class=\"btn primary\">Create team</button></form>",
+        csrf = csrf_input(session)
+    );
+    status_html(
+        StatusCode::OK,
+        layout_with_sidebar(
+            st,
+            &st.db,
+            user,
+            &[],
+            None,
+            &session.csrf,
+            None,
+            None,
+            "No team",
+            flash,
+            &main,
+        ),
+    )
+}
+
 fn render_dashboard(
     st: &AppState,
     user: &User,
@@ -1013,10 +1057,10 @@ fn render_dashboard(
     flash: Option<&Flash>,
 ) -> Response<Body> {
     let (teams, selected, apps) = team_and_apps(&st.db, user, q);
-    let team_slug = selected
-        .as_ref()
-        .map(|t| t.slug.clone())
-        .unwrap_or_default();
+    let Some(selected_team) = selected.as_ref() else {
+        return no_team_page(st, user, session, flash);
+    };
+    let team_slug = selected_team.slug.clone();
     let can_create_here = selected
         .as_ref()
         .map(|t| {
@@ -1613,7 +1657,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             };
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Environment · {env}</h2><div class=row>{switches}</div></div>\
-<div class=\"muted small\" style=\"margin-bottom:12px\">Production values are inherited by preview and development; the more specific environment overrides them. Secret values are never sent back to the browser.</div>\
+<div class=\"muted small\" style=\"margin-bottom:12px\">Non-secret production values are inherited by preview and development; the more specific environment overrides them. Secrets are never inherited: set them explicitly per environment. Secret values are never sent back to the browser.</div>\
 <div>{rows}</div>{editor}",
                 env = esc(&env),
                 switches = switches,
@@ -2162,7 +2206,7 @@ fn render_team(
 ) -> Response<Body> {
     let (teams, selected, _) = team_and_apps(&st.db, user, q);
     let Some(team) = selected else {
-        return not_found("You are not a member of any team yet.");
+        return no_team_page(st, user, session, flash);
     };
     let csrf = csrf_input(session);
     let actor_role = st.db.role(&team.id, &user.id).ok().flatten();
@@ -2521,7 +2565,11 @@ pub async fn handle(
         return None;
     }
     let Some(session) = session else {
-        return Some(auth::redirect("/"));
+        return Some(redirect_flash(
+            "/",
+            false,
+            "Your session expired — sign in again.",
+        ));
     };
     let user = session.user.clone();
 
@@ -2640,8 +2688,12 @@ pub async fn handle(
         Ok(f) => f,
         Err(r) => return Some(r),
     };
-    if let Err(r) = check_csrf(&session, &form) {
-        return Some(r);
+    if check_csrf(&session, &form).is_err() {
+        return Some(redirect_flash(
+            "/dashboard",
+            false,
+            "Your session changed — reload the page and try again.",
+        ));
     }
 
     if rest == "tokens" {
@@ -2864,6 +2916,12 @@ pub async fn handle(
         let back = format!("/dashboard/project/{}/domains", app.name);
         if !crate::api::valid_host(&host) {
             return Some(unprocessable("That does not look like a hostname.", &back));
+        }
+        if !crate::api::hosts_for_app(st, &app).contains(&host) {
+            return Some(unprocessable(
+                "That hostname does not belong to this project.",
+                &back,
+            ));
         }
         return match crate::api::request_cert_renewal(st, &host) {
             Ok(_) => Some(redirect_flash(
@@ -3211,8 +3269,7 @@ pub async fn handle(
         }
         "settings" => {
             let repo = form.get("repo").map(|s| s.trim()).unwrap_or("");
-            let local_repo = std::path::Path::new(repo).is_absolute()
-                && std::path::Path::new(repo).starts_with(st.data.join("repos"));
+            let local_repo = crate::api::local_repo_allowed(st, &app.name, repo);
             if !repo.is_empty() && !local_repo && !crate::api::valid_repo_url(repo) {
                 return Some(unprocessable(
                     "Enter a public https://, ssh:// or git@host:path repository, or leave the field blank.",
@@ -3236,6 +3293,17 @@ pub async fn handle(
             ))
         }
         "delete" => {
+            let _lock = match st.lock_deploy(&app.name).await {
+                Ok(l) => l,
+                Err(e) => return Some(server_error(&e.to_string())),
+            };
+            let images: Vec<String> = st
+                .db
+                .deploys(&app.name, 100_000)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|d| d.image)
+                .collect();
             crate::deploy::stop_container(&app.name, "production").await;
             crate::deploy::stop_container(&app.name, "preview").await;
             crate::deploy::stop_all_previews(&app.name).await;
@@ -3245,6 +3313,12 @@ pub async fn handle(
                     .await;
             if let Err(e) = st.db.delete_app(&app.name) {
                 return Some(server_error(&e.to_string()));
+            }
+            for image in images {
+                let _ = tokio::process::Command::new("docker")
+                    .args(["rmi", &image])
+                    .output()
+                    .await;
             }
             st.sync_traefik();
             let slug = app
@@ -3527,7 +3601,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(bad.status(), axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(bad.status(), axum::http::StatusCode::SEE_OTHER);
+        assert_eq!(
+            bad.headers()
+                .get(axum::http::header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("/dashboard")
+        );
         let good = super::handle(
             &st,
             &auth,
@@ -3552,5 +3632,43 @@ mod tests {
         assert_eq!(age(now - 7200), "2 hours ago");
         assert_eq!(age(now - 3 * 86400), "3 days ago");
         assert_eq!(age(now + 7 * 86400), "in 7 days");
+    }
+    #[tokio::test]
+    async fn user_without_a_team_gets_a_create_page() {
+        let path = std::env::temp_dir().join(format!("dok-ui-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::db::Db::open(&path).unwrap();
+        let u = db.create_user("solo@example.com", "Solo").unwrap();
+        let data = std::env::temp_dir().join(format!("dok-ui-data-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data).unwrap();
+        let st = crate::state::AppState::new(db, data, None, "http://localhost".into());
+        let auth =
+            crate::auth::AuthState::new(url::Url::parse("http://localhost").unwrap()).unwrap();
+        for uri in ["/dashboard", "/dashboard/team"] {
+            let req = axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let r = super::handle(
+                &st,
+                &auth,
+                req,
+                Some(crate::auth::Session {
+                    user: u.clone(),
+                    csrf: "good".into(),
+                    hash: String::new(),
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(r.status(), axum::http::StatusCode::OK, "{uri}");
+            let body = axum::body::to_bytes(r.into_body(), 512 * 1024)
+                .await
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&body).contains("Create a team"),
+                "{uri}"
+            );
+        }
+        let _ = std::fs::remove_file(path);
     }
 }

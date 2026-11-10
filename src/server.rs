@@ -287,7 +287,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     };
     let base_domain = args.base_domain.clone();
     let acme_email = args.acme_email.clone();
-    let acme_prod = args.acme_prod;
+    let acme_prod = !args.acme_staging || args.acme_prod_legacy;
     let acme_dir = data.join("acme");
     let tls_port = args.tls_port;
     let supervisor_st = st.clone();

@@ -19,8 +19,18 @@ BIN=${BIN:-$HOME/bin/dok}
 
 say() { printf '\033[1;36m▌\033[0m %s\n' "$*"; }
 
-# 1. binary
-if [ -z "${SKIP_BUILD:-}" ]; then
+# 1. binary: DOK_BIN_URL downloads a prebuilt release; otherwise build locally.
+mkdir -p "$HOME/bin" "$HOME/.config/systemd/user" "$HOME/.config/dok" "$TRAEFIK_DIR"
+if [ -n "${DOK_BIN_URL:-}" ]; then
+  say "downloading prebuilt binary"
+  curl -fsSL "$DOK_BIN_URL" -o "$BIN.tmp"
+  chmod 755 "$BIN.tmp"
+  mv "$BIN.tmp" "$BIN"
+elif [ -z "${SKIP_BUILD:-}" ]; then
+  command -v cargo >/dev/null || {
+    echo "cargo not found: install Rust (https://rustup.rs) or set DOK_BIN_URL to a prebuilt dok binary" >&2
+    exit 1
+  }
   say "building release"
   cargo build --release
   install -m755 target/release/dok "$BIN"

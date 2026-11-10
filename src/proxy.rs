@@ -65,10 +65,7 @@ pub async fn serve_app(
     let started = Instant::now();
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
-    let ip = req
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|c| c.0.ip().to_string());
+    let ip = client_ip(&st, &req);
     let host = host_of(&req);
     let app = route.app.clone();
     let deploy = route.deploy.clone();
@@ -78,31 +75,37 @@ pub async fn serve_app(
         log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
         return with_request_id(apply_headers(r, &settings), request_id);
     }
-    if let Some(r) = basic_auth_challenge(&req, &settings) {
-        // Only failed attempts count towards the limiter. Include the username
-        // so one abusive client behind NAT cannot lock every other user out.
-        let key = format!(
-            "basic:{}:{}",
-            ip.as_deref().unwrap_or("unknown"),
-            basic_auth_user(&req).unwrap_or_else(|| "-".to_string())
+    // Reject before Argon2 verification: an attacker must not be able to spend
+    // CPU (or spray usernames for fresh buckets) on an unauthenticated route.
+    let basic_ip_key = format!("basic-ip:{}", ip.as_deref().unwrap_or("unknown"));
+    let basic_user_key = format!(
+        "basic:{}:{}",
+        ip.as_deref().unwrap_or("unknown"),
+        basic_auth_user(&req).unwrap_or_else(|| "-".to_string())
+    );
+    if settings.basic_auth_hash.is_some()
+        && (st.rate.blocked(&basic_ip_key, 30, 60) || st.rate.blocked(&basic_user_key, 10, 60))
+    {
+        let limited = Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(Body::from("dok: too many authentication attempts\n"))
+            .unwrap();
+        log_request(
+            &st,
+            &app.name,
+            &method,
+            &path,
+            &limited,
+            started,
+            ip.as_deref(),
         );
-        if !st.rate.allow(&key, 10, 60) {
-            let limited = Response::builder()
-                .status(StatusCode::TOO_MANY_REQUESTS)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from("dok: too many authentication attempts\n"))
-                .unwrap();
-            log_request(
-                &st,
-                &app.name,
-                &method,
-                &path,
-                &limited,
-                started,
-                ip.as_deref(),
-            );
-            return with_request_id(apply_headers(limited, &settings), request_id);
-        }
+        return with_request_id(apply_headers(limited, &settings), request_id);
+    }
+    if let Some(r) = basic_auth_challenge(&req, &settings) {
+        // Only failed attempts count towards the limiter.
+        st.rate.hit(&basic_ip_key);
+        st.rate.hit(&basic_user_key);
         log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
         return with_request_id(apply_headers(r, &settings), request_id);
     }
@@ -453,6 +456,29 @@ fn filter_cookie_header(value: &HeaderValue) -> Option<HeaderValue> {
     } else {
         HeaderValue::from_str(&kept.join("; ")).ok()
     }
+}
+
+/// Resolve the client IP, trusting `X-Forwarded-For` only from a configured
+/// proxy peer. The access log and auth limiter must not all collapse to the
+/// Traefik container address in the documented deployment.
+fn client_ip(st: &AppState, req: &Request<Body>) -> Option<String> {
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip().to_string())?;
+    if st.trusted_peer(&peer) {
+        if let Some(ip) = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|s| s.parse::<std::net::IpAddr>().is_ok())
+        {
+            return Some(ip.to_string());
+        }
+    }
+    Some(peer)
 }
 
 fn is_upgrade(req: &Request<Body>) -> bool {
@@ -843,16 +869,14 @@ async fn serve_static(
 }
 
 pub fn generic_not_found(st: &AppState, request_id: &str) -> Response<Body> {
-    crate::ui::branded_error(
+    crate::ui::branded_error_with_back(
         StatusCode::NOT_FOUND,
         "Not found",
         None,
-        &format!(
-            "No project is routed to this host. Apps are served on their own domains; the dashboard lives on {}.",
-            st.public_url
-        ),
+        "No project is routed to this host. Apps are served on their own domains; open the dashboard to see your projects.",
         None,
         request_id,
+        Some(&st.public_url),
     )
 }
 
