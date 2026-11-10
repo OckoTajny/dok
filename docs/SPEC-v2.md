@@ -1,5 +1,8 @@
 # dok v2 — Vercel-lite, self-hosted
 
+> Historical design note. The shipped behavior is documented in `README.md`;
+> the API/UI lists below are a subset and may lag behind the code.
+
 ## Cíl
 Open-source platforma jako Vercel, ale lehká: jeden Rust binary, SQLite, Docker.
 Nasadí si ji kdokoliv u sebe; funguje pro jednotlivce i týmy.

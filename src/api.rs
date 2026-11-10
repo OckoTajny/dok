@@ -2452,6 +2452,17 @@ pub fn git_deploy_env(
     }
 }
 
+async fn run_git(mut cmd: tokio::process::Command) -> anyhow::Result<std::process::Output> {
+    cmd.kill_on_drop(true).env("GIT_TERMINAL_PROMPT", "0").env(
+        "GIT_SSH_COMMAND",
+        "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new",
+    );
+    match tokio::time::timeout(std::time::Duration::from_secs(180), cmd.output()).await {
+        Ok(out) => Ok(out?),
+        Err(_) => anyhow::bail!("git command timed out"),
+    }
+}
+
 pub async fn deploy_from_repo_branch_env(
     st: &AppState,
     app: &str,
@@ -2502,7 +2513,7 @@ pub async fn deploy_from_repo_branch_env(
     };
 
     if !local_repo {
-        let probe = git(&["ls-remote", "--heads", &repo]).output().await?;
+        let probe = run_git(git(&["ls-remote", "--heads", &repo])).await?;
         if !probe.status.success() {
             anyhow::bail!(
                 "cannot reach repo: {}",
@@ -2516,44 +2527,47 @@ pub async fn deploy_from_repo_branch_env(
     if let Some(branch) = branch {
         clone.args(["--branch", branch]);
     }
-    let out = clone.arg(&repo).arg(&dir).output().await?;
+    clone.arg(&repo).arg(&dir);
+    let out = run_git(clone).await?;
     if !out.status.success() {
         anyhow::bail!("git clone failed: {}", String::from_utf8_lossy(&out.stderr));
     }
-    let head = tokio::process::Command::new("git")
+    let mut head_cmd = tokio::process::Command::new("git");
+    head_cmd
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(&dir)
         .env("GIT_ALLOW_PROTOCOL", allow)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .await?;
+        .env_remove("GIT_INDEX_FILE");
+    let head = run_git(head_cmd).await?;
     if !head.status.success() {
         anyhow::bail!("repo has no commits yet; push a branch first");
     }
     let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
-    let meta = tokio::process::Command::new("git")
+    let mut meta_cmd = tokio::process::Command::new("git");
+    meta_cmd
         .args(["log", "-1", "--format=%s%x00%an"])
         .current_dir(&dir)
         .env("GIT_ALLOW_PROTOCOL", allow)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
+        .env_remove("GIT_INDEX_FILE");
+    let meta = run_git(meta_cmd)
         .await
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     let (message, commit_author) = meta.split_once('\0').unwrap_or((meta.as_str(), ""));
-    let branch = tokio::process::Command::new("git")
+    let mut branch_cmd = tokio::process::Command::new("git");
+    branch_cmd
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(&dir)
         .env("GIT_ALLOW_PROTOCOL", allow)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
+        .env_remove("GIT_INDEX_FILE");
+    let branch = run_git(branch_cmd)
         .await
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

@@ -61,8 +61,8 @@ git -c user.name=smoke -c user.email=smoke@example.com commit -q -m "dev branch"
 git push -q origin dev
 cd - >/dev/null
 curl -fsS -H "Host: $APP.127.0.0.1" "http://127.0.0.1:$PORT/" | grep -q 'pushed via git'
-preview_url=$(DOK_SERVER="$DOK_SERVER" DOK_TOKEN="$DOK_TOKEN" "$BIN" deploys "$APP" | python3 -c 'import sys,json
-rows=[d for d in json.load(sys.stdin)["deploys"] if d["env"]=="preview"]
+preview_url=$(DOK_SERVER="$DOK_SERVER" DOK_TOKEN="$DOK_TOKEN" "$BIN" deploys "$APP" --json | python3 -c 'import sys,json
+rows=[d for d in json.load(sys.stdin)["deployments"] if d["env"]=="preview"]
 print(rows[0]["url"] if rows else "")')
 test -n "$preview_url"
 preview_host=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlparse(sys.argv[1]).hostname)' "$preview_url")

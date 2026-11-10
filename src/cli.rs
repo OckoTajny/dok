@@ -1801,6 +1801,10 @@ pub async fn deploy_git(app: String, data: String, reference: Option<String>) ->
         .as_deref()
         .and_then(|r| r.strip_prefix("refs/heads/"))
         .filter(|b| !b.is_empty());
+    if reference.is_some() && pushed.is_none() {
+        // Tag and other non-branch pushes must never deploy production.
+        return Ok(());
+    }
     if let Some(branch) = pushed {
         if !crate::api::valid_branch(branch) || branch.starts_with('-') {
             anyhow::bail!("invalid branch name in git hook");

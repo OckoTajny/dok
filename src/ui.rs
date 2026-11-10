@@ -130,12 +130,14 @@ pre.log{background:#070707;border:1px solid #222;border-radius:8px;padding:12px;
  .tabs::-webkit-scrollbar-thumb{background:#444;border-radius:2px}
  .tabs a{display:flex;align-items:center;justify-content:center;flex:0 0 auto}
  .grid{grid-template-columns:1fr}
- table{min-width:0}
+ table{min-width:520px}
+ table:has(.empty){min-width:0}
  .empty{padding:24px 12px}
  input,select,textarea{font-size:16px}
  .head{padding-top:18px}
  .errpage{margin:8vh auto}
 }
+@media (prefers-reduced-motion:reduce){aside{transition:none}}
 "#;
 
 pub fn esc(s: &str) -> String {
@@ -262,7 +264,8 @@ pub fn page_setup() -> Response<Body> {
 <label for=email>Email</label><input id=email type=email autocomplete=username placeholder="you@example.com" required>
 <label for=name>Name</label><input id=name type=text autocomplete=name placeholder="Your name" required>
 <label for=team>Team</label><input id=team type=text placeholder="Personal">
-<button id=go class="btn primary" type=submit style="width:100%;margin-top:16px">Create a passkey</button></form>"#,
+<button id=go class="btn primary" type=submit style="width:100%;margin-top:16px">Create a passkey</button></form>\
+<noscript><p class=error role=alert>Creating an account needs JavaScript for the passkey prompt. Enable JavaScript and reload this page.</p></noscript>"#,
         err_box()
     );
     html(auth_page(
@@ -304,6 +307,7 @@ pub fn page_join(token: &str, team: &str, role: &str, inviter: Option<&str>) -> 
 <label for=email>Email</label><input id=email type=email autocomplete=username placeholder="you@example.com" required>
 <label for=name>Name</label><input id=name type=text autocomplete=name placeholder="Your name" required>
 <button id=go class="btn primary" type=submit style="width:100%;margin-top:16px">Join with a passkey</button></form>
+<noscript><p class=error role=alert>Joining needs JavaScript for the passkey prompt. Enable JavaScript and reload this page.</p></noscript>
 <p class="small muted" style="margin:14px 0 0">Already have an account? <a href="/">Sign in</a>, then open this link again.</p>"#,
         err_box(),
         esc(token)
@@ -968,10 +972,13 @@ fn layout_with_sidebar(
     let team_q = selected
         .map(|t| format!("?team={}", t.slug))
         .unwrap_or_default();
+    let who = selected
+        .map(|t| format!("{} · {}", esc(&user.name), esc(&t.name)))
+        .unwrap_or_else(|| esc(&user.name));
     let body = format!(
         "<a class=skip href=\"#main\">Skip to content</a>\
 <div class=wrap><header class=top><a class=brand href=\"/dashboard{team_q}\">dok</a>\
-<div class=row><a class=\"muted small\" href=\"https://github.com/OckoTajny/dok#readme\" target=_blank rel=noreferrer>Docs</a><span class=\"muted small\">{user} · {team}</span>\
+<div class=row><a class=\"muted small\" href=\"https://github.com/OckoTajny/dok#readme\" target=_blank rel=noreferrer>Docs</a><span class=\"muted small\">{who}</span>\
 <button class=menu type=button aria-controls=sidebar aria-expanded=false onclick=\"toggleNav(this)\">Menu</button></div></header>\
 <div class=layout><main id=main tabindex=-1>{flash}{main}</main>\
 <button class=scrim type=button aria-label=\"Close menu\" onclick=\"toggleNav()\"></button>{side}</div></div>\
@@ -989,8 +996,7 @@ fetch('/dashboard/status',{{headers:{{'accept':'application/json'}},credentials:
 nodes.forEach(function(el){{var html=el.dataset.statusApp?(j.apps[el.dataset.statusApp]||{{}}).badge:(j.deploys[el.dataset.deployStatus]||{{}}).badge;if(html&&el.innerHTML!==html)el.innerHTML=html;}});\
 if(document.querySelector('.badge.run'))setTimeout(pollStatus,5000);else if(document.querySelector('[data-status-app],[data-deploy-status]'))setTimeout(pollStatus,15000);}}).catch(function(){{setTimeout(pollStatus,10000);}});}}\
 </script>",
-        user = esc(&user.name),
-        team = esc(selected.map(|t| t.name.as_str()).unwrap_or("")),
+        who = who,
         flash = flash_banner(flash),
         side = sidebar(
             st,
@@ -1464,6 +1470,9 @@ async fn render_project(
             let stats_note = stats["note"].as_str().unwrap_or("");
             let mut selector = String::from("<option value=\"\">Latest deploy</option>");
             let deploys_len = deploys.len();
+            let deploy_running = effective
+                .map(|d| d.status == "running" || d.status == "building")
+                .unwrap_or(false);
             for d in &deploys {
                 let short = &d.id[..d.id.len().min(8)];
                 selector.push_str(&format!(
@@ -1591,7 +1600,7 @@ async fn render_project(
                 String::new()
             };
             content.push_str(&format!(
-                "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Logs</h2><div class=row>{live_btn}</div></div>\
+                "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Logs</h2><div class=row>{live_btn}{running_marker}</div></div>\
 <div class=\"muted small\" style=\"margin:0 0 6px\">Newest {deploys_len} deploys are selectable here; older builds remain available through the API.</div>\
 <form class=\"row\" method=get action=\"/dashboard/project/{app}/logs\" style=\"margin:10px 0 16px\">\
 <label class=sr for=deploy-select>Deploy</label><select id=deploy-select name=deploy onchange=\"this.form.submit()\" style=\"max-width:420px\">{selector}</select><button class=\"btn\">Show deploy</button></form>\
@@ -1616,6 +1625,9 @@ try{{var r=await fetch(url,{{signal:liveCtl.signal}});var rd=r.body.getReader();
 while(true){{var n=await rd.read();if(n.done)break;el.textContent+=dec.decode(n.value,{{stream:true}});el.scrollTop=el.scrollHeight;}}\
 }}catch(e){{if(e.name!=='AbortError')el.textContent+='\\n[stream stopped: '+e.message+']\\n';}}\
 liveCtl=null;b.textContent='Live stream';}}\
+async function refreshBuildLog(){{if(!document.querySelector('[data-deploy-running]'))return;try{{var r=await fetch(location.href,{{cache:'no-store'}});var html=await r.text();var d=new DOMParser().parseFromString(html,'text/html');var old=document.getElementById('build-log'),neu=d.getElementById('build-log');if(old&&neu)old.textContent=neu.textContent;var hb=document.querySelector('[data-status-app]'),nh=d.querySelector('[data-status-app]');if(hb&&nh)hb.innerHTML=nh.innerHTML;if(!d.querySelector('[data-deploy-running]'))return;}}catch(e){{}}\
+setTimeout(refreshBuildLog,5000);}}\
+if(document.querySelector('[data-deploy-running]'))setTimeout(refreshBuildLog,5000);\
 </script>",
                 app = esc(&app.name),
                 selector = selector,
@@ -1623,6 +1635,11 @@ liveCtl=null;b.textContent='Live stream';}}\
                 build_body = build_body,
                 runtime_body = runtime_body,
                 live_btn = live_btn,
+                running_marker = if deploy_running {
+                    "<span data-deploy-running=1 hidden></span>"
+                } else {
+                    ""
+                },
                 copy_btn = copy_btn,
                 runtime_btns = runtime_btns,
                 stats_line = stats_line,
@@ -2083,7 +2100,16 @@ liveCtl=null;b.textContent='Live stream';}}\
                 ));
             }
             if rows.is_empty() {
-                rows.push_str("<tr><td colspan=5><div class=empty><strong>No deployments yet</strong><div class=\"small\" style=\"margin-top:6px\">Run <code>dok push</code> from the project directory to create the first one.</div></div></td></tr>");
+                let hint = if !deployer {
+                    "Ask an owner, admin or member to deploy this project."
+                } else if app.repo.is_some() {
+                    "Run <code>dok push</code> or use Redeploy from git above."
+                } else {
+                    "Run <code>dok push</code>, or connect a repository in Settings and deploy from here."
+                };
+                rows.push_str(&format!(
+                    "<tr><td colspan=5><div class=empty><strong>No deployments yet</strong><div class=\"small\" style=\"margin-top:6px\">{hint}</div></div></td></tr>"
+                ));
             }
             let redeploy = if deployer && app.repo.is_some() {
                 format!(
@@ -2195,7 +2221,11 @@ liveCtl=null;b.textContent='Live stream';}}\
 {tabs}{content}",
         n = esc(&app.name),
         domain = domain_html,
-        badge = status_badge(&app.status),
+        badge = format!(
+            "<span data-status-app=\"{}\" aria-live=polite>{}</span>",
+            esc(&app.name),
+            status_badge(&app.status)
+        ),
         open_btn = open_btn,
         prod = app
             .production_deploy
@@ -2250,6 +2280,21 @@ fn render_account(
     if rows.is_empty() {
         rows.push_str("<tr><td colspan=3><div class=empty><strong>No personal tokens yet</strong><div class=\"small\" style=\"margin-top:6px\">Create one to use <code>dok login</code> and <code>dok push</code> from your machine.</div></div></td></tr>");
     }
+    let mut passkey_rows = String::new();
+    let passkeys = st.db.passkey_list(&user.id).unwrap_or_default();
+    for (i, (id, created)) in passkeys.iter().enumerate() {
+        passkey_rows.push_str(&format!(
+            "<li style=\"margin:6px 0\">Passkey {} · added {} <form class=inline method=post action=/dashboard/passkeys/revoke>{csrf}<input type=hidden name=id value=\"{id}\"><button class=\"btn link danger\" {disabled}>Remove</button></form></li>",
+            i + 1,
+            when(*created),
+            csrf = csrf,
+            id = esc(id),
+            disabled = if passkeys.len() <= 1 { "disabled title=\"keep at least one passkey\"" } else { "" }
+        ));
+    }
+    if passkey_rows.is_empty() {
+        passkey_rows.push_str("<li class=muted>No passkeys found.</li>");
+    }
     let token_notice = new_token
         .map(|token| {
             format!(
@@ -2269,7 +2314,8 @@ fn render_account(
 <label class=sr for=token-name>Token name</label><input id=token-name name=name placeholder=\"laptop\" maxlength=64>\
 <button class=\"btn primary\">Create token</button></form>\
 <h2 style=\"margin-top:34px\">Passkeys</h2>\
-<div class=card><div class=muted small>Add a backup passkey so losing one device does not lock you out.</div>\
+<div class=card><ul style=\"margin:0 0 12px;padding-left:18px\">{passkey_rows}</ul>\
+<div class=muted small>Add a backup passkey so losing one device does not lock you out.</div>\
 <div id=passkey-err class=error hidden role=alert></div>\
 <button id=add-passkey class=\"btn\" type=button onclick=\"addPasskey()\">Add passkey</button></div>\
 <h2 style=\"margin-top:34px\">Your tokens</h2>\
@@ -2278,7 +2324,8 @@ fn render_account(
 <button class=btn>Sign out everywhere</button></form><script>{B64_JS}{PASSKEY_JS}</script>",
         notice = token_notice,
         csrf = csrf,
-        rows = rows
+        rows = rows,
+        passkey_rows = passkey_rows
     );
     let resp = status_html(
         StatusCode::OK,
@@ -2760,7 +2807,9 @@ pub async fn handle(
         if let Some(rest) = path.strip_prefix("/dashboard/stream/") {
             let app_name = rest.split('/').next().unwrap_or("");
             let Some(app) = project_for(&st.db, &user, app_name) else {
-                return Some(not_found("project not found in your teams"));
+                return Some(not_found(
+                    "This project is not in your teams, or it no longer exists.",
+                ));
             };
             let deploy = query
                 .get("deploy")
@@ -2820,25 +2869,32 @@ pub async fn handle(
         let mut parts = rest.splitn(2, '/');
         let first = parts.next().unwrap_or("");
         let second = parts.next().unwrap_or("");
-        let (app_name, tab) = match first {
-            "project" => {
-                let mut it = second.splitn(2, '/');
-                (
-                    it.next().unwrap_or("").to_string(),
-                    it.next().unwrap_or("deployments").to_string(),
-                )
-            }
-            "deployments" | "logs" | "env" | "domains" | "proxy" | "settings" => {
-                (second.to_string(), first.to_string())
-            }
-            "app" => (second.to_string(), "deployments".to_string()),
-            _ => return Some(not_found("unknown dashboard page")),
-        };
+        let (app_name, tab) =
+            match first {
+                "project" => {
+                    let mut it = second.splitn(2, '/');
+                    (
+                        it.next().unwrap_or("").to_string(),
+                        it.next().unwrap_or("deployments").to_string(),
+                    )
+                }
+                "deployments" | "logs" | "env" | "domains" | "proxy" | "settings" => {
+                    (second.to_string(), first.to_string())
+                }
+                "app" => (second.to_string(), "deployments".to_string()),
+                _ => return Some(not_found(
+                    "This dashboard page does not exist. Open your projects or use the sidebar.",
+                )),
+            };
         if app_name.is_empty() {
-            return Some(not_found("unknown dashboard page"));
+            return Some(not_found(
+                "This dashboard page does not exist. Open your projects or use the sidebar.",
+            ));
         }
         let Some(app) = project_for(&st.db, &user, &app_name) else {
-            return Some(not_found("project not found in your teams"));
+            return Some(not_found(
+                "This project is not in your teams, or it no longer exists.",
+            ));
         };
         let tab = match tab.as_str() {
             "deployments" | "logs" | "env" | "domains" | "proxy" | "settings" => tab.as_str(),
@@ -2888,6 +2944,21 @@ pub async fn handle(
             .collect::<String>();
         return match st.db.create_token_for_user(&user.id, &name) {
             Ok(token) => Some(redirect_new_token("/dashboard/account", &token)),
+            Err(e) => Some(server_error(&e.to_string())),
+        };
+    }
+    if rest == "passkeys/revoke" {
+        let id = form.get("id").cloned().unwrap_or_default();
+        return match st.db.delete_passkey(&user.id, &id) {
+            Ok(true) => Some(redirect_flash(
+                "/dashboard/account",
+                true,
+                "Passkey removed.",
+            )),
+            Ok(false) => Some(unprocessable(
+                "Keep at least one passkey on your account. Add a backup first.",
+                "/dashboard/account",
+            )),
             Err(e) => Some(server_error(&e.to_string())),
         };
     }

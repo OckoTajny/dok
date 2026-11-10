@@ -154,6 +154,11 @@ pub async fn serve_app(
         }
     }
 
+    if settings.basic_auth_hash.is_some() {
+        // dok consumed the Basic credentials to gate the project; never leak
+        // them to user code.
+        req.headers_mut().remove(header::AUTHORIZATION);
+    }
     let kind = deploy
         .as_ref()
         .map(|d| {
@@ -532,6 +537,11 @@ async fn forward(
             if !upgrade && HOP_BY_HOP.contains(&name) {
                 continue;
             }
+            // Client-supplied forwarding headers are untrusted; rebuild them
+            // below from the actual peer, Host and scheme.
+            if name.starts_with("x-forwarded-") {
+                continue;
+            }
             // Never leak dok's own control-plane cookies to user code, but do
             // forward the application's cookies: hosted apps with sessions
             // must be able to log their users in.
@@ -548,26 +558,16 @@ async fn forward(
             h.append(k.clone(), v.clone());
         }
         if let Some(hv) = parts.headers.get(header::HOST) {
-            h.entry("x-forwarded-host").or_insert_with(|| hv.clone());
+            h.insert("x-forwarded-host", hv.clone());
         }
         let peer = parts
             .extensions
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
             .map(|c| c.0.ip().to_string());
-        match (parts.headers.get("x-forwarded-for"), peer) {
-            (Some(prev), Some(ip)) => {
-                if let Ok(v) =
-                    HeaderValue::from_str(&format!("{}, {ip}", prev.to_str().unwrap_or("")))
-                {
-                    h.insert("x-forwarded-for", v);
-                }
+        if let Some(ip) = peer {
+            if let Ok(v) = HeaderValue::from_str(&ip) {
+                h.insert("x-forwarded-for", v);
             }
-            (None, Some(ip)) => {
-                if let Ok(v) = HeaderValue::from_str(&ip) {
-                    h.insert("x-forwarded-for", v);
-                }
-            }
-            _ => {}
         }
         h.insert(
             "x-forwarded-proto",

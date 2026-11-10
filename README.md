@@ -348,8 +348,8 @@ internal git server, opt in explicitly with
 - **Docker deploys fail with permission denied**: give the service user access
   to `/var/run/docker.sock` (`deploy/docker-socket-acl.conf` shows the ACL
   setup), then `systemctl --user restart dok`.
-- **Let's Encrypt staging certificate**: dok uses the staging directory unless
-  `--acme-staging` is set; production is the default and staging certs are not trusted by browsers.
+- **Let's Encrypt staging certificate**: production is the default; pass
+  `--acme-staging` only for testing. Staging certs are not trusted by browsers.
 - **A token stops working after setup**: tokens created before the first user
   are inactive until the dashboard setup claims them; issue a new one with
   `dok login` / `--token`.

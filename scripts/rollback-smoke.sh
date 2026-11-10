@@ -31,7 +31,7 @@ curl -fsS -H "Host: $APP.127.0.0.1" "http://127.0.0.1:$PORT/" | grep -q 'version
 count=$(find "$DATA/builds/$APP" -mindepth 1 -maxdepth 1 -type d | wc -l)
 test "$count" -eq 4
 
-ids=$("$BIN" deploys "$APP" | python3 -c 'import sys,json;print(" ".join(d["id"] for d in json.load(sys.stdin)["deploys"]))')
+ids=$("$BIN" deploys "$APP" --json | python3 -c 'import sys,json;print(" ".join(d["id"] for d in json.load(sys.stdin)["deployments"]))')
 oldest=$(echo "$ids" | awk '{print $3}')
 test -n "$oldest"
 

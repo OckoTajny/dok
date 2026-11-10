@@ -27,7 +27,7 @@ printf '<h1>production v1</h1>\n' > "$SRC/index.html"
 last_url=""
 for i in 1 2 3 4 5; do
   printf '<h1>preview %s</h1>\n' "$i" > "$SRC/index.html"
-  out=$("$BIN" push "$SRC" --app "$APP" --env preview)
+  out=$("$BIN" push "$SRC" --app "$APP" --env preview --json)
   last_url=$(echo "$out" | python3 -c 'import sys,json;print(json.load(sys.stdin)["url"])')
   echo "$last_url" | grep -q "$APP-" || { echo "bad preview url: $last_url" >&2; exit 1; }
 done
@@ -42,12 +42,14 @@ curl -fsS -H "Host: $host" "http://127.0.0.1:$PORT/" | grep -q 'preview 5'
 # Production rollback still works after five previews.
 printf '<h1>production v2</h1>\n' > "$SRC/index.html"
 "$BIN" push "$SRC" --app "$APP" >/dev/null
+ok=0
 for _ in $(seq 1 30); do
-  curl -fsS -H "Host: $APP.127.0.0.1" "http://127.0.0.1:$PORT/" 2>/dev/null | grep -q 'production v2' && break
+  if curl -fsS -H "Host: $APP.127.0.0.1" "http://127.0.0.1:$PORT/" 2>/dev/null | grep -q 'production v2'; then ok=1; break; fi
   sleep 0.2
 done
-old=$("$BIN" deploys "$APP" | python3 -c 'import sys,json
-rows=[d for d in json.load(sys.stdin)["deploys"] if d["env"]=="production"]
+[ "$ok" = 1 ] || { echo "production v2 never served" >&2; exit 1; }
+old=$("$BIN" deploys "$APP" --json | python3 -c 'import sys,json
+rows=[d for d in json.load(sys.stdin)["deployments"] if d["env"]=="production"]
 print(rows[1]["id"])')
 "$BIN" rollback "$APP" "$old" >/dev/null
 for _ in $(seq 1 30); do

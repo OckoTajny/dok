@@ -12,14 +12,52 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 
 async fn output_with_timeout(cmd: &mut Command, limit: Duration) -> Result<std::process::Output> {
-    cmd.kill_on_drop(true);
-    match tokio::time::timeout(limit, cmd.output()).await {
-        Ok(out) => out.context("run docker command"),
-        Err(_) => bail!(
-            "docker command timed out after {}s; the container or build was killed",
-            limit.as_secs()
-        ),
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    cmd.kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().context("spawn docker command")?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let cap = 2 * 1024 * 1024;
+    async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 8192];
+        loop {
+            match r.read(&mut tmp).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if buf.len() < cap {
+                        let take = n.min(cap - buf.len());
+                        buf.extend_from_slice(&tmp[..take]);
+                    }
+                }
+            }
+        }
+        buf
     }
+    let out_task = tokio::spawn(read_capped(stdout, cap));
+    let err_task = tokio::spawn(read_capped(stderr, cap));
+    let status = match tokio::time::timeout(limit, child.wait()).await {
+        Ok(s) => s.context("wait for docker command")?,
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = out_task.await;
+            let _ = err_task.await;
+            bail!(
+                "docker command timed out after {}s; the container or build was killed",
+                limit.as_secs()
+            );
+        }
+    };
+    let stdout = out_task.await.unwrap_or_default();
+    let stderr = err_task.await.unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// A container can exit immediately after `docker run` returns. Wait until the
@@ -520,11 +558,9 @@ pub async fn deploy_dir(
         // Start the replacement first; the old container keeps serving until the
         // new one is running.
         let temp_name = format!("dok-{app}-{env}-{}", &deploy_id[..8]);
-        let restart_policy = if env == "preview" {
-            "no"
-        } else {
-            "unless-stopped"
-        };
+        // Temporary containers never restart on their own; the final named
+        // production container gets the policy after a successful rename.
+        let restart_policy = "no";
         let mut cmd = Command::new("docker");
         cmd.args([
             "run",
@@ -547,6 +583,8 @@ pub async fn deploy_dir(
             "512",
             "--security-opt",
             "no-new-privileges",
+            "--cap-drop",
+            "ALL",
         ]);
         // Pass secrets through a 0600 file, never through the process argv.
         let env_file = st.data.join("tmp").join(format!("env-{deploy_id}.env"));
@@ -694,6 +732,15 @@ pub async fn deploy_dir(
         stop_container(app, "production").await;
         let _ = Command::new("docker")
             .args(["rename", &temp_name, &container_name(app, "production")])
+            .output()
+            .await;
+        let _ = Command::new("docker")
+            .args([
+                "update",
+                "--restart",
+                "unless-stopped",
+                &container_name(app, "production"),
+            ])
             .output()
             .await;
     } else if kind == "static" && env == "production" {
@@ -947,6 +994,15 @@ pub async fn promote(
                 .args(["rename", &temp, &container_name(app, "production")])
                 .output()
                 .await;
+            let _ = Command::new("docker")
+                .args([
+                    "update",
+                    "--restart",
+                    "unless-stopped",
+                    &container_name(app, "production"),
+                ])
+                .output()
+                .await;
             let row = crate::db::App {
                 name: app.to_string(),
                 team_id: prev.team_id.clone(),
@@ -1064,7 +1120,7 @@ async fn run_image(
         "--name",
         name,
         "--restart",
-        "unless-stopped",
+        "no",
         "-l",
         &format!("dok.app={app}"),
         "-l",
@@ -1075,11 +1131,17 @@ async fn run_image(
         &format!("{memory_mb}m"),
         "--cpus",
         &format!("{cpus}"),
+        "--pids-limit",
+        "512",
+        "--security-opt",
+        "no-new-privileges",
+        "--cap-drop",
+        "ALL",
         "--env-file",
         &env_file.to_string_lossy(),
         image,
     ]);
-    let output = cmd.output().await;
+    let output = output_with_timeout(&mut cmd, RUN_TIMEOUT).await;
     let _ = tokio::fs::remove_file(&env_file).await;
     let out = output.context("run docker run")?;
     if !out.status.success() {

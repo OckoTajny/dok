@@ -559,6 +559,33 @@ impl Db {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    pub fn passkey_list(&self, user_id: &str) -> Result<Vec<(String, i64)>> {
+        let c = self.conn();
+        let mut st = c.prepare(
+            "SELECT id, created_at FROM passkeys WHERE user_id = ?1 ORDER BY created_at",
+        )?;
+        let rows = st.query_map(params![user_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Refuse to remove the last passkey: that would lock the account out.
+    pub fn delete_passkey(&self, user_id: &str, id: &str) -> Result<bool> {
+        let c = self.conn();
+        let count: i64 = c.query_row(
+            "SELECT COUNT(*) FROM passkeys WHERE user_id = ?1",
+            params![user_id],
+            |r| r.get(0),
+        )?;
+        if count <= 1 {
+            return Ok(false);
+        }
+        c.execute(
+            "DELETE FROM passkeys WHERE user_id = ?1 AND id = ?2",
+            params![user_id, id],
+        )?;
+        Ok(true)
+    }
+
     pub fn all_passkeys(&self) -> Result<Vec<(String, String)>> {
         let c = self.conn();
         let mut st = c.prepare("SELECT user_id, data FROM passkeys")?;

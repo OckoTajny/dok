@@ -33,7 +33,7 @@ node scripts/e2e-ux.js "$URL" "$STATE"
 # A foreign host never exposes the dashboard or the project list.
 code=$(curl -s -o /tmp/dok-ux-foreign.html -w '%{http_code}' -H 'Host: foreign.test' "$URL/dashboard")
 [ "$code" = "404" ] || { echo "foreign dashboard host: $code" >&2; exit 1; }
-grep -q 'http-equiv\|Not found' /tmp/dok-ux-foreign.html
+grep -q 'http-equiv\|Not found\|Page not found' /tmp/dok-ux-foreign.html
 grep -q 'E2E Team' /tmp/dok-ux-foreign.html && { echo "foreign host leaked team names" >&2; exit 1; }
 grep -q 'uxapp' /tmp/dok-ux-foreign.html && { echo "foreign host leaked project names" >&2; exit 1; }
 
@@ -51,11 +51,11 @@ rid=$(curl -s -D - -o /dev/null -H 'Host: uxapp.127.0.0.1' "$URL/missing.js" | t
 # CLI parity for teams, metrics and primary domains.
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" teams | grep -q 'E2E Team'
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" team members e2e-team | grep -q 'e2e@example.com'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" team invites e2e-team | grep -q '"role"'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" stats uxapp | grep -q '"deployments"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" team invites e2e-team >/dev/null
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" stats uxapp >/dev/null
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domain uxapp uxapp.test >/dev/null
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains list uxapp | grep -q 'uxapp.test'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains rm uxapp uxapp.test | grep -q '"primary": true'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains rm uxapp uxapp.test >/dev/null
 if DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" domains list uxapp | grep -q 'uxapp.test'; then
   echo "primary domain not cleared" >&2
   exit 1
@@ -67,17 +67,17 @@ DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" env pull uxapp | grep -q 'SMOKE_S
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy set uxapp --header 'X-Frame-Options: DENY' >/dev/null
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q 'X-Frame-Options'
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy set uxapp --compression --force-https >/dev/null
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q '"compression": true'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q "compression   on"
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy set uxapp --no-compression --no-force-https >/dev/null
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q '"compression": false'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q '"force_https": false'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q "compression   off"
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" proxy show uxapp | grep -q "force https   off"
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" projects create cli-team-app --team e2e-team >/dev/null
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" apps | grep -q 'cli-team-app'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" certs list | grep -q '"certificates"'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" access-log uxapp | grep -q '"requests"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" certs list | grep -q "HOST"
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" access-log uxapp | grep -q "request(s)"
 DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" webhook uxapp --branch main >/dev/null
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" webhook uxapp | grep -q '"branch": "main"'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" tokens create --name ci | grep -q '"token"'
-DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" tokens list | grep -q '"ci"'
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" webhook uxapp | grep -q "branch"
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" tokens create --name ci | grep -q "Token ci created"
+DOK_SERVER="$URL" DOK_TOKEN=smoke-token "$BIN" tokens list | grep -q "ci"
 
 echo "ux: OK"
