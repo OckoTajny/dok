@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 55.2 25.4" width="55.2" height="25.4" color="#111213" role="img" aria-label="dok">
+  <title>dok — wordmark</title>
+  <!-- Lowercase dok, hand-authored on the same grid as the mark.
+       x-height 18, ascender 25.4, mono weight 4.2, chisel-cut k terminals.
+       Ink box x 1.2..56.4, baseline y 28, ascender y 2.6. Colour: currentColor. -->
+  <g fill="none" stroke="currentColor" stroke-width="4.2">
+    <circle cx="8.1" cy="19" r="6.9"/>
+    <circle cx="32.1" cy="19" r="6.9"/>
+    <g stroke-linecap="butt">
+      <path d="M46.1 20.285 54.9 11.485"/>
+      <path d="M46.1 17.715 54.9 26.515"/>
+    </g>
+  </g>
+  <g fill="currentColor">
+    <rect x="15" y="2.6" width="4.2" height="25.4"/>
+    <rect x="44.3" y="2.6" width="4.2" height="25.4"/>
+  </g>
+</svg>

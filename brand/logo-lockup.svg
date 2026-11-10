@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 87.8 32" width="87.8" height="32" color="#111213" role="img" aria-label="dok">
+  <title>dok — horizontal lockup</title>
+  <!-- Mark at ascender height, 7.2 units of clear space before the wordmark.
+       Mark ink 0..25.4, wordmark ink 32.6..87.8. Colour: currentColor. -->
+  <g transform="translate(-1.8143 .7857) scale(.90714)">
+    <path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z
+      M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z
+      M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+  </g>
+  <g transform="translate(31.4 0)">
+    <g fill="none" stroke="currentColor" stroke-width="4.2">
+      <circle cx="8.1" cy="19" r="6.9"/>
+      <circle cx="32.1" cy="19" r="6.9"/>
+      <g stroke-linecap="butt">
+        <path d="M46.1 20.285 54.9 11.485"/>
+        <path d="M46.1 17.715 54.9 26.515"/>
+      </g>
+    </g>
+    <g fill="currentColor">
+      <rect x="15" y="2.6" width="4.2" height="25.4"/>
+      <rect x="44.3" y="2.6" width="4.2" height="25.4"/>
+    </g>
+  </g>
+</svg>

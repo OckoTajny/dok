@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <!-- B: lowercase d, bowl = perfect circle, ascender = chisel step, detached signal block. -->
-  <g fill="none" stroke="#EDEDED" stroke-width="4.5">
-    <circle cx="13" cy="20" r="7.75"/>
-  </g>
-  <path d="M24.75 28 V11 L29 6.5" fill="none" stroke="#EDEDED" stroke-width="4.5" stroke-linecap="butt"/>
-  <rect x="2.75" y="15.75" width="4.5" height="4.5" fill="#E9A23B"/>
-</svg>
