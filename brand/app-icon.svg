@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="dok">
+  <title>dok — app icon</title>
+  <!-- 512x512. Amber field, ink d. Radius 112 (21.9%). The d is the mark's d at
+       15.67x, optically centred: ink 235 x 340, margins 138.5 / 86. -->
+  <rect width="512" height="512" rx="112" fill="#E9A23B"/>
+  <g transform="translate(3.76 9.23) scale(15.668)">
+    <path fill="#0A0A0A" fill-rule="evenodd" d="M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z
+      M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+  </g>
+</svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Direction A — stacked deploy planes, sheared and ascending, top plane in signal amber.
+       Rejected: reads as the generic "layers" glyph and collapses to mush at 16px. -->
+  <g fill="#EDEDED">
+    <path d="M5 21.5 L17.5 21.5 L21.5 25.5 L9 25.5 Z" opacity="0.55"/>
+    <path d="M9.5 15.5 L22 15.5 L26 19.5 L13.5 19.5 Z" opacity="0.8"/>
+  </g>
+  <path d="M14 9.5 L26.5 9.5 L30.5 13.5 L18 13.5 Z" fill="#E9A23B"/>
+</svg>

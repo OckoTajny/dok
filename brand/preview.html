@@ -1,0 +1,619 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dok — brand system</title>
+<meta name="theme-color" content="#0A0A0A">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+:root{
+  --signal-500:#E9A23B; --signal-400:#F0B25E; --signal-600:#C9821F;
+  --signal-soft:#FBEEDC; --signal-ink:#2A2113;
+  --ink-900:#000; --ink-850:#050505; --ink-800:#0A0A0A; --ink-750:#111; --ink-700:#171717;
+  --line:#222; --line-strong:#333;
+  --text:#EDEDED; --text-dim:#BBB; --text-muted:#888; --white:#fff;
+  --paper:#FAFAF9; --paper-2:#F4F3F0; --paper-line:#E3E1DC; --paper-muted:#6F6E68; --ink:#111213;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--ink-800);color:var(--text);
+  font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased;
+}
+img,svg{display:block;max-width:100%}
+a{color:inherit}
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.025em}
+p{margin:0}
+.wrap{max-width:1120px;margin:0 auto;padding:0 32px}
+.eyebrow{
+  font:500 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;
+  color:var(--text-muted);
+}
+.eyebrow b{color:var(--signal-500);font-weight:500}
+hr.rule{border:0;border-top:1px solid var(--line);margin:0}
+
+/* ---------- hero ---------- */
+header.hero{background:var(--ink-900);padding:26px 0 0;border-bottom:1px solid var(--line)}
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:22px}
+.top .meta{display:flex;gap:18px;font:500 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:#555}
+.hero-body{padding:52px 0 56px}
+.hero-lock{width:min(520px,100%);margin-bottom:44px}
+.hero h1{font-size:clamp(30px,4.4vw,46px);line-height:1.08;letter-spacing:-.035em;max-width:16em}
+.hero h1 em{font-style:normal;color:var(--signal-500)}
+.hero p.lede{color:var(--text-muted);max-width:38em;margin-top:16px;font-size:15px}
+.facts{display:flex;flex-wrap:wrap;gap:34px;margin-top:40px;padding-top:22px;border-top:1px solid #1a1a1a}
+.fact .k{font:500 9px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#666;margin-bottom:7px}
+.fact .v{font:400 13px/1.3 var(--mono);color:var(--text-dim)}
+.fact .v i{color:var(--signal-500);font-style:normal}
+
+/* ---------- sections ---------- */
+section{padding:76px 0;border-bottom:1px solid var(--line)}
+section.light{background:var(--paper);color:var(--ink);border-bottom:1px solid var(--paper-line)}
+.sec-head{display:flex;align-items:baseline;justify-content:space-between;gap:24px;margin-bottom:40px}
+.sec-head h2{font-size:clamp(19px,2.4vw,24px);letter-spacing:-.03em}
+.sec-head .num{font:500 10px/1 var(--mono);letter-spacing:.16em;color:var(--text-muted)}
+.light .sec-head .num{color:#A8A6A0}
+.sec-head .num b{color:var(--signal-500)}
+.lede-2{color:var(--text-muted);max-width:44em;font-size:14px}
+.light .lede-2{color:var(--paper-muted)}
+
+/* ---------- mark section ---------- */
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:56px;align-items:center}
+.construct{border:1px solid var(--line);border-radius:14px;background:var(--ink-850);padding:26px}
+.construct svg{display:block;width:100%;height:auto}
+.spec{width:100%;border-collapse:collapse;margin-top:4px}
+.spec th,.spec td{
+  text-align:left;padding:10px 0;border-bottom:1px solid #1b1b1b;
+  font:400 12px/1.4 var(--mono);color:var(--text-dim);vertical-align:top;
+}
+.spec th{color:#666;font-weight:500;width:38%;text-transform:uppercase;font-size:10px;letter-spacing:.1em;padding-top:12px}
+.spec tr:last-child th,.spec tr:last-child td{border-bottom:0}
+
+/* ---------- sizes ---------- */
+.sizes{display:flex;flex-wrap:wrap;align-items:flex-end;gap:34px;padding:6px 0 2px}
+.sizes figure{margin:0;text-align:center}
+.sizes .n{font:400 9px/1 var(--mono);color:#666;margin-top:10px;letter-spacing:.08em}
+.sizes .big{font:400 9px/1 var(--mono);color:var(--signal-500);margin-top:10px;letter-spacing:.08em}
+
+/* ---------- surfaces ---------- */
+.surfaces{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.surf{border-radius:12px;padding:26px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:190px;border:1px solid transparent}
+.surf figcaption{font:400 9px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;text-align:center}
+.surf.black{background:#000;border-color:var(--line)}
+.surf.black figcaption{color:#666}
+.surf.raised{background:var(--ink-750);border-color:var(--line)}
+.surf.raised figcaption{color:#666}
+.surf.paper{background:var(--paper)}
+.surf.paper figcaption{color:#A8A6A0}
+.surf.amber{background:var(--signal-500)}
+.surf.amber figcaption{color:#5A3D0E}
+.surf img.mk{width:64px}
+.surf img.lk{width:100%;max-width:150px}
+.paper-mark{background:var(--paper);border-radius:10px;padding:26px;display:flex;justify-content:center}
+.clearspace{display:flex;justify-content:center;padding:8px 0 2px}
+.clearspace .box{border:1px dashed #2e2e2e;padding:18px;border-radius:6px;position:relative}
+
+/* ---------- wordmark ---------- */
+.wm-show{background:var(--ink-900);border:1px solid var(--line);border-radius:14px;padding:44px 40px 38px}
+.wm-show img{width:100%;max-width:420px}
+.wm-sizes{display:flex;flex-wrap:wrap;align-items:baseline;gap:32px;margin-top:34px;padding-top:24px;border-top:1px solid #1a1a1a}
+.wm-sizes figure{margin:0}
+.wm-sizes .n{font:400 9px/1 var(--mono);color:#666;margin-top:8px}
+.wm-light{background:var(--paper);border-radius:14px;padding:40px;margin-top:14px}
+.wm-light img{max-width:380px;width:100%}
+.wm-light.pair{display:flex;flex-wrap:wrap;gap:36px 48px;align-items:flex-end}
+.wm-light figure{margin:0}
+.wm-light figure img{width:auto;max-width:300px}
+.wm-light figcaption{font:400 9px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:#A8A6A0;margin-top:14px}
+.note{display:flex;gap:10px;margin-top:22px;font:400 12px/1.6 var(--mono);color:var(--text-muted)}
+.note .dot{color:var(--signal-500)}
+
+/* ---------- colour ---------- */
+.sw-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:14px}
+.sw{border-radius:10px;overflow:hidden;border:1px solid #1e1e1e}
+.sw .chip{height:78px}
+.sw .lab{padding:10px 12px;background:var(--ink-850);font:400 10px/1.5 var(--mono);color:var(--text-muted)}
+.sw .lab b{display:block;color:var(--text-dim);font-weight:500;letter-spacing:.04em}
+.light .sw{border-color:var(--paper-line)}
+.light .sw .lab{background:#fff;color:#9A9892}
+.light .sw .lab b{color:#3A3A36}
+.pal-title{font:500 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:#666;margin:30px 0 12px}
+.light .pal-title{color:#9A9892}
+.pal-title:first-child{margin-top:0}
+
+/* ---------- product mock ---------- */
+.mock{background:#000;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.mock-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line)}
+.mock-brand{display:flex;align-items:center;gap:8px}
+.mock-brand img{width:20px;height:20px}
+.mock-brand svg{height:15px;width:auto}
+.mock-brand span{font:600 15px/1 var(--sans);letter-spacing:-.02em}
+.mock-nav{display:flex;gap:16px;font-size:12px;color:#999}
+.mock-nav .on{color:#fff}
+.mock-body{padding:22px 18px 24px}
+.mock h3{font-size:19px;letter-spacing:-.03em;margin-bottom:2px}
+.mock .sub{font-size:12px;color:#888}
+.mock-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-top:16px}
+.mock-card{border:1px solid var(--line);border-radius:10px;background:#050505;padding:13px}
+.mock-card .n{font:600 13px/1.3 var(--sans);margin-bottom:8px}
+.mock-card .u{font:400 10px/1.4 var(--mono);color:#777;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{display:inline-flex;align-items:center;gap:5px;border:1px solid #333;border-radius:999px;padding:1px 8px;font:400 10px/1.7 var(--mono);color:#bbb;background:#0a0a0a;white-space:nowrap}
+.badge.live{color:var(--signal-500);border-color:#4a3a16;background:var(--signal-ink)}
+.badge.live .pt{width:5px;height:5px;border-radius:99px;background:var(--signal-500)}
+.badge.ok{color:#7EE787;border-color:#1f4426;background:#07130a}
+.badge.fail{color:#FF7B72;border-color:#4b1f1f;background:#170808}
+.badge.env{color:#79C0FF;border-color:#1f3a5f;background:#07111d}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #333;background:#111;color:#eee;border-radius:7px;padding:7px 12px;font:500 12px/1 var(--sans);cursor:pointer}
+.btn.primary{background:var(--signal-500);border-color:var(--signal-500);color:#0A0A0A}
+.btn.primary:hover{background:var(--signal-400);border-color:var(--signal-400)}
+.mock-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:18px;padding-top:18px;border-top:1px solid #171717}
+.mock-row .spacer{flex:1}
+.login{background:#000;border:1px solid var(--line);border-radius:14px;padding:34px 26px;display:flex;flex-direction:column;align-items:center;text-align:center;justify-content:center}
+.login img{width:40px;margin-bottom:18px}
+.login h3{font-size:16px;margin-bottom:4px}
+.login p{font-size:12px;color:#888;margin-bottom:16px}
+.login .btn{width:100%}
+.up{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:14px}
+
+/* ---------- icons & og ---------- */
+.assets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.asset{border:1px solid var(--line);border-radius:12px;background:var(--ink-850);padding:22px}
+.asset .cap{display:flex;justify-content:space-between;align-items:baseline;margin-top:16px}
+.asset .cap b{font:500 11px/1.4 var(--sans);letter-spacing:-.01em}
+.asset .cap span{font:400 9px/1 var(--mono);color:#666;letter-spacing:.08em}
+.asset .row{display:flex;align-items:flex-end;gap:14px}
+.ico{border-radius:8px;overflow:hidden}
+.icon-strip{display:flex;align-items:flex-end;gap:18px}
+.og-card{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#000}
+.og-card img{width:100%}
+.span2{grid-column:span 2}
+
+/* ---------- do / dont ---------- */
+.dd{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.dd-col h4{font:500 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;margin-bottom:14px}
+.dd-col.yes h4{color:var(--signal-500)}
+.dd-col.no h4{color:#777}
+.dd-col ul{margin:0;padding:0;list-style:none}
+.dd-col li{display:flex;gap:10px;padding:11px 0;border-bottom:1px solid #1b1b1b;font-size:13px;color:var(--text-dim)}
+.dd-col li:last-child{border-bottom:0}
+.dd-col li::before{content:"—";color:#444;font-family:var(--mono)}
+.dd-col.yes li::before{content:"✓";color:var(--signal-500)}
+.dd-col.no li::before{content:"✕";color:#5e5e5e}
+
+/* ---------- footer ---------- */
+footer{padding:52px 0 64px;background:var(--ink-900)}
+.files{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px 24px;margin-top:22px}
+.files code{font:400 11px/1.9 var(--mono);color:#777}
+.files code b{color:var(--text-dim);font-weight:400}
+.foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin-top:40px;padding-top:20px;border-top:1px solid #1a1a1a}
+.foot .url{display:flex;align-items:center;gap:8px;font:400 12px/1 var(--mono);color:var(--text-dim)}
+.foot .url .pt{width:6px;height:6px;border-radius:99px;background:var(--signal-500)}
+
+@media (max-width:900px){
+  .two{grid-template-columns:1fr;gap:28px}
+  .surfaces{grid-template-columns:repeat(2,1fr)}
+  .assets{grid-template-columns:1fr 1fr}
+  .span2{grid-column:span 2}
+  .up{grid-template-columns:1fr}
+}
+@media (max-width:640px){
+  .wrap{padding:0 20px}
+  header.hero{padding-top:20px}
+  .top .meta{display:none}
+  .hero-body{padding:34px 20px 40px}
+  .hero-lock{margin-bottom:30px}
+  section{padding:52px 0}
+  .sec-head{margin-bottom:26px;flex-direction:column;align-items:flex-start;gap:8px}
+  .facts{gap:22px}
+  .surfaces{grid-template-columns:1fr 1fr}
+  .assets{grid-template-columns:1fr}
+  .span2{grid-column:span 1}
+  .dd{grid-template-columns:1fr}
+  .wm-show{padding:26px 20px}
+  .wm-light{padding:24px 20px}
+  .sizes{gap:22px}
+  .mock-nav{display:none}
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="top">
+      <a class="eyebrow" href="#top" aria-label="dok brand">dok <b>/</b> brand</a>
+      <div class="meta"><span>v1.0</span><span>32-unit grid</span><span>Nov 2026</span></div>
+    </div>
+  </div>
+  <div class="wrap hero-body">
+    <img class="hero-lock" src="logo-inverse.svg" alt="dok" width="520" height="190">
+    <h1>Push a folder.<br><em>Get a URL.</em></h1>
+    <p class="lede">A self-hosted deploy platform in one small binary. The identity is built the
+      same way the product is: rounded tiles, hard hairlines, one warm signal and a single
+      45° cut.</p>
+    <div class="facts">
+      <div class="fact"><div class="k">Signal</div><div class="v"><i>#E9A23B</i></div></div>
+      <div class="fact"><div class="k">Ink</div><div class="v">#0A0A0A</div></div>
+      <div class="fact"><div class="k">Text</div><div class="v">#EDEDED</div></div>
+      <div class="fact"><div class="k">Domain</div><div class="v">dok.djt-group.com</div></div>
+    </div>
+  </div>
+</header>
+
+<section id="top">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="num"><b>01</b> — the mark</div>
+        <h2 style="margin-top:10px">The tile is the deployment.<br>The d is carved into it.</h2>
+      </div>
+      <p class="lede-2" style="max-width:26em">A rounded square is what the dashboard shows for
+        every app. Take the `d` out of it and you have the mark. It is a knock-out, so it needs
+        no background plate.</p>
+    </div>
+    <div class="two">
+      <div class="construct">
+        <svg viewBox="0 0 360 360" role="img" aria-label="Mark construction on a 32-unit grid">
+          <defs>
+            <pattern id="grid32" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="translate(36 36)">
+              <path d="M9 0H0V9" fill="none" stroke="#191919" stroke-width="1"/>
+            </pattern>
+          </defs>
+          <rect width="360" height="360" fill="url(#grid32)"/>
+          <rect x="54" y="54" width="252" height="252" fill="none" stroke="#2c2c2c" stroke-dasharray="3 5"/>
+          <g transform="translate(36 36) scale(9)">
+            <path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z
+        M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z
+        M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
+          </g>
+          <g stroke="#333" stroke-width="1">
+            <path d="M54 324h252"/>
+            <path d="M54 320v8M306 320v8"/>
+          </g>
+          <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" letter-spacing=".08em">
+            <text x="36" y="30" fill="#5b5b5b">32 × 32</text>
+            <text x="180" y="346" text-anchor="middle" fill="#5b5b5b">2 → 30</text>
+          </g>
+        </svg>
+      </div>
+      <div>
+        <table class="spec">
+          <tr><th>tile</th><td>2 → 30, radius 7.4 (26.4%)</td></tr>
+          <tr><th>bowl</th><td>Ø 15, stroke 3.6, counter Ø 7.8 (flat right)</td></tr>
+          <tr><th>stem</th><td>x 19 → 23.6, baseline 26.6, top 4.9</td></tr>
+          <tr><th>chamfer</th><td>45°, 3.2 units on the top-right corner</td></tr>
+          <tr><th>margins</th><td>6.6 / 6.4 / 2.9 / 3.4 inside the tile</td></tr>
+          <tr><th>clear space</th><td>¼ of the mark height (8 units)</td></tr>
+          <tr><th>minimum</th><td>16px — below 24px use <code>favicon.svg</code></td></tr>
+        </table>
+        <div class="note"><span class="dot">—</span>
+          <span>The 45° cut is the only flourish in the identity. It reappears on the
+            <code>k</code> terminals and nowhere else.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div><div class="num"><b>02</b> — sizes</div><h2 style="margin-top:10px">Built for a tab, not just a billboard</h2></div>
+      <p class="lede-2" style="max-width:24em">Same vector source at 128, 64, 48, 32, 24 and 16px.
+        No redraws, except the 16px favicon build.</p>
+    </div>
+    <div class="sizes">
+      <figure><img src="logo-mark.svg" width="128" height="128" alt=""><div class="n">128</div></figure>
+      <figure><img src="logo-mark.svg" width="64" height="64" alt=""><div class="n">64</div></figure>
+      <figure><img src="logo-mark.svg" width="48" height="48" alt=""><div class="n">48</div></figure>
+      <figure><img src="logo-mark.svg" width="32" height="32" alt=""><div class="n">32</div></figure>
+      <figure><img src="logo-mark.svg" width="24" height="24" alt=""><div class="n">24</div></figure>
+      <figure><img src="logo-mark.svg" width="16" height="16" alt=""><div class="n">16</div></figure>
+      <figure><img src="favicon.svg" width="16" height="16" alt=""><div class="big">16 · favicon</div></figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div><div class="num"><b>03</b> — surfaces</div><h2 style="margin-top:10px">One file, every ground</h2></div>
+      <p class="lede-2" style="max-width:24em">The carved 45° inner edge of the tile is the only
+        large black shape — it lets the d pick up the background.</p>
+    </div>
+    <div class="surfaces">
+      <figure class="surf black">
+        <img class="mk" src="logo-mark.svg" width="64" height="64" alt="">
+        <figcaption>on #000</figcaption>
+      </figure>
+      <figure class="surf raised">
+        <img class="mk" src="logo-mark.svg" width="64" height="64" alt="">
+        <figcaption>on #111</figcaption>
+      </figure>
+      <figure class="surf paper">
+        <img class="mk" src="logo-mark.svg" width="64" height="64" alt="">
+        <figcaption>on paper</figcaption>
+      </figure>
+      <figure class="surf amber">
+        <img class="mk" src="logo-inverse.svg" width="150" alt="" style="filter:brightness(0) invert(1)">
+        <figcaption>one colour, reversed</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div><div class="num"><b>04</b> — wordmark</div><h2 style="margin-top:10px">Lowercase, monoline, cut twice</h2></div>
+      <p class="lede-2" style="max-width:24em">Hand-drawn paths on the mark's grid: x-height 18,
+        ascender 25.4, weight 4.2. Spacing is optical, not mathematical.</p>
+    </div>
+    <div class="wm-show">
+      <svg viewBox="0 0 55.2 25.4" width="420" role="img" aria-label="dok" color="#EDEDED" fill="none">
+        <g stroke="currentColor" stroke-width="4.2">
+          <circle cx="8.1" cy="19" r="6.9"/><circle cx="32.1" cy="19" r="6.9"/>
+          <g stroke-linecap="butt">
+            <path d="M46.1 20.285 54.9 11.485"/><path d="M46.1 17.715 54.9 26.515"/>
+          </g>
+        </g>
+        <g fill="currentColor">
+          <rect x="15" y="2.6" width="4.2" height="25.4"/><rect x="44.3" y="2.6" width="4.2" height="25.4"/>
+        </g>
+      </svg>
+      <div class="wm-sizes">
+        <figure><img src="logo-inverse.svg" width="150" alt=""><div class="n">150</div></figure>
+        <figure><img src="logo-inverse.svg" width="96" alt=""><div class="n">96</div></figure>
+        <figure><img src="logo-inverse.svg" width="64" alt=""><div class="n">64</div></figure>
+        <figure><img src="logo-inverse.svg" width="56" alt=""><div class="n">56 · min</div></figure>
+      </div>
+    </div>
+    <div class="wm-light">
+      <img src="logo-wordmark.svg" alt="dok">
+    </div>
+    <div class="note"><span class="dot">—</span><span>Wordmark ink box 55.2 : 25.4. Colour is
+      <code>currentColor</code>; nothing is baked in.</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div><div class="num"><b>05</b> — lockup</div><h2 style="margin-top:10px">Mark at ascender height</h2></div>
+      <p class="lede-2" style="max-width:24em">7.2 units of clear space. Nothing else between
+        the tile and the word — no divider, no dot.</p>
+    </div>
+    <div class="wm-show" style="padding-bottom:34px">
+      <img src="logo-inverse.svg" width="430" alt="dok lockup">
+      <div class="wm-sizes">
+        <figure><img src="logo-inverse.svg" width="220" alt=""><div class="n">220</div></figure>
+        <figure><img src="logo-inverse.svg" width="120" alt=""><div class="n">120</div></figure>
+        <figure><img src="logo-inverse.svg" width="88" alt=""><div class="n">88 · min</div></figure>
+      </div>
+    </div>
+    <div class="wm-light pair">
+      <figure><img src="logo-lockup.svg" width="300" alt="dok lockup"><figcaption>primary · ink wordmark</figcaption></figure>
+      <figure><img src="logo-mono.svg" width="160" alt="dok mono"><figcaption>mono · one colour</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div><div class="num"><b>06</b> — colour</div><h2 style="margin-top:10px">One warm signal, everything else quiet</h2></div>
+      <p class="lede-2" style="max-width:26em">Amber carries every live state. Text on amber is
+        always near-black. Neutrals come straight from the dashboard's stylesheet.</p>
+    </div>
+
+    <div class="pal-title">Signal</div>
+    <div class="sw-row">
+      <div class="sw"><div class="chip" style="background:#E9A23B"></div><div class="lab"><b>signal-500</b>#E9A23B</div></div>
+      <div class="sw"><div class="chip" style="background:#F0B25E"></div><div class="lab"><b>signal-400</b>#F0B25E</div></div>
+      <div class="sw"><div class="chip" style="background:#C9821F"></div><div class="lab"><b>signal-600</b>#C9821F</div></div>
+      <div class="sw"><div class="chip" style="background:#FBEEDC"></div><div class="lab"><b>signal-soft</b>#FBEEDC</div></div>
+      <div class="sw"><div class="chip" style="background:#2A2113"></div><div class="lab"><b>signal-ink</b>#2A2113</div></div>
+    </div>
+
+    <div class="pal-title">Ink — dark surfaces</div>
+    <div class="sw-row">
+      <div class="sw"><div class="chip" style="background:#000"></div><div class="lab"><b>ink-900</b>#000000</div></div>
+      <div class="sw"><div class="chip" style="background:#050505"></div><div class="lab"><b>ink-850</b>#050505</div></div>
+      <div class="sw"><div class="chip" style="background:#0A0A0A"></div><div class="lab"><b>ink-800</b>#0A0A0A</div></div>
+      <div class="sw"><div class="chip" style="background:#111"></div><div class="lab"><b>ink-750</b>#111111</div></div>
+      <div class="sw"><div class="chip" style="background:#171717"></div><div class="lab"><b>ink-700</b>#171717</div></div>
+      <div class="sw"><div class="chip" style="background:#222"></div><div class="lab"><b>line</b>#222222</div></div>
+      <div class="sw"><div class="chip" style="background:#333"></div><div class="lab"><b>line-strong</b>#333333</div></div>
+      <div class="sw"><div class="chip" style="background:#888"></div><div class="lab"><b>text-muted</b>#888888</div></div>
+      <div class="sw"><div class="chip" style="background:#BBB"></div><div class="lab"><b>text-dim</b>#BBBBBB</div></div>
+      <div class="sw"><div class="chip" style="background:#EDEDED"></div><div class="lab"><b>text</b>#EDEDED</div></div>
+    </div>
+
+    <div class="pal-title">Paper — light surfaces</div>
+    <div class="sw-row">
+      <div class="sw"><div class="chip" style="background:#FAFAF9"></div><div class="lab"><b>paper</b>#FAFAF9</div></div>
+      <div class="sw"><div class="chip" style="background:#F4F3F0"></div><div class="lab"><b>paper-2</b>#F4F3F0</div></div>
+      <div class="sw"><div class="chip" style="background:#E3E1DC"></div><div class="lab"><b>paper-line</b>#E3E1DC</div></div>
+      <div class="sw"><div class="chip" style="background:#6F6E68"></div><div class="lab"><b>paper-muted</b>#6F6E68</div></div>
+      <div class="sw"><div class="chip" style="background:#111213"></div><div class="lab"><b>ink</b>#111213</div></div>
+    </div>
+
+    <div class="note"><span class="dot">—</span><span>Status badges keep their hue except
+      <code>running</code>, which becomes the signal: #E3B341 → <code>#E9A23B</code>.</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div><div class="num"><b>07</b> — in the product</div><h2 style="margin-top:10px">Where it actually lands</h2></div>
+      <p class="lede-2" style="max-width:26em">Topbar: 20px mark, 15px wordmark, 8px gap.
+        Login: 40px mark above the heading. Amber is reserved for live and primary.</p>
+    </div>
+    <div class="up">
+      <div class="mock">
+        <div class="mock-bar">
+          <div class="mock-brand">
+            <img src="logo-mark.svg" width="20" height="20" alt="">
+            <svg viewBox="0 0 55.2 25.4" role="img" aria-label="dok" color="#EDEDED" fill="none">
+              <g stroke="currentColor" stroke-width="4.2">
+                <circle cx="8.1" cy="19" r="6.9"/><circle cx="32.1" cy="19" r="6.9"/>
+                <g stroke-linecap="butt">
+                  <path d="M46.1 20.285 54.9 11.485"/><path d="M46.1 17.715 54.9 26.515"/>
+                </g>
+              </g>
+              <g fill="currentColor">
+                <rect x="15" y="2.6" width="4.2" height="25.4"/><rect x="44.3" y="2.6" width="4.2" height="25.4"/>
+              </g>
+            </svg>
+          </div>
+          <div class="mock-nav"><span class="on">Projects</span><span>Team</span><span>Domains</span><span>Settings</span></div>
+          <span class="badge">solta</span>
+        </div>
+        <div class="mock-body">
+          <h3>Projects</h3>
+          <div class="sub">3 apps · 12 deployments this week</div>
+          <div class="mock-grid">
+            <div class="mock-card">
+              <div class="n">notes</div>
+              <div class="u">notes.dok.djt-group.com</div>
+              <span class="badge live"><span class="pt"></span>live</span>
+              <span class="badge env">prod</span>
+            </div>
+            <div class="mock-card">
+              <div class="n">api</div>
+              <div class="u">api.dok.djt-group.com</div>
+              <span class="badge ok">ready</span>
+              <span class="badge env">prod</span>
+            </div>
+            <div class="mock-card">
+              <div class="n">shop</div>
+              <div class="u">pr-42.shop.dok.djt-group.com</div>
+              <span class="badge live"><span class="pt"></span>building</span>
+              <span class="badge env">preview</span>
+            </div>
+            <div class="mock-card">
+              <div class="n">docs</div>
+              <div class="u">docs.dok.djt-group.com</div>
+              <span class="badge fail">failed</span>
+              <span class="badge env">prod</span>
+            </div>
+          </div>
+          <div class="mock-row">
+            <button class="btn primary">Push a folder</button>
+            <button class="btn">Deploy logs</button>
+            <span class="spacer"></span>
+            <span class="badge">6.2s last build</span>
+          </div>
+        </div>
+      </div>
+      <div class="login">
+        <img src="logo-mark.svg" width="40" height="40" alt="">
+        <h3>Sign in to dok</h3>
+        <p>Passkey — Proton Pass, iCloud or a hardware key</p>
+        <button class="btn primary">Continue with passkey</button>
+        <p style="margin:14px 0 0;color:#555;font-size:11px">No passwords. Ever.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div><div class="num"><b>08</b> — icons &amp; social</div><h2 style="margin-top:10px">The tab, the dock, the card</h2></div>
+      <p class="lede-2" style="max-width:24em">The favicon trades the chamfer for weight so it
+        survives 16px. The app icon keeps the full geometry on an amber field.</p>
+    </div>
+    <div class="assets">
+      <div class="asset">
+        <img src="app-icon.svg" width="150" height="150" alt="app icon" style="border-radius:12px">
+        <div class="cap"><b>App icon</b><span>512 · r 112</span></div>
+      </div>
+      <div class="asset">
+        <div class="icon-strip">
+          <img src="favicon.svg" width="64" height="64" alt="" style="border-radius:12px">
+          <img src="favicon.svg" width="32" height="32" alt="">
+          <img src="favicon.svg" width="16" height="16" alt="">
+        </div>
+        <div class="cap"><b>Favicon</b><span>64 / 32 / 16</span></div>
+      </div>
+      <div class="asset">
+        <div class="paper-mark">
+          <img src="logo-mark.svg" width="64" height="64" alt="">
+        </div>
+        <div class="cap"><b>Mark on paper</b><span>knock-out</span></div>
+      </div>
+      <div class="asset span2">
+        <div class="og-card"><img src="og.svg" alt="social card"></div>
+        <div class="cap"><b>Social card</b><span>1200 × 630</span></div>
+      </div>
+      <div class="asset">
+        <div class="clearspace">
+          <div class="box"><img src="logo-mark.svg" width="72" height="72" alt=""></div>
+        </div>
+        <div class="cap"><b>Clear space</b><span>¼ height</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div><div class="num"><b>09</b> — rules</div><h2 style="margin-top:10px">Keep it quiet</h2></div>
+      <p class="lede-2" style="max-width:24em">The mark has no effects and no second colour.
+        If a layout needs the mark to shout, the layout is wrong.</p>
+    </div>
+    <div class="dd">
+      <div class="dd-col yes">
+        <h4>Do</h4>
+        <ul>
+          <li>let amber be the only warm element on a screen</li>
+          <li>scale mark and wordmark as one unit, 7.2 units apart</li>
+          <li>keep the knock-out: the mark needs no plate</li>
+          <li>use the mono lockup for print and single-colour work</li>
+          <li>keep the 45° cut as the only flourish</li>
+        </ul>
+      </div>
+      <div class="dd-col no">
+        <h4>Don't</h4>
+        <ul>
+          <li>re-set the wordmark in a font, or tighten the spacing</li>
+          <li>fill the carved d with a third colour</li>
+          <li>put the mark inside another circle or badge</li>
+          <li>add gradients, bevels, glows or drop shadows</li>
+          <li>place the amber tile on amber or orange grounds</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="eyebrow">files</div>
+    <div class="files">
+      <code><b>logo-mark.svg</b></code>
+      <code><b>logo-wordmark.svg</b></code>
+      <code><b>logo-lockup.svg</b></code>
+      <code><b>logo-inverse.svg</b></code>
+      <code><b>logo-mono.svg</b></code>
+      <code><b>favicon.svg</b></code>
+      <code><b>app-icon.svg</b></code>
+      <code><b>og.svg</b></code>
+      <code><b>brand/README.md</b></code>
+      <code><b>brand/screens/</b></code>
+    </div>
+    <div class="foot">
+      <div class="url"><span class="pt"></span>dok.djt-group.com</div>
+      <div class="eyebrow">settled on design/brand</div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

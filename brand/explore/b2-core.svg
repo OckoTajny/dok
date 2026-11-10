@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Direction B, variant 2 — square counter (the container slot), accent core inside. -->
+  <path fill="#EDEDED" fill-rule="evenodd" d="M21.4 19.6A7.4 7.4 0 1 0 6.6 19.6A7.4 7.4 0 1 0 21.4 19.6ZM18.1 17.3A4.1 4.1 0 1 1 9.9 17.3A4.1 4.1 0 1 1 18.1 17.3Z"/>
+  <path d="M23.3 27.8 V9.6 L27.9 5.2 V27.8 Z" fill="#EDEDED"/>
+</svg>
