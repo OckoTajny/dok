@@ -1,0 +1,39 @@
+# Maintainer: Jáchym Šolta <o2t2j2s2@gmail.com>
+pkgname=dok-git
+pkgver=r1.0000000
+pkgrel=1
+pkgdesc="Lightweight self-hosted Vercel/Coolify alternative (git version)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/OckoTajny/dok"
+license=('MIT')
+depends=('gcc-libs')
+makedepends=('cargo' 'rust' 'git')
+optdepends=('docker: build and run deployed apps'
+            'git: deploy from repositories and webhooks')
+provides=('dok')
+conflicts=('dok')
+source=("git+$url.git")
+sha256sums=('SKIP')
+options=(!lto)
+
+pkgver() {
+  cd dok
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd dok
+  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=generic"
+  cargo build --release --locked
+}
+
+package() {
+  cd dok
+  install -Dm755 target/release/dok "$pkgdir/usr/bin/dok"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 docs/DEPLOY.md "$pkgdir/usr/share/doc/$pkgname/DEPLOY.md"
+  install -Dm644 deploy/dok-desktop.service "$pkgdir/usr/share/doc/$pkgname/dok.service"
+  install -Dm644 deploy/dok-keepawake.service "$pkgdir/usr/share/doc/$pkgname/dok-keepawake.service"
+  install -Dm644 deploy/traefik-dok.yaml "$pkgdir/usr/share/doc/$pkgname/traefik-dok.yaml"
+}
