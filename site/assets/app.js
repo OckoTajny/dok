@@ -183,8 +183,9 @@
     var k = (item.k || "").toLowerCase();
     var s = 0;
     if (t === q) s += 100;
-    if (t.indexOf(q) === 0) s += 60;
+    else if (t.indexOf(q) === 0) s += 60;
     else if (t.indexOf(q) > -1) s += 40;
+    if (t === p) s += 50; // prefer the guide itself over a section with the same name
     if (p.indexOf(q) > -1) s += 12;
     if (k.indexOf(q) > -1) s += 18;
     if (d.indexOf(q) > -1) s += 8;

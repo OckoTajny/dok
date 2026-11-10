@@ -23,9 +23,7 @@
 <header class="site-header">
   <div class="wrap header-inner">
     <a class="brand" href="../index.html" aria-label="dok home">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
-</svg>
+      <img class="brand-mark" src="../assets/logo-mark.svg" alt="" width="26" height="26">
       <span class="brand-name">dok</span>
       <span class="brand-tag">self-hosted deploys</span>
     </a>
@@ -89,7 +87,7 @@
       <article class="prose">
         
 <h2 id="default-hostname">The default hostname</h2>
-<p>Every project gets <code>&lt;app&gt;.&lt;base-domain&gt;</code> unless a primary custom domain is set, where the base domain is whatever you passed to <code>dok serve --base-domain</code>. If you started dok with <code>--base-domain apps.example.com</code>, a project named <code>hello</code> is live at <code>https://hello.apps.example.com</code>.</p>
+<p>Every project gets <code>&lt;app&gt;.&lt;base-domain&gt;</code> unless a primary custom domain is set, where the base domain is whatever you passed to <code>dok serve --base-domain</code>. If you started dok with <code>--base-domain apps.example.com</code>, a project named <code>hello</code> is live at <code>https://hello.apps.example.com</code>. On the reference instance the dashboard is <code>dok.solta.tech</code> and app hosts are <code>&lt;app&gt;.apps.solta.tech</code>.</p>
 <ul>
   <li>The default host is created with the project; no DNS record is needed when the base domain already has a wildcard <code>A</code>/<code>AAAA</code> record pointing at the server.</li>
   <li>The dashboard host and the base-domain apex are reserved and never proxied to an app.</li>
@@ -99,17 +97,18 @@
 
 <h2 id="add-a-domain">Add a custom domain</h2>
 <p>Three ways, same result:</p>
-<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok domain hello hello.example.com        # set the primary domain
+<div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>dok domain hello hello.example.com        # set the primary domain, then verify DNS
+dok domains check hello hello.example.com # re-check DNS at any time
 dok domains list hello</code></pre></div>
 <p>Or open the project in the dashboard, choose <strong>Domains</strong>, and add the host. Or call the API directly:</p>
 <div class="code" data-lang="bash"><div class="code-head"><span class="code-lang">bash</span></div><pre><code>curl -fsS -X POST https://dok.example.com/api/v1/projects/hello/domains \
   -H "Authorization: Bearer $DOK_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"domain":"hello.example.com"}'</code></pre></div>
-<p>dok validates the hostname, refuses a domain already owned by another project, writes the route and adds the host to the certificate set. There is no separate “verify” button to wait for.</p>
+<p>dok validates the hostname, refuses a domain already owned by another project, writes the route and adds the host to the certificate set. It also compares the domain's A/AAAA records with the dashboard host and tells you the exact record to create when they do not match. You can repeat that check any time with <strong>Check DNS</strong> in the dashboard or <code>dok domains check</code>.</p>
 <div class="callout">
   <span class="callout-title">What dok checks — and what it does not</span>
-  <p>dok cannot see your DNS provider, so it does not pretend to run a DNS preflight. Adding a domain succeeds immediately; what you watch afterwards is the <strong>certificate state</strong>. If DNS is wrong, the domain exists but the certificate stays pending until the host resolves to this server. The exact records to create are below.</p>
+  <p>When you add a domain, dok resolves it and compares the answer with the machine that runs the dashboard. The result is one of <strong>correct</strong>, <strong>missing</strong> (no A/AAAA record yet) or <strong>mismatch</strong> (it points somewhere else), and the message names the record to create or fix. The API returns the same result as <code>dns.status</code> and <code>dns.hint</code>; the dashboard shows it in the flash message and behind <strong>Check DNS</strong>. DNS propagation and certificate issuance are still separate steps — a correct record can take a few minutes to reach every resolver, and the certificate follows once it does.</p>
 </div>
 
 <h2 id="dns-records">The DNS records</h2>
@@ -215,9 +214,7 @@ dok domains rm hello old.example.com</code></pre></div>
     <div class="footer-top">
       <div class="footer-brand">
         <a class="brand" href="../index.html" aria-label="dok home">
-          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
-</svg>
+          <img class="brand-mark" src="../assets/logo-mark.svg" alt="" width="26" height="26">
           <span class="brand-name">dok</span>
         </a>
         <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
@@ -262,6 +259,7 @@ dok domains rm hello old.example.com</code></pre></div>
         <a href="../docs/self-hosting.html">Self-hosting</a>
         <a href="../sitemap.xml">Sitemap</a>
         <a href="https://dok.solta.tech">Live instance</a>
+        <a href="https://github.com/OckoTajny/dok">Edit on GitHub</a>
       </div>
     </div>
   </div>

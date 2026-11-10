@@ -23,9 +23,7 @@
 <header class="site-header">
   <div class="wrap header-inner">
     <a class="brand" href="../index.html" aria-label="dok home">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
-</svg>
+      <img class="brand-mark" src="../assets/logo-mark.svg" alt="" width="26" height="26">
       <span class="brand-name">dok</span>
       <span class="brand-tag">self-hosted deploys</span>
     </a>
@@ -125,10 +123,10 @@ dig +short my-app.example.com</code></pre></div>
 dok deploys my-app
 dok rollback my-app 4f2c9a1b
 dok access-log my-app --limit 20</code></pre></div>
-<p>Static sites do not have a container. A 502 on a static project usually means the production pointer is missing or the project was never successfully deployed; check <code>dok deploys</code> and push again.</p>
+<p>Static projects do not have a container, so a missing file is a branded 404 rather than a 502. If a static project appears broken, check <code>dok deploys</code> and push again.</p>
 
 <h2 id="certificate-pending">Certificate pending or not issued</h2>
-<p>dok adds the host and starts the certificate path immediately. “Pending” means the ACME order has not completed, not that dok is still checking DNS.</p>
+<p>In edge mode, dok adds the host and starts the certificate path immediately. “Pending” means the ACME order has not completed, not that dok is still checking DNS.</p>
 <ol>
   <li>Does the hostname resolve to the machine that terminates TLS? <code>dig +short host</code>. Remove stale AAAA records.</li>
   <li>Are ports 80 and 443 reachable? HTTP-01 uses 80, TLS-ALPN-01 uses 443. A cloud firewall or security group is a common blocker.</li>
@@ -251,9 +249,7 @@ dig +short my-app-4f2c9a1b.apps.example.com</code></pre></div>
     <div class="footer-top">
       <div class="footer-brand">
         <a class="brand" href="../index.html" aria-label="dok home">
-          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
-</svg>
+          <img class="brand-mark" src="../assets/logo-mark.svg" alt="" width="26" height="26">
           <span class="brand-name">dok</span>
         </a>
         <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
@@ -298,6 +294,7 @@ dig +short my-app-4f2c9a1b.apps.example.com</code></pre></div>
         <a href="../docs/self-hosting.html">Self-hosting</a>
         <a href="../sitemap.xml">Sitemap</a>
         <a href="https://dok.solta.tech">Live instance</a>
+        <a href="https://github.com/OckoTajny/dok">Edit on GitHub</a>
       </div>
     </div>
   </div>

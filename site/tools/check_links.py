@@ -22,6 +22,7 @@ class Page(HTMLParser):
         self.links = []  # (tag, attr, value)
         self.title = ""
         self.description = ""
+        self.og_image = ""
         self.h1 = 0
         self.lang = None
         self.has_skip = False
@@ -44,6 +45,8 @@ class Page(HTMLParser):
             self.links.append((tag, "src", a["src"]))
         elif tag == "meta" and a.get("name") == "description":
             self.description = a.get("content", "")
+        elif tag == "meta" and a.get("property") == "og:image":
+            self.og_image = a.get("content", "")
         elif tag == "title":
             self._in_title = True
         elif tag == "h1":
@@ -115,6 +118,10 @@ def main():
             errors.append(f"{rel}: missing skip link")
         if "main" not in page.ids:
             errors.append(f"{rel}: missing id=main for skip link")
+        if page.og_image:
+            og_path = urlsplit(page.og_image).path
+            if not (root / og_path.lstrip("/")).is_file():
+                errors.append(f"{rel}: og:image {page.og_image} -> missing file")
 
         dupes = [i for i, n in Counter(page.ids).items() if n > 1]
         if dupes:

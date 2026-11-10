@@ -23,9 +23,7 @@
 <header class="site-header">
   <div class="wrap header-inner">
     <a class="brand" href="../index.html" aria-label="dok home">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
-</svg>
+      <img class="brand-mark" src="../assets/logo-mark.svg" alt="" width="26" height="26">
       <span class="brand-name">dok</span>
       <span class="brand-tag">self-hosted deploys</span>
     </a>
@@ -118,7 +116,7 @@ install -m755 target/release/dok ~/.local/bin/dok</code></pre></div>
 <p>DNS must already point <code>dok.example.com</code> and <code>*.apps.example.com</code> at this machine. The host set is recomputed every 15 seconds, so adding a project or domain does not require a restart. Do not run edge mode on a host where Traefik or Caddy already owns ports 80/443.</p>
 <div class="callout warn">
   <span class="callout-title">Privileged ports</span>
-  <p>Ports below 1024 need privilege. Run edge mode as root only if you accept that; otherwise grant the binary <code>CAP_NET_BIND_SERVICE</code> (<code>sudo setcap 'cap_net_bind_service=+ep' ~/.local/bin/dok</code>, and reapply after an upgrade) or add <code>AmbientCapabilities=CAP_NET_BIND_SERVICE</code> to the unit. The least surprising option is to keep Traefik/Caddy on 80/443 and run dok on a high port.</p>
+  <p>Ports below 1024 need privilege. Run edge mode as root only if you accept that; otherwise grant the binary <code>CAP_NET_BIND_SERVICE</code> (<code>sudo setcap 'cap_net_bind_service=+ep' ~/.local/bin/dok</code>, and reapply after an upgrade) or, for a system unit, add <code>AmbientCapabilities=CAP_NET_BIND_SERVICE</code>. The least surprising option is to keep Traefik/Caddy on 80/443 and run dok on a high port.</p>
 </div>
 
 <h2 id="systemd">Run it as a service</h2>
@@ -280,9 +278,7 @@ sudo systemctl enable --now dok-keepawake.service</code></pre></div>
     <div class="footer-top">
       <div class="footer-brand">
         <a class="brand" href="../index.html" aria-label="dok home">
-          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-<path fill="#E9A23B" fill-rule="evenodd" d="M2 9.4A7.4 7.4 0 0 1 9.4 2h13.2A7.4 7.4 0 0 1 30 9.4v13.2a7.4 7.4 0 0 1-7.4 7.4H9.4A7.4 7.4 0 0 1 2 22.6Z M19 4.9H20.4L23.6 8.1V26.6H19V26.017A7.5 7.5 0 1 1 19 12.183Z M19 16.492A3.9 3.9 0 1 0 19 21.708Z"/>
-</svg>
+          <img class="brand-mark" src="../assets/logo-mark.svg" alt="" width="26" height="26">
           <span class="brand-name">dok</span>
         </a>
         <p>A tiny self-hosted deploy platform in one Rust binary. Push a folder, get a URL with TLS.</p>
@@ -327,6 +323,7 @@ sudo systemctl enable --now dok-keepawake.service</code></pre></div>
         <a href="../docs/self-hosting.html">Self-hosting</a>
         <a href="../sitemap.xml">Sitemap</a>
         <a href="https://dok.solta.tech">Live instance</a>
+        <a href="https://github.com/OckoTajny/dok">Edit on GitHub</a>
       </div>
     </div>
   </div>
