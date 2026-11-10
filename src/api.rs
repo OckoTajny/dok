@@ -1471,7 +1471,7 @@ pub fn project_url(st: &AppState, app: &crate::db::App) -> String {
     {
         format!("{}://{d}", st.scheme)
     } else {
-        st.public_url.clone()
+        String::new()
     }
 }
 

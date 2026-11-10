@@ -58,9 +58,11 @@ dok login <url> <token>          save server + token (~/.config/dok/config.toml)
 dok push [dir] [--app N] [--domain H] [--port P] [--env production|preview]
 dok apps                         list apps (alias: dok projects)
 dok projects                     list projects
-dok projects create <name>       create an empty project
+dok projects create <name> [--team T]
+                                 create a project in a specific team
 dok projects rm <name>           delete a project
-dok logs <app> [--env E]         build + runtime logs (-f to follow)
+dok logs <app> [--env E] [--deploy ID]
+                                 build + runtime logs (-f to follow)
 dok env <app> [-e E] [--secret] KEY=VALUE
                                  set env (secrets are write-only)
 dok env pull <app> [env]         print env as KEY=VALUE (secrets are ***)
@@ -68,7 +70,8 @@ dok env rm <app> KEY [env]       remove one env key
 dok proxy show <app>             print proxy settings
 dok proxy set <app> [--header "Name: value"] [--basic-user U]
                                  [--basic-password P] [--redirect R]
-                                 [--compression] [--force-https] [--max-body-mb N]
+                                 [--compression|--no-compression]
+                                 [--force-https|--no-force-https] [--max-body-mb N]
 dok certs list                   list certificates and project owners
 dok certs renew <host>           request a fresh certificate
 dok access-log <app>             recent proxy requests
@@ -87,6 +90,10 @@ dok team members <team>          list members and roles
 dok team invite <team> [--role]  create a seven-day invite link
 dok team invites <team>          list invite links
 dok team revoke <team> <token>   revoke an invite link
+dok team create <name>           create a team
+dok team role <team> <user> <role>
+                                 change a member role
+dok team remove <team> <user>    remove a member
 dok stats <app>                  deploy/domain/runtime metrics
 dok open <app>                   print the public URL
 dok git <app> <repo-url>         repo used by webhooks / redeploy
@@ -300,6 +307,10 @@ secret values stay masked everywhere after they are written.
 
 Team roles: only owners may grant admin/owner; admins may invite members and
 viewers. Invites are single-use and expire after seven days.
+
+The process sets umask 077: the data directory is 0700 and `dok.db`, its
+WAL/SHM files and every backup are 0600, so other local accounts cannot read
+environment secrets.
 
 Git repository URLs are limited to public `https://`, `ssh://` or
 `git@host:path` remotes; loopback, private, link-local and cloud-metadata

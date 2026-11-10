@@ -867,6 +867,9 @@ pub fn run(cmd: Cmd) -> Result<()> {
                     }
                 }
             });
+            if url.is_empty() {
+                bail!("project has no routable domain; add one with `dok domain {app} <host>` or start dok with --base-domain");
+            }
             println!("{url}");
             Ok(())
         }

@@ -587,7 +587,14 @@ pub async fn deploy_dir(
                     .as_ref()
                     .map(|b| format!("{}://{app}.{b}", st.scheme))
             })
-            .unwrap_or_else(|| st.public_url.clone())
+            .or_else(|| {
+                st.db
+                    .domains_for(app)
+                    .ok()
+                    .and_then(|d| d.into_iter().next())
+                    .map(|d| format!("{}://{d}", st.scheme))
+            })
+            .unwrap_or_default()
     } else if let Some(base) = &st.base_domain {
         format!("{}://{}-{}.{}", st.scheme, app, &deploy_id[..8], base)
     } else {
@@ -794,7 +801,14 @@ pub async fn promote(
                         .as_ref()
                         .map(|b| format!("{}://{app}.{b}", st.scheme))
                 })
-                .unwrap_or_else(|| st.public_url.clone());
+                .or_else(|| {
+                    st.db
+                        .domains_for(app)
+                        .ok()
+                        .and_then(|d| d.into_iter().next())
+                        .map(|d| format!("{}://{d}", st.scheme))
+                })
+                .unwrap_or_default();
             st.db.finish_deploy_meta(
                 &new_id,
                 "ok",

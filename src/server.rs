@@ -83,6 +83,33 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     // Append the listening port for plain HTTP output when the host has none.
     let public_url = ensure_port(&public_url, args.http_port, "http");
 
+    // Edge mode terminates TLS itself, so the dashboard origin must be a real
+    // hostname that can receive a certificate. Include it in ACME from boot;
+    // otherwise passkeys cannot work on a bare fresh install.
+    let mut edge_dashboard_domains = Vec::new();
+    if args.edge {
+        for raw in [&public_url, &origin] {
+            if let Ok(u) = url::Url::parse(raw) {
+                if let Some(h) = u.host_str() {
+                    let h = h.trim_end_matches('.').to_ascii_lowercase();
+                    if !edge_dashboard_domains.contains(&h) {
+                        edge_dashboard_domains.push(h);
+                    }
+                }
+            }
+        }
+        for host in &edge_dashboard_domains {
+            if host.parse::<std::net::IpAddr>().is_ok()
+                || host == "localhost"
+                || host.ends_with(".localhost")
+            {
+                anyhow::bail!(
+                    "--edge needs a public dashboard hostname (set --public-host and --dashboard-origin, e.g. dok.example.com); use plain `dok serve` behind an external TLS proxy instead"
+                );
+            }
+        }
+    }
+
     init_token(&db, &data, args.token.as_deref(), &public_url)?;
 
     let auth = match url::Url::parse(&origin) {
@@ -252,7 +279,11 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         }
     });
 
-    let extra_domains = args.acme_domain.clone();
+    let extra_domains = {
+        let mut domains = args.acme_domain.clone();
+        domains.extend(edge_dashboard_domains.clone());
+        domains
+    };
     let base_domain = args.base_domain.clone();
     let acme_email = args.acme_email.clone();
     let acme_prod = args.acme_prod;
@@ -456,17 +487,30 @@ fn clear_cert_cache_for(dir: &std::path::Path, host: &str) {
     }
 }
 
-fn cert_expiry(dir: &std::path::Path) -> Option<i64> {
-    let rd = std::fs::read_dir(dir).ok()?;
-    let latest = rd
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("cached_cert_"))
-        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
-    let bytes = std::fs::read(latest.path()).ok()?;
-    let mut reader = std::io::BufReader::new(&bytes[..]);
+fn parse_cert_expiry(bytes: &[u8]) -> Option<i64> {
+    let text = String::from_utf8_lossy(bytes).replace("\\n", "\n");
+    let mut reader = std::io::BufReader::new(text.as_bytes());
     let der = rustls_pemfile::certs(&mut reader).next()?.ok()?;
     let (_, cert) = x509_parser::parse_x509_certificate(der.as_ref()).ok()?;
     Some(cert.validity().not_after.timestamp())
+}
+
+/// Expiry of the cached certificate that belongs to this host, so one host's
+/// cert is never reported as another host's status.
+fn cert_expiry_for(dir: &std::path::Path, host: &str) -> Option<i64> {
+    let rd = std::fs::read_dir(dir).ok()?;
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with("cached_cert_") {
+            continue;
+        }
+        let bytes = std::fs::read(entry.path()).ok()?;
+        let text = String::from_utf8_lossy(&bytes).replace("\\n", "\n");
+        if name.to_string_lossy().contains(host) || text.contains(host) {
+            return parse_cert_expiry(&bytes);
+        }
+    }
+    None
 }
 
 fn record_cert_status(
@@ -475,9 +519,9 @@ fn record_cert_status(
     acme_dir: &std::path::Path,
     error: Option<&str>,
 ) {
-    let expiry = cert_expiry(acme_dir);
     let now = crate::db::now();
     for host in hosts {
+        let expiry = cert_expiry_for(acme_dir, host);
         let previous = st
             .db
             .get_setting(&format!("cert:{host}"))
