@@ -131,6 +131,12 @@ pub async fn handle(st: &AppState, req: Request<Body>) -> Option<Response<Body>>
     let auth = st.auth.as_ref()?;
     let path = req.uri().path().to_string();
     let method = req.method().clone();
+    // HEAD is GET without a body; link checkers and uptime probes use it.
+    let method = if method == axum::http::Method::HEAD {
+        axum::http::Method::GET
+    } else {
+        method
+    };
     let session = auth.session(&st.db, &req);
     let first_run = st.db.user_count().ok()? == 0;
     if (path.starts_with("/auth/setup")

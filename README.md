@@ -294,7 +294,7 @@ dok.
 
 ## Access log
 
-The proxy keeps the last 200 requests per project in SQLite (time, method,
+The proxy keeps the last 5000 requests per project in SQLite (time, method,
 path, status, latency, client IP) with automatic retention. They are shown on
 the project Logs page and exposed at `/api/v1/projects/{app}/access-log`.
 The dashboard live stream is session-authenticated (`/dashboard/stream/<app>`),
@@ -357,7 +357,8 @@ internal git server, opt in explicitly with
   DNS/wildcard coverage; production stays on the project domain.
 - **Restore a backup**: stop the service, copy `backups/dok-*.db` over
   `dok.db`, remove stale `-wal`/`-shm` files, start the service. Migrations run
-  automatically on start.
+  automatically on start. Backups cover the database only; copy `repos/` and
+  `acme/` alongside it if you use git-push projects or the built-in edge.
 - **Upgrade**: re-run `./install.sh` (idempotent), or replace the binary and
   `systemctl --user restart dok`. The SQLite schema is migrated in place; keep
   a backup from `<data>/backups`.

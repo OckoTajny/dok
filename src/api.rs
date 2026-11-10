@@ -48,7 +48,15 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response {
         } else if st.auth.is_none() {
             crate::ui::page_not_configured(&st)
         } else {
-            proxy::generic_not_found(&st, &request_id)
+            crate::ui::branded_error_with_back(
+                StatusCode::NOT_FOUND,
+                "Page not found",
+                None,
+                "This dashboard page does not exist. Open your projects or use the sidebar.",
+                None,
+                &request_id,
+                Some("/dashboard"),
+            )
         }
     } else {
         // A routed app always wins: its own /api/... paths must reach the app.
@@ -1082,7 +1090,13 @@ fn put_env_impl(
     let kv: Vec<(String, String, bool)> = vars
         .into_iter()
         .map(|(k, (v, explicit))| {
-            let secret = explicit.unwrap_or_else(|| existing.get(&k).copied().unwrap_or(false));
+            let secret = if v.is_empty() && existing.get(&k).copied().unwrap_or(false) {
+                // A blank value means "keep the stored secret"; it does not
+                // silently declassify it.
+                true
+            } else {
+                explicit.unwrap_or_else(|| existing.get(&k).copied().unwrap_or(false))
+            };
             (k, v, secret)
         })
         .collect();
@@ -1506,6 +1520,10 @@ async fn metrics(
     }
     let stats = deploy::container_stats(&app, "production", None).await;
     let history = st.metric_history(&app, 120);
+    let (requests, errors, p95) = st
+        .db
+        .access_stats(&app, crate::db::now() - 3600)
+        .unwrap_or((0, 0, 0));
     Json(json!({
         "project": a.name,
         "status": a.status,
@@ -1521,6 +1539,7 @@ async fn metrics(
         },
         "runtime": stats,
         "history": history,
+        "traffic": {"window_secs": 3600, "requests": requests, "errors_5xx": errors, "p95_latency_ms": p95},
     }))
     .into_response()
 }
@@ -1556,7 +1575,10 @@ async fn get_proxy(
     if let Err(r) = project_for(&st, &caller, &app) {
         return r;
     }
-    let s = st.db.proxy_settings(&app);
+    let s = match st.db.proxy_settings(&app) {
+        Ok(s) => s,
+        Err(e) => return internal(e),
+    };
     let mut v = serde_json::to_value(&s).unwrap_or_else(|_| json!({}));
     v["basic_auth_configured"] = json!(s.basic_auth_hash.is_some());
     v["basic_auth_hash"] = json!(null);
@@ -1588,7 +1610,10 @@ async fn put_proxy(
     } else if b.settings.basic_auth_hash.is_none() {
         // The dashboard/API never sends the stored hash back. Preserve it when
         // the caller only changes another setting.
-        b.settings.basic_auth_hash = st.db.proxy_settings(&app).basic_auth_hash;
+        b.settings.basic_auth_hash = match st.db.proxy_settings(&app) {
+            Ok(s) => s.basic_auth_hash,
+            Err(e) => return internal(e),
+        };
     }
     if b.settings
         .basic_auth_user
@@ -1617,7 +1642,7 @@ async fn put_proxy(
         }
     }
     if let Some(mb) = b.settings.max_body_mb {
-        b.settings.max_body_mb = Some(mb.min(512));
+        b.settings.max_body_mb = Some(mb.min(64));
         if b.settings.max_body_mb == Some(0) {
             b.settings.max_body_mb = None;
         }
@@ -1656,6 +1681,9 @@ pub(crate) fn hosts_for_app(st: &AppState, app: &crate::db::App) -> Vec<String> 
         }
     }
     for h in st.db.domains_for(&app.name).unwrap_or_default() {
+        set.insert(h);
+    }
+    for h in st.db.preview_hosts_for(Some(&app.name)) {
         set.insert(h);
     }
     let mut v: Vec<_> = set.into_iter().collect();
@@ -2238,7 +2266,7 @@ async fn github_hook(
         }
     };
     if st.db.get_app(&app).ok().flatten().is_none() {
-        return not_found();
+        return (StatusCode::UNAUTHORIZED, "bad signature\n").into_response();
     }
     let project_secret = st
         .db
@@ -3344,7 +3372,12 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::OK);
-        let first = st.db.proxy_settings("proxied").basic_auth_hash.clone();
+        let first = st
+            .db
+            .proxy_settings("proxied")
+            .unwrap()
+            .basic_auth_hash
+            .clone();
         assert!(first.is_some());
         let r = call(
             &st,
@@ -3355,7 +3388,7 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::OK);
-        let settings = st.db.proxy_settings("proxied");
+        let settings = st.db.proxy_settings("proxied").unwrap();
         assert_eq!(settings.basic_auth_hash, first);
         assert!(settings.compression);
         let _ = std::fs::remove_file(path);

@@ -69,7 +69,20 @@ pub async fn serve_app(
     let host = host_of(&req);
     let app = route.app.clone();
     let deploy = route.deploy.clone();
-    let settings = st.db.proxy_settings(&app.name);
+    let settings = match st.db.proxy_settings(&app.name) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("proxy settings for {}: {e}", app.name);
+            return crate::ui::branded_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Temporarily unavailable",
+                Some(&app.name),
+                "Project routing settings could not be read. The project is kept safe until they are repaired.",
+                last_good_at(&st, &app.name),
+                request_id,
+            );
+        }
+    };
 
     if let Some(r) = redirect_for(&st, &req, &host, &settings, ip.as_deref()) {
         log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
@@ -131,27 +144,13 @@ pub async fn serve_app(
             log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
             return with_request_id(apply_headers(r, &settings), request_id);
         }
-        // Chunked uploads without a length are buffered up to the cap so the
-        // limit cannot be bypassed by omitting Content-Length.
+        // Chunked uploads without a length are streamed through a byte-limited
+        // body instead of being buffered in RAM; a cap that could be bypassed
+        // by omitting Content-Length is still enforced.
         if has_body {
             let (parts, body) = req.into_parts();
-            match axum::body::to_bytes(body, limit as usize + 1).await {
-                Ok(b) if b.len() as u64 <= limit => {
-                    req = Request::from_parts(parts, Body::from(b));
-                }
-                _ => {
-                    let r = crate::ui::branded_error(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "Payload too large",
-                        Some(&app.name),
-                        &format!("This project accepts requests up to {max} MB."),
-                        last_good_at(&st, &app.name),
-                        request_id,
-                    );
-                    log_request(&st, &app.name, &method, &path, &r, started, ip.as_deref());
-                    return with_request_id(apply_headers(r, &settings), request_id);
-                }
-            }
+            let limited = http_body_util::Limited::new(body, limit as usize);
+            req = Request::from_parts(parts, Body::new(limited));
         }
     }
 

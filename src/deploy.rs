@@ -543,6 +543,10 @@ pub async fn deploy_dir(
             &format!("{memory_mb}m"),
             "--cpus",
             &format!("{cpus}"),
+            "--pids-limit",
+            "512",
+            "--security-opt",
+            "no-new-privileges",
         ]);
         // Pass secrets through a 0600 file, never through the process argv.
         let env_file = st.data.join("tmp").join(format!("env-{deploy_id}.env"));

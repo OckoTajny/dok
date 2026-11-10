@@ -613,7 +613,11 @@ fn flash_banner(flash: Option<&Flash>) -> String {
 }
 
 pub(crate) fn redirect_flash(to: &str, ok: bool, msg: &str) -> Response<Body> {
-    let msg: String = msg.chars().take(300).collect();
+    let truncated = msg.chars().count() > 299;
+    let mut msg: String = msg.chars().take(299).collect();
+    if truncated {
+        msg.push('…');
+    }
     let value = enc_cookie(&format!("{}|{msg}", if ok { "ok" } else { "err" }));
     // The target can contain a user-supplied team slug: never let it inject a
     // header or panic the response builder.
@@ -973,7 +977,7 @@ if(open){{var c=document.getElementById('nav-close');if(c)c.focus();}}\
 else{{var b=document.querySelector('button.menu');if(b)b.focus();}}}}\
 function toggleNav(){{setNav(!document.body.classList.contains('nav-open'));}}\
 document.addEventListener('keydown',function(e){{if(e.key==='Escape'&&document.body.classList.contains('nav-open'))setNav(false);}});\
-function copyText(t,b){{if(!navigator.clipboard)return;navigator.clipboard.writeText(t).then(function(){{if(!b)return;var o=b.textContent;b.textContent='Copied';setTimeout(function(){{b.textContent=o}},1500)}});}}\
+function copyText(t,b){{function done(ok){{if(!b)return;var o=b.dataset.label||b.textContent;b.dataset.label=o;b.textContent=ok?'Copied':'Copy failed';setTimeout(function(){{b.textContent=o}},1600);}}function fallback(){{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();var ok=false;try{{ok=document.execCommand('copy')}}catch(e){{}}ta.remove();done(ok);}}if(navigator.clipboard&&navigator.clipboard.writeText){{navigator.clipboard.writeText(t).then(function(){{done(true)}}).catch(fallback);}}else{{fallback();}}}}\
 if(document.querySelector('[data-status-app],[data-deploy-status]')){{setTimeout(pollStatus,5000);}}\
 function pollStatus(){{var nodes=document.querySelectorAll('[data-status-app],[data-deploy-status]');if(!nodes.length)return;\
 fetch('/dashboard/status',{{headers:{{'accept':'application/json'}},credentials:'same-origin'}}).then(function(r){{if(!r.ok)throw 0;return r.json()}}).then(function(j){{\
@@ -1201,7 +1205,7 @@ fn render_dashboard(
             })
             .unwrap_or_default();
         cards.push_str(&format!(
-            "<a class=card href=\"/dashboard/project/{n}\"><div class=\"row between\"><span class=name>{n}</span><span class=row><span data-status-app=\"{n}\">{badge}</span>{prod}{alarm}</span></div>\
+            "<a class=card href=\"/dashboard/project/{n}\"><div class=\"row between\"><span class=name>{n}</span><span class=row><span data-status-app=\"{n}\" aria-live=polite>{badge}</span>{prod}{alarm}</span></div>\
 <div class=\"muted small\" style=\"margin:6px 0 10px\">{host}</div>{meta}</a>",
             n = esc(&a.name),
             badge = badge,
@@ -1319,6 +1323,9 @@ fn cert_table(st: &AppState, app: &App, csrf: &str, can: bool) -> String {
     for d in st.db.domains_for(&app.name).unwrap_or_default() {
         set.insert(d);
     }
+    for h in st.db.preview_hosts_for(Some(&app.name)) {
+        set.insert(h);
+    }
     let mut hosts: Vec<_> = set.into_iter().collect();
     hosts.sort();
     let mut rows = String::new();
@@ -1400,7 +1407,7 @@ async fn render_project(
 
     match tab {
         "logs" => {
-            let deploys = st.db.deploys(&app.name, 20).unwrap_or_default();
+            let deploys = st.db.deploys(&app.name, 100_000).unwrap_or_default();
             let selected = q
                 .get("deploy")
                 .and_then(|id| deploys.iter().find(|d| &d.id == id));
@@ -1472,7 +1479,7 @@ async fn render_project(
             let status_filter = q.get("status").and_then(|s| s.parse::<u16>().ok());
             let access_rows = st
                 .db
-                .access_logs_filtered(&app.name, 50, status_filter, None)
+                .access_logs_filtered(&app.name, 5000, status_filter, None)
                 .unwrap_or_default();
             let access_total = st
                 .db
@@ -1786,7 +1793,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             ));
         }
         "proxy" => {
-            let s = st.db.proxy_settings(&app.name);
+            let s = st.db.proxy_settings(&app.name).unwrap_or_default();
             let headers = s
                 .headers
                 .iter()
@@ -1955,7 +1962,7 @@ liveCtl=null;b.textContent='Live stream';}}\
             ));
         }
         _ => {
-            let deploys = st.db.deploys(&app.name, 20).unwrap_or_default();
+            let deploys = st.db.deploys(&app.name, 100_000).unwrap_or_default();
             let mut rows = String::new();
             for d in &deploys {
                 let short = if d.id.len() > 8 { &d.id[..8] } else { &d.id };
@@ -2080,14 +2087,27 @@ liveCtl=null;b.textContent='Live stream';}}\
             } else {
                 String::new()
             };
+            let (reqs, errs, p95) = st
+                .db
+                .access_stats(&app.name, crate::db::now() - 3600)
+                .unwrap_or((0, 0, 0));
+            let traffic = format!(
+                "{reqs} req · {:.1}% 5xx · p95 {p95} ms",
+                if reqs > 0 {
+                    errs as f64 * 100.0 / reqs as f64
+                } else {
+                    0.0
+                }
+            );
             content.push_str(&format!(
                 "<div class=\"row between\" style=\"margin-top:18px\"><h2 style=\"margin:0\">Deployments</h2><div>{redeploy}</div></div>\
 <div class=\"grid\" style=\"margin:12px 0 20px\">\
 <div class=card><div class=muted small>Deployments</div><div class=name>{total}</div><div class=\"muted small\">{prod_n} production · {preview_n} preview</div></div>\
 <div class=card><div class=muted small>Domains</div><div class=name>{domain_n}</div><div class=\"muted small\">custom + primary</div></div>\
 <div class=card><div class=muted small>Environment keys</div><div class=name>{env_total}</div><div class=\"muted small\">across all environments</div></div>\
+<div class=card><div class=muted small>Traffic (1h)</div><div class=name>{traffic}</div><div class=\"muted small\">from the access log</div></div>\
 <div class=card><div class=muted small>Runtime</div><div class=name>{runtime}</div>{spark}<div class=\"muted small\">{runtime_note}</div></div></div>\
-<div class=\"muted small\" style=\"margin:0 0 8px\">Showing the newest {shown} of {total} deployments.</div>\
+<div class=\"muted small\" style=\"margin:0 0 8px\">Showing {shown} retained deployments (older builds are pruned).</div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>Deploy</th><th>Env</th><th>Status</th><th>Deployed</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>",
                 redeploy = redeploy,
                 rows = rows,
@@ -2098,6 +2118,7 @@ liveCtl=null;b.textContent='Live stream';}}\
                 domain_n = domain_n,
                 env_total = env_total,
                 runtime = runtime,
+                traffic = traffic,
                 spark = spark,
                 runtime_note = if app.kind == "docker" { "docker stats · last 30 min" } else { "served from disk" }
             ));
@@ -2679,7 +2700,7 @@ pub async fn handle(
                         app.name.clone(),
                         serde_json::json!({"status": app.status, "badge": status_badge(&app.status)}),
                     );
-                    for d in st.db.deploys(&app.name, 20).unwrap_or_default() {
+                    for d in st.db.deploys(&app.name, 100_000).unwrap_or_default() {
                         deploys.insert(
                             d.id.clone(),
                             serde_json::json!({"status": d.status, "badge": status_badge(&d.status)}),
@@ -2800,30 +2821,14 @@ pub async fn handle(
     }
 
     // All dashboard writes are CSRF-protected.
-    let referer = req
-        .headers()
-        .get(header::REFERER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| url::Url::parse(v).ok())
-        .map(|u| {
-            let mut s = u.path().to_string();
-            if let Some(q) = u.query() {
-                s.push('?');
-                s.push_str(q);
-            }
-            s
-        })
-        .filter(|p| p == "/dashboard" || p.starts_with("/dashboard/"));
     let rest = path.trim_start_matches("/dashboard/").to_string();
     let form = match read_form(req).await {
         Ok(f) => f,
         Err(r) => return Some(r),
     };
     if check_csrf(&session, &form).is_err() {
-        return Some(redirect_flash(
-            referer.as_deref().unwrap_or("/dashboard"),
-            false,
-            "Your session changed — reload the page and try again.",
+        return Some(forbidden(
+            "Your session changed — reload the page and submit the form again.",
         ));
     }
 
@@ -3093,38 +3098,43 @@ pub async fn handle(
     let deployments = format!("/dashboard/project/{}/deployments", app.name);
 
     match action {
-        "redeploy" => match crate::api::deploy_from_repo(st, &app.name).await {
-            Ok(_) => Some(redirect_flash(
-                &deployments,
+        "redeploy" => {
+            let bg = st.clone();
+            let name = app.name.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::api::deploy_from_repo(&bg, &name).await {
+                    tracing::error!("dashboard redeploy {name}: {e}");
+                }
+            });
+            Some(redirect_flash(
+                &format!("/dashboard/project/{}/deployments", app.name),
                 true,
-                "Redeploy finished. Open the deploy log for details.",
-            )),
-            Err(e) => Some(redirect_flash(
-                &deployments,
-                false,
-                &format!("Redeploy failed: {e}"),
-            )),
-        },
+                "Deploy started. The status badge updates automatically; open Logs for build output.",
+            ))
+        }
         "promote" | "rollback" => {
             if tail.is_empty() {
                 return Some(unprocessable("Missing deploy id.", &deployments));
             }
-            match crate::deploy::promote(st, &app.name, &tail, Some(&user.email)).await {
-                Ok(_) => Some(redirect_flash(
-                    &deployments,
-                    true,
-                    if action == "promote" {
-                        "Deploy promoted to production."
-                    } else {
-                        "Rolled back to the selected deploy."
-                    },
-                )),
-                Err(e) => Some(redirect_flash(
-                    &deployments,
-                    false,
-                    &format!("Could not switch deploys: {e}"),
-                )),
-            }
+            let bg = st.clone();
+            let name = app.name.clone();
+            let author = user.email.clone();
+            let deploy_id = tail.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::deploy::promote(&bg, &name, &deploy_id, Some(&author)).await
+                {
+                    tracing::error!("dashboard {name} promote {deploy_id}: {e}");
+                }
+            });
+            Some(redirect_flash(
+                &deployments,
+                true,
+                if action == "promote" {
+                    "Promotion started — production switches when the new container is ready."
+                } else {
+                    "Rollback started — production switches when the new container is ready."
+                },
+            ))
         }
         "env" => {
             let env = form
@@ -3325,7 +3335,7 @@ pub async fn handle(
         }
         "proxy" => {
             let back = format!("/dashboard/project/{}/proxy", app.name);
-            let mut ps = st.db.proxy_settings(&app.name);
+            let mut ps = st.db.proxy_settings(&app.name).unwrap_or_default();
             ps.headers.clear();
             if let Some(text) = form.get("headers") {
                 match crate::api::parse_proxy_headers(text) {
@@ -3744,13 +3754,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(bad.status(), axum::http::StatusCode::SEE_OTHER);
-        assert_eq!(
-            bad.headers()
-                .get(axum::http::header::LOCATION)
-                .and_then(|v| v.to_str().ok()),
-            Some("/dashboard")
-        );
+        assert_eq!(bad.status(), axum::http::StatusCode::FORBIDDEN);
         let good = super::handle(
             &st,
             &auth,

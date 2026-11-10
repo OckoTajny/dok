@@ -1590,6 +1590,13 @@ impl Db {
         )? == 1)
     }
 
+    pub fn fail_running_deploys(&self, reason: &str) -> Result<usize> {
+        Ok(self.conn().execute(
+            "UPDATE deploys SET status = 'failed', log = COALESCE(log, '') || ?1 WHERE status = 'running'",
+            params![format!("\n{reason}")],
+        )?)
+    }
+
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         Ok(self
             .conn()
@@ -1650,12 +1657,13 @@ impl Db {
 
     // ---------- per-project proxy settings ----------
 
-    pub fn proxy_settings(&self, app: &str) -> ProxySettings {
-        self.get_setting(&format!("proxy:{app}"))
-            .ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+    pub fn proxy_settings(&self, app: &str) -> Result<ProxySettings> {
+        let raw = self.get_setting(&format!("proxy:{app}"))?;
+        match raw {
+            None => Ok(ProxySettings::default()),
+            Some(s) => serde_json::from_str(&s)
+                .map_err(|e| anyhow::anyhow!("invalid proxy settings for {app}: {e}")),
+        }
     }
 
     pub fn set_proxy_settings(&self, app: &str, settings: &ProxySettings) -> Result<()> {
@@ -1673,19 +1681,23 @@ impl Db {
         latency_ms: i64,
         ip: Option<&str>,
     ) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static WRITES: AtomicU64 = AtomicU64::new(0);
         let c = self.conn();
         let _ = c.execute(
             "INSERT INTO access_log (app, ts, method, path, status, latency_ms, ip)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![app, now(), method, path, status as i64, latency_ms, ip],
         );
-        // Keep the last 5000 requests per project; enough for a useful
-        // post-incident look-back without unbounded growth.
-        let _ = c.execute(
-            "DELETE FROM access_log WHERE app = ?1 AND id NOT IN (
-               SELECT id FROM access_log WHERE app = ?1 ORDER BY id DESC LIMIT 5000)",
-            params![app],
-        );
+        // Prune occasionally instead of running an O(5000) delete on every
+        // request; bounded retention is preserved.
+        if WRITES.fetch_add(1, Ordering::Relaxed) % 100 == 0 {
+            let _ = c.execute(
+                "DELETE FROM access_log WHERE app = ?1 AND id NOT IN (
+                   SELECT id FROM access_log WHERE app = ?1 ORDER BY id DESC LIMIT 5000)",
+                params![app],
+            );
+        }
     }
 
     #[allow(dead_code)]
@@ -1724,6 +1736,30 @@ impl Db {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Requests, 5xx count and p95 latency over a rolling window.
+    pub fn access_stats(&self, app: &str, since: i64) -> Result<(i64, i64, i64)> {
+        let c = self.conn();
+        let (total, errors) = c.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(status >= 500), 0) FROM access_log
+             WHERE app = ?1 AND ts >= ?2",
+            params![app, since],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )?;
+        if total == 0 {
+            return Ok((0, 0, 0));
+        }
+        let offset = (total * 95 / 100).min(total - 1);
+        let p95 = c
+            .query_row(
+                "SELECT latency_ms FROM access_log WHERE app = ?1 AND ts >= ?2
+                 ORDER BY latency_ms ASC LIMIT 1 OFFSET ?3",
+                params![app, since, offset],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0);
+        Ok((total, errors, p95))
+    }
+
     pub fn access_log_count(
         &self,
         app: &str,
@@ -1742,15 +1778,20 @@ impl Db {
 
     /// Hosts of successful preview deploys, used for Traefik routers and ACME.
     pub fn preview_hosts(&self) -> Vec<String> {
+        self.preview_hosts_for(None)
+    }
+
+    pub fn preview_hosts_for(&self, app: Option<&str>) -> Vec<String> {
         let c = self.conn();
         let Ok(mut st) = c.prepare(
             "SELECT url FROM deploys
              WHERE env = 'preview' AND status = 'ok' AND url IS NOT NULL
+               AND (?1 IS NULL OR app = ?1)
              ORDER BY created_at DESC LIMIT 200",
         ) else {
             return Vec::new();
         };
-        let rows = st.query_map([], |r| r.get::<_, String>(0));
+        let rows = st.query_map(params![app], |r| r.get::<_, String>(0));
         let Ok(rows) = rows else { return Vec::new() };
         rows.flatten()
             .filter_map(|u| url::Url::parse(&u).ok())

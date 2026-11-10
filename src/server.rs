@@ -148,6 +148,9 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     .with_edge(args.edge || !args.acme_domain.is_empty());
 
     st.sync_traefik();
+    let _ = st
+        .db
+        .fail_running_deploys("interrupted by a dok restart; retry the deploy");
     // The post-receive hook runs in a separate process without the CLI flags;
     // persist what it needs to build preview URLs.
     let _ = st
@@ -304,6 +307,8 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let supervisor = tokio::spawn(async move {
         let mut current_hosts: Vec<String> = Vec::new();
         let mut current_tls: Option<tokio::task::JoinHandle<()>> = None;
+        let mut pending_tls: Option<tokio::task::JoinHandle<()>> = None;
+        let mut pending_ready: Option<std::sync::Arc<AtomicBool>> = None;
         let mut current_acme: Option<tokio::task::JoinHandle<()>> = None;
         let mut last_renew = supervisor_st
             .db
@@ -322,6 +327,19 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(0);
             let renew = renew_at > last_renew;
+            if pending_ready
+                .as_ref()
+                .map(|r| r.load(Ordering::Relaxed))
+                .unwrap_or(false)
+            {
+                if let Some(new) = pending_tls.take() {
+                    if let Some(old) = current_tls.replace(new) {
+                        old.abort();
+                    }
+                }
+                pending_ready = None;
+                supervisor_tls_active.store(true, Ordering::Relaxed);
+            }
             if hosts.is_empty() {
                 // Keep the HTTP dashboard alive; TLS starts as soon as a
                 // project or custom domain is registered.
@@ -330,6 +348,10 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     if let Some(h) = current_tls.take() {
                         h.abort();
                     }
+                    if let Some(h) = pending_tls.take() {
+                        h.abort();
+                    }
+                    pending_ready = None;
                     if let Some(h) = current_acme.take() {
                         h.abort();
                     }
@@ -341,9 +363,10 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             if hosts != current_hosts || renew {
                 if renew {
                     last_renew = renew_at;
-                    // Keep the cached certificate: the old listener serves it
-                    // until ACME deploys a replacement. Deleting it first would
-                    // drop TLS for every host in the shared order.
+                    // The old listener already holds its certificate in
+                    // memory; dropping the on-disk cache is safe and forces a
+                    // fresh order for the replacement listener.
+                    clear_cert_cache_for(&acme_dir);
                 }
                 current_hosts = hosts.clone();
                 tracing::info!(
@@ -362,6 +385,9 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 let cert_st = supervisor_st.clone();
                 let cert_hosts = hosts.clone();
                 let cert_dir = acme_dir.clone();
+                let ready = std::sync::Arc::new(AtomicBool::new(false));
+                let ready_task = ready.clone();
+                let tls_flag_task = supervisor_tls_active.clone();
                 if let Some(old) = current_acme.take() {
                     old.abort();
                 }
@@ -376,6 +402,8 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                                     rustls_acme::EventOk::DeployedNewCert
                                         | rustls_acme::EventOk::DeployedCachedCert
                                 ) {
+                                    ready_task.store(true, Ordering::Relaxed);
+                                    tls_flag_task.store(true, Ordering::Relaxed);
                                     record_cert_status(&cert_st, &cert_hosts, &cert_dir, None);
                                 }
                             }
@@ -438,15 +466,16 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                         tracing::error!("https server stopped: {e}");
                     }
                 });
-                if let Some(old) = current_tls.replace(new_tls) {
-                    // With reuseport both listeners briefly overlap; aborting
-                    // the old one only stops new handshakes for old hosts.
+                if let Some(old) = pending_tls.take() {
                     old.abort();
                 }
-                // Never downgrade :80 to plaintext while any TLS listener has
-                // been active. The supervisor only clears this when all hosts
-                // disappear (fresh install / all domains removed).
-                supervisor_tls_active.store(true, Ordering::Relaxed);
+                if current_tls.is_none() {
+                    current_tls = Some(new_tls);
+                } else {
+                    pending_tls = Some(new_tls);
+                    pending_ready = Some(ready);
+                    supervisor_tls_active.store(true, Ordering::Relaxed);
+                }
             } else if current_tls
                 .as_ref()
                 .map(|h| h.is_finished())
@@ -539,6 +568,24 @@ fn bind_tls_listener(port: u16, reuseport: bool) -> std::io::Result<std::net::Tc
     Ok(listener)
 }
 
+/// Drop the shared certificate cache so an explicit renew triggers a new ACME
+/// order. The running listener keeps its in-memory certificate until the
+/// replacement listener reports a deployed certificate.
+fn clear_cert_cache_for(dir: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("cached_cert_")
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn desired_hosts(st: &AppState, extra: &[String], base: &Option<String>) -> Vec<String> {
     let mut hosts: Vec<String> = extra.to_vec();
     for a in st.db.list_apps().unwrap_or_default() {
@@ -590,18 +637,31 @@ fn parse_cert_expiry(bytes: &[u8]) -> Option<i64> {
 /// cert is never reported as another host's status.
 fn cert_expiry_for(dir: &std::path::Path, host: &str) -> Option<i64> {
     let rd = std::fs::read_dir(dir).ok()?;
+    let mut best: Option<(std::time::SystemTime, i64)> = None;
     for entry in rd.flatten() {
         let name = entry.file_name();
         if !name.to_string_lossy().starts_with("cached_cert_") {
             continue;
         }
-        let bytes = std::fs::read(entry.path()).ok()?;
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
         let text = String::from_utf8_lossy(&bytes).replace("\\n", "\n");
-        if name.to_string_lossy().contains(host) || text.contains(host) {
-            return parse_cert_expiry(&bytes);
+        if !(name.to_string_lossy().contains(host) || text.contains(host)) {
+            continue;
+        }
+        let Some(expiry) = parse_cert_expiry(&bytes) else {
+            continue;
+        };
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if best.map(|(t, _)| mtime > t).unwrap_or(true) {
+            best = Some((mtime, expiry));
         }
     }
-    None
+    best.map(|(_, e)| e)
 }
 
 fn record_cert_status(
