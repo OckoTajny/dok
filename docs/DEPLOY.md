@@ -5,7 +5,7 @@
 - **dok runs on the desktop** (`ockotajny-desktop`, user `jachym`), builds and
   runs every app there (`systemctl --user status dok`).
 - **ku-bot is only the public edge**: its Traefik terminates TLS and proxies
-  `dok.solta.tech` + `*.apps.solta.tech` to the desktop over tailscale
+  `dok.solta.tech` + `*.dok.solta.tech` to the desktop over tailscale
   (`http://100.88.8.51:8080`).
 - Desktop writes per-app routers to `~/.local/share/dok/traefik/dok-apps.yaml`;
   `dok-traefik-sync.path` + `.service` copy them to
@@ -83,7 +83,7 @@ install -m755 target/release/dok ~/bin/dok
 
 ## Legacy: ku-bot-only setup (no longer used)
 
-`dok.solta.tech` — dashboard, `*.apps.solta.tech` — deployed apps.
+`dok.solta.tech` — dashboard, `*.dok.solta.tech` — deployed apps.
 Traefik (Coolify) terminates TLS; dok listens on `127.0.0.1:8080` style host port
 `8080`, reached by Traefik through the `coolify` network gateway `172.18.0.1`.
 

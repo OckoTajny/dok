@@ -8,7 +8,7 @@ ExecStart=%h/bin/dok serve \
   --http-port 8080 \
   --public-host dok.solta.tech \
   --dashboard-origin https://dok.solta.tech \
-  --base-domain apps.solta.tech \
+  --base-domain dok.solta.tech \
   --traefik-dir %h/.local/share/dok/traefik \
   --data %h/.local/share/dok
 EnvironmentFile=-%h/.config/dok/env
