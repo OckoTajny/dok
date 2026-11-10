@@ -1820,10 +1820,21 @@ if(document.querySelector('[data-deploy-running]'))setTimeout(refreshBuildLog,50
                 } else {
                     String::new()
                 };
+                let check = if can {
+                    format!(
+                        "<form class=inline method=post action=\"/dashboard/domains/{app}/check\">{csrf}<input type=hidden name=host value=\"{host}\"><button class=\"btn link\">Check DNS</button></form> ",
+                        app = esc(&app.name),
+                        csrf = csrf,
+                        host = esc(d)
+                    )
+                } else {
+                    String::new()
+                };
                 rows.push_str(&format!(
-                    "<tr><td><code>{host}</code>{badge}</td><td style=\"text-align:right\">{promote}{remove}</td></tr>",
+                    "<tr><td><code>{host}</code>{badge}</td><td style=\"text-align:right\">{check}{promote}{remove}</td></tr>",
                     host = esc(d),
                     badge = if primary { " <span class=\"badge env\">primary</span>" } else { "" },
+                    check = check,
                     promote = promote,
                     remove = remove
                 ));
@@ -1841,13 +1852,18 @@ if(document.querySelector('[data-deploy-running]'))setTimeout(refreshBuildLog,50
             } else {
                 String::new()
             };
+            let dns_target = url::Url::parse(&st.public_url)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_string()))
+                .unwrap_or_else(|| st.public_url.clone());
             content.push_str(&format!(
                 "<h2 style=\"margin-top:18px\">Domains</h2>\
-<div class=muted small style=\"margin-bottom:12px\">Default: <code>{default}</code>. Point DNS at this host before adding a custom domain.</div>\
+<div class=muted small style=\"margin-bottom:12px\">Default: <code>{default}</code>. Create a CNAME from your domain to <code>{target}</code> (or an A/AAAA record to the server IP), then add it here. dok verifies DNS and tells you exactly what to change.</div>\
 <div style=\"overflow:auto\"><table><thead><tr><th>Domain</th><th><span class=sr>Actions</span></th></tr></thead><tbody>{rows}</tbody></table></div>\
 {add_domain}\
 <h2 style=\"margin-top:36px\">Certificates</h2>{certs}",
                 default = esc(&domain_of(st, app)),
+                target = esc(&dns_target),
                 rows = rows,
                 add_domain = add_domain,
                 certs = cert_table(st, app, &csrf, can)
@@ -3400,6 +3416,26 @@ pub async fn handle(
                     ),
                 ));
             }
+            if tail == "check" {
+                let host = form
+                    .get("host")
+                    .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
+                    .unwrap_or_default();
+                if !crate::api::valid_host(&host) {
+                    return Some(unprocessable("Unknown domain for this project.", &back));
+                }
+                let known = st
+                    .db
+                    .domains_for(&app.name)
+                    .unwrap_or_default()
+                    .contains(&host)
+                    || app.domain.as_deref() == Some(host.as_str());
+                if !known {
+                    return Some(unprocessable("Unknown domain for this project.", &back));
+                }
+                let dns = crate::api::check_domain_dns(&st, &host).await;
+                return Some(redirect_flash(&back, dns.status == "ok", &dns.hint));
+            }
             let host = form
                 .get("host")
                 .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
@@ -3443,10 +3479,11 @@ pub async fn handle(
                 Err(e) => return Some(server_error(&e.to_string())),
             }
             st.sync_traefik();
+            let dns = crate::api::check_domain_dns(&st, &host).await;
             Some(redirect_flash(
                 &back,
-                true,
-                &format!("{host} added. Point its DNS here; the certificate appears below."),
+                dns.status == "ok",
+                &format!("{host} added. {}", dns.hint),
             ))
         }
         "proxy" => {

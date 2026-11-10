@@ -7,7 +7,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -106,6 +106,10 @@ fn api_routes(st: AppState) -> Router {
             "/api/v1/projects/{app}/domains/{host}",
             delete(remove_domain),
         )
+        .route(
+            "/api/v1/projects/{app}/domains/{host}/check",
+            get(check_domain_api),
+        )
         .route("/api/v1/projects/{app}/metrics", get(metrics))
         .route("/api/v1/projects/{app}/redeploy", post(redeploy))
         .route("/api/v1/projects/{app}/access-log", get(access_log))
@@ -144,6 +148,10 @@ fn api_routes(st: AppState) -> Router {
             put(put_env_root).get(get_env_root),
         )
         .route("/api/v1/apps/{app}/domain", post(set_domain))
+        .route(
+            "/api/v1/apps/{app}/domains/{host}/check",
+            get(check_domain_api),
+        )
         .route("/api/v1/apps/{app}/repo", post(set_repo))
         .route("/api/v1/apps/{app}/git-init", post(git_init))
         .route("/api/v1/apps/{app}/redeploy", post(redeploy))
@@ -1078,10 +1086,6 @@ fn put_env_impl(
         .iter()
         .map(|(k, _, s)| (k.clone(), *s))
         .collect();
-    let existing_values: HashMap<String, String> = existing_rows
-        .iter()
-        .map(|(k, v, _)| (k.clone(), v.clone()))
-        .collect();
     for (k, (v, _)) in &vars {
         if !valid_env_key(k) {
             return bad("env keys must be letters, digits and _, and cannot start with a digit");
@@ -1103,13 +1107,6 @@ fn put_env_impl(
     let kv: Vec<(String, String, bool)> = vars
         .into_iter()
         .map(|(k, (v, explicit))| {
-            // `KEY=` keeps the stored value, matching the bulk editor and
-            // README; it must not erase a secret or any other value.
-            let v = if v.is_empty() {
-                existing_values.get(&k).cloned().unwrap_or(v)
-            } else {
-                v
-            };
             let secret = if v.is_empty() && existing.get(&k).copied().unwrap_or(false) {
                 // A blank value means "keep the stored secret"; it does not
                 // silently declassify it.
@@ -1411,7 +1408,8 @@ async fn set_domain(
     match st.db.set_domain(&app, &domain) {
         Ok(_) => {
             st.sync_traefik();
-            Json(json!({"ok": true, "domain": domain})).into_response()
+            let dns = check_domain_dns(&st, &domain).await;
+            Json(json!({"ok": true, "domain": domain, "dns": dns})).into_response()
         }
         Err(e) => internal(e),
     }
@@ -1443,6 +1441,114 @@ async fn list_domains(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DomainCheck {
+    pub status: &'static str,
+    pub host: String,
+    pub target: String,
+    pub resolved: Vec<String>,
+    pub expected: Vec<String>,
+    pub hint: String,
+}
+
+fn domain_check_result(
+    host: &str,
+    target: &str,
+    resolved: Vec<String>,
+    expected: Vec<String>,
+) -> DomainCheck {
+    let join = |ips: &[String]| ips.join(", ");
+    let target_hint = if expected.is_empty() {
+        target.to_string()
+    } else {
+        format!("{target} ({})", join(&expected))
+    };
+    let (status, hint) = if resolved.is_empty() {
+        (
+            "missing",
+            format!(
+                "No A/AAAA record for {host} yet. Point it at this server with a CNAME to {target} or an A/AAAA record to {target_hint}."
+            ),
+        )
+    } else if expected.is_empty() {
+        (
+            "unknown",
+            format!(
+                "Could not resolve {target} to compare. Make sure {host} points at the same server as {target}."
+            ),
+        )
+    } else if resolved.iter().any(|ip| expected.contains(ip)) {
+        (
+            "ok",
+            format!(
+                "DNS is correct: {host} resolves to this server. The TLS certificate is issued automatically, usually within a minute."
+            ),
+        )
+    } else {
+        (
+            "mismatch",
+            format!(
+                "{host} resolves to {}, but this server is {target_hint}. Change the DNS record: CNAME to {target}, or A/AAAA to {target_hint}.",
+                join(&resolved)
+            ),
+        )
+    };
+    DomainCheck {
+        status,
+        host: host.to_string(),
+        target: target.to_string(),
+        resolved,
+        expected,
+        hint,
+    }
+}
+
+async fn resolve_domain_ips(host: &str) -> Vec<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return Vec::new();
+    }
+    let Ok(addrs) = tokio::net::lookup_host((host, 443)).await else {
+        return Vec::new();
+    };
+    let mut ips = addrs
+        .map(|addr| addr.ip().to_string())
+        .collect::<Vec<String>>();
+    ips.sort();
+    ips.dedup();
+    ips
+}
+
+/// Compare a custom domain's A/AAAA records with the dashboard host so the
+/// dashboard and CLI can tell the user exactly what still needs changing.
+pub async fn check_domain_dns(st: &AppState, host: &str) -> DomainCheck {
+    let target = url::Url::parse(&st.public_url)
+        .ok()
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_matches(|c| c == '[' || c == ']').to_string())
+        })
+        .unwrap_or_else(|| st.public_url.clone());
+    let expected = resolve_domain_ips(&target).await;
+    let resolved = resolve_domain_ips(host).await;
+    domain_check_result(host, &target, resolved, expected)
+}
+
+async fn check_domain_api(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path((app, host)): Path<(String, String)>,
+) -> Response {
+    if let Err(r) = project_for(&st, &caller, &app) {
+        return r;
+    }
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if !valid_host(&host) {
+        return bad("invalid domain");
+    }
+    Json(json!({"ok": true, "dns": check_domain_dns(&st, &host).await})).into_response()
+}
+
 async fn add_domain(
     State(st): State<AppState>,
     Extension(caller): Extension<Caller>,
@@ -1466,7 +1572,8 @@ async fn add_domain(
     match st.db.add_domain(&app, &host) {
         Ok(true) => {
             st.sync_traefik();
-            Json(json!({"ok": true, "domain": host})).into_response()
+            let dns = check_domain_dns(&st, &host).await;
+            Json(json!({"ok": true, "domain": host, "dns": dns})).into_response()
         }
         Ok(false) => (StatusCode::CONFLICT, "domain belongs to another project\n").into_response(),
         Err(e) => internal(e),
@@ -2912,6 +3019,35 @@ mod tests {
         assert!(!super::valid_repo_url("https://user:pw@example.com/a.git"));
         assert!(super::valid_repo_url("https://user@example.com/a.git"));
         assert!(super::valid_repo_url("ssh://git@8.8.8.8/a.git"));
+    }
+
+    #[test]
+    fn domain_check_explains_dns_problems() {
+        let missing = super::domain_check_result(
+            "app.example.com",
+            "dok.example.com",
+            vec![],
+            vec!["1.2.3.4".into()],
+        );
+        assert_eq!(missing.status, "missing");
+        assert!(missing.hint.contains("CNAME"));
+
+        let ok = super::domain_check_result(
+            "app.example.com",
+            "dok.example.com",
+            vec!["1.2.3.4".into()],
+            vec!["1.2.3.4".into()],
+        );
+        assert_eq!(ok.status, "ok");
+
+        let wrong = super::domain_check_result(
+            "app.example.com",
+            "dok.example.com",
+            vec!["9.9.9.9".into()],
+            vec!["1.2.3.4".into()],
+        );
+        assert_eq!(wrong.status, "mismatch");
+        assert!(wrong.hint.contains("9.9.9.9"));
     }
 
     #[test]
